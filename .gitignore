@@ -1,0 +1,11 @@
+.tmp.driveupload/
+.tmp.drivedownload/
+venv/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+.claude/
+.dist/
+.pytest_cache/

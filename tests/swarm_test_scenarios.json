@@ -1,0 +1,727 @@
+{
+  "categories": [
+    "Single Drone Failures",
+    "Multiple Drone Failures",
+    "Stress Tests",
+    "Communication Failures",
+    "Coverage Maintenance",
+    "Task Redistribution",
+    "Consensus Edge Cases",
+    "Recovery Scenarios"
+  ],
+  "scenarios": [
+    {
+      "id": "SDF-001",
+      "name": "Single Drone Motor Failure Mid-Flight",
+      "description": "Drone Alpha-2 experiences motor failure while navigating to center.\n        Remaining drones must detect the failure and redistribute Alpha-2's\n        coverage sector between themselves.",
+      "category": "Single Drone Failures",
+      "faults": [
+        {
+          "type": "MOTOR_FAILURE",
+          "drone_id": 1,
+          "trigger_time": 15.0,
+          "severity": "FATAL",
+          "params": {
+            "motor_index": 2,
+            "failure_mode": "locked"
+          }
+        }
+      ],
+      "expected_behavior": "1. Alpha-2 initiates emergency landing\n        2. Alpha-2 broadcasts MAYDAY with last known position\n        3. Alpha-1 and Alpha-3 receive failure notification\n        4. CBBA re-runs to redistribute V2's coverage area\n        5. Alpha-1 takes V1 (adjacent), Alpha-3 takes V3 (adjacent)\n        6. Coverage of entire hexagon maintained with 2 drones",
+      "success_criteria": [
+        "Alpha-2 lands within 30 seconds of fault",
+        "Remaining drones receive failure notification within 2 seconds",
+        "Task redistribution completes within 10 seconds",
+        "100% hexagon coverage maintained",
+        "No collision between remaining drones"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "SDF-002",
+      "name": "Single Drone Battery Critical",
+      "description": "Alpha-1's battery drops to critical (15%) during patrol.\n        Drone must RTL while others absorb its tasks gracefully.",
+      "category": "Single Drone Failures",
+      "faults": [
+        {
+          "type": "BATTERY_CRITICAL",
+          "drone_id": 0,
+          "trigger_time": 20.0,
+          "severity": "CRITICAL",
+          "params": {
+            "battery_level": 15.0,
+            "drain_rate": 2.0
+          }
+        }
+      ],
+      "expected_behavior": "1. Alpha-1 detects critical battery\n        2. Alpha-1 broadcasts LOW_BATTERY_RTL intent\n        3. Alpha-1 calculates fastest route home\n        4. Other drones acknowledge and begin task absorption\n        5. Alpha-1 lands at home vertex before battery exhaustion",
+      "success_criteria": [
+        "Alpha-1 initiates RTL within 3 seconds of critical battery",
+        "Alpha-1 lands with battery > 5%",
+        "Other drones absorb tasks within 15 seconds",
+        "No coverage gaps during transition"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "SDF-003",
+      "name": "Single Drone GPS Loss",
+      "description": "Alpha-3 loses GPS signal while over vertex 4.\n        Must switch to dead reckoning and safe hover mode.",
+      "category": "Single Drone Failures",
+      "faults": [
+        {
+          "type": "GPS_LOSS",
+          "drone_id": 2,
+          "trigger_time": 25.0,
+          "severity": "CRITICAL",
+          "params": {
+            "duration": 30.0
+          }
+        }
+      ],
+      "expected_behavior": "1. Alpha-3 detects GPS loss\n        2. Alpha-3 enters HOLD mode at last known position\n        3. Alpha-3 broadcasts DEGRADED_NAV status\n        4. Other drones avoid Alpha-3's last known area\n        5. If GPS returns within timeout, Alpha-3 resumes\n        6. If timeout exceeded, Alpha-3 initiates blind landing",
+      "success_criteria": [
+        "Alpha-3 holds position within 5m drift",
+        "Status broadcast reaches all peers within 1 second",
+        "No tasks assigned to Alpha-3 during GPS loss",
+        "Alpha-3 resumes mission when GPS returns"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "SDF-004",
+      "name": "Single Drone Collision Detection",
+      "description": "Alpha-2 detects imminent collision (obstacle or bird).\n        Must execute emergency avoidance and re-plan path.",
+      "category": "Single Drone Failures",
+      "faults": [
+        {
+          "type": "OBSTACLE_COLLISION",
+          "drone_id": 1,
+          "trigger_time": 18.0,
+          "severity": "CRITICAL",
+          "params": {
+            "obstacle_position": {
+              "x": 10,
+              "y": 5,
+              "z": 25
+            },
+            "obstacle_velocity": {
+              "x": -2,
+              "y": 0,
+              "z": 0
+            }
+          }
+        }
+      ],
+      "expected_behavior": "1. Alpha-2 LiDAR detects obstacle\n        2. Alpha-2 executes potential field avoidance\n        3. Alpha-2 broadcasts AVOIDING with trajectory change\n        4. Nearby drones adjust to avoid secondary collision\n        5. Alpha-2 returns to planned path after clearance",
+      "success_criteria": [
+        "Collision avoided with clearance > 2m",
+        "Recovery to path within 10 seconds",
+        "No mission abort required",
+        "Other drones notified of trajectory change"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "MDF-001",
+      "name": "Two Drones Fail Simultaneously",
+      "description": "Alpha-1 and Alpha-2 both experience power failures at the same time.\n        Only Alpha-3 remains operational.",
+      "category": "Multiple Drone Failures",
+      "faults": [
+        {
+          "type": "TOTAL_POWER_LOSS",
+          "drone_id": 0,
+          "trigger_time": 30.0,
+          "severity": "FATAL",
+          "params": {}
+        },
+        {
+          "type": "TOTAL_POWER_LOSS",
+          "drone_id": 1,
+          "trigger_time": 30.0,
+          "severity": "FATAL",
+          "params": {}
+        }
+      ],
+      "expected_behavior": "1. Both drones go offline simultaneously\n        2. Alpha-3 detects peer timeouts after heartbeat failure\n        3. Alpha-3 inherits ALL remaining tasks\n        4. Alpha-3 re-plans coverage for entire hexagon\n        5. Mission continues in degraded mode (longer time)\n        6. Alpha-3 reports swarm degradation to GCS",
+      "success_criteria": [
+        "Alpha-3 detects both failures within 5 seconds",
+        "Alpha-3 does not crash or enter error state",
+        "Alpha-3 creates valid coverage plan for full hexagon",
+        "GCS receives degradation alert",
+        "Mission completes (eventually) with single drone"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "MDF-002",
+      "name": "Cascading Failures",
+      "description": "Alpha-1 fails first, then Alpha-2 fails while redistributing\n        Alpha-1's tasks. Tests cascading failure handling.",
+      "category": "Multiple Drone Failures",
+      "faults": [
+        {
+          "type": "MOTOR_FAILURE",
+          "drone_id": 0,
+          "trigger_time": 20.0,
+          "severity": "FATAL",
+          "params": {}
+        },
+        {
+          "type": "BATTERY_CRITICAL",
+          "drone_id": 1,
+          "trigger_time": 28.0,
+          "severity": "CRITICAL",
+          "params": {
+            "battery_level": 10.0
+          }
+        }
+      ],
+      "expected_behavior": "1. Alpha-1 fails at t=20s\n        2. Alpha-2 and Alpha-3 begin redistribution\n        3. Alpha-2 fails at t=28s during redistribution\n        4. Alpha-3 must handle interrupted redistribution\n        5. Alpha-3 recalculates for solo operation",
+      "success_criteria": [
+        "No race conditions in redistribution",
+        "Alpha-3 handles cascading failure gracefully",
+        "State remains consistent throughout",
+        "Mission continues with valid plan"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "MDF-003",
+      "name": "All Drones Fail - Mission Abort",
+      "description": "All three drones experience failures. Tests graceful\n        mission abort and state preservation.",
+      "category": "Multiple Drone Failures",
+      "faults": [
+        {
+          "type": "TOTAL_POWER_LOSS",
+          "drone_id": 0,
+          "trigger_time": 40.0,
+          "severity": "FATAL",
+          "params": {}
+        },
+        {
+          "type": "TOTAL_POWER_LOSS",
+          "drone_id": 1,
+          "trigger_time": 42.0,
+          "severity": "FATAL",
+          "params": {}
+        },
+        {
+          "type": "TOTAL_POWER_LOSS",
+          "drone_id": 2,
+          "trigger_time": 44.0,
+          "severity": "FATAL",
+          "params": {}
+        }
+      ],
+      "expected_behavior": "1. Drones fail sequentially\n        2. Last drone attempts mission continuation\n        3. When last drone fails, GCS logs mission abort\n        4. Coverage data up to failure is preserved\n        5. Recovery state saved for mission resume",
+      "success_criteria": [
+        "All failure events logged with timestamps",
+        "No data corruption during failures",
+        "Recovery state file created",
+        "GCS receives MISSION_ABORTED status"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "COM-001",
+      "name": "Network Partition - Two Groups",
+      "description": "Network splits: Alpha-1 can only talk to Alpha-2,\n        Alpha-3 is isolated. Tests partition handling.",
+      "category": "Communication Failures",
+      "faults": [
+        {
+          "type": "COMMS_PARTIAL_LOSS",
+          "drone_id": 2,
+          "trigger_time": 15.0,
+          "severity": "CRITICAL",
+          "params": {
+            "can_reach": [],
+            "duration": 20.0
+          }
+        }
+      ],
+      "expected_behavior": "1. Alpha-3 detects it can't reach peers\n        2. Alpha-3 continues its assigned tasks independently\n        3. Alpha-1 and Alpha-2 detect Alpha-3 timeout\n        4. Group {1,2} continues, assuming Alpha-3 failed\n        5. When partition heals, gossip reconverges state\n        6. Duplicate work detected and resolved",
+      "success_criteria": [
+        "No deadlocks during partition",
+        "Each partition continues independently",
+        "State converges within 5 seconds of partition healing",
+        "Duplicate coverage detected and logged"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "COM-002",
+      "name": "Total Communication Blackout",
+      "description": "All inter-drone communication fails. Each drone\n        must operate autonomously.",
+      "category": "Communication Failures",
+      "faults": [
+        {
+          "type": "COMMS_TOTAL_LOSS",
+          "drone_id": 0,
+          "trigger_time": 10.0,
+          "severity": "CRITICAL",
+          "params": {
+            "duration": 30.0
+          }
+        },
+        {
+          "type": "COMMS_TOTAL_LOSS",
+          "drone_id": 1,
+          "trigger_time": 10.0,
+          "severity": "CRITICAL",
+          "params": {
+            "duration": 30.0
+          }
+        },
+        {
+          "type": "COMMS_TOTAL_LOSS",
+          "drone_id": 2,
+          "trigger_time": 10.0,
+          "severity": "CRITICAL",
+          "params": {
+            "duration": 30.0
+          }
+        }
+      ],
+      "expected_behavior": "1. All drones detect communication loss\n        2. Each drone switches to autonomous mode\n        3. Each drone completes only its originally assigned tasks\n        4. Collision avoidance relies on onboard sensors only\n        5. When comms restore, state synchronization occurs",
+      "success_criteria": [
+        "No mid-air collisions during blackout",
+        "Each drone completes at least its primary sector",
+        "State successfully resynchronizes after blackout",
+        "No task deadlocks occur"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "COM-003",
+      "name": "High Latency Messages",
+      "description": "Communication experiences 2-5 second delays.\n        Tests consensus with stale information.",
+      "category": "Communication Failures",
+      "faults": [
+        {
+          "type": "COMMS_DELAYED",
+          "drone_id": -1,
+          "trigger_time": 5.0,
+          "severity": "WARNING",
+          "params": {
+            "latency_min": 2.0,
+            "latency_max": 5.0
+          }
+        }
+      ],
+      "expected_behavior": "1. Messages arrive with significant delay\n        2. Gossip protocol handles out-of-order messages\n        3. CBBA bidding accounts for stale positions\n        4. Collision avoidance uses local sensors primarily\n        5. System remains stable despite lag",
+      "success_criteria": [
+        "No consensus failures due to stale data",
+        "Collision avoidance remains effective",
+        "Task allocation eventually converges",
+        "System degrades gracefully, doesn't fail"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "COM-004",
+      "name": "Byzantine Message Corruption",
+      "description": "One drone sends corrupted/invalid messages.\n        Tests resilience to bad actors.",
+      "category": "Communication Failures",
+      "faults": [
+        {
+          "type": "COMMS_CORRUPTED",
+          "drone_id": 1,
+          "trigger_time": 12.0,
+          "severity": "WARNING",
+          "params": {
+            "corruption_rate": 0.5
+          }
+        }
+      ],
+      "expected_behavior": "1. Alpha-2 sends corrupted state updates\n        2. Other drones detect checksum failures\n        3. Corrupted messages are dropped\n        4. System relies on last-known-good state\n        5. Alpha-2's corruption rate triggers isolation",
+      "success_criteria": [
+        "Corrupted messages detected and dropped",
+        "No corruption propagates through gossip",
+        "System remains stable",
+        "Bad actor eventually flagged"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "TRD-001",
+      "name": "Task Redistribution During Handoff",
+      "description": "Drone fails exactly during task handoff to another drone.\n        Tests atomic task transitions.",
+      "category": "Task Redistribution",
+      "faults": [
+        {
+          "type": "TOTAL_POWER_LOSS",
+          "drone_id": 0,
+          "trigger_time": -1,
+          "severity": "FATAL",
+          "params": {}
+        }
+      ],
+      "expected_behavior": "1. Alpha-1 begins handing off task to Alpha-2\n        2. Alpha-1 fails mid-handoff\n        3. Alpha-2 detects incomplete handoff\n        4. Task state rolled back or forward (no duplication)\n        5. Task reassigned cleanly",
+      "success_criteria": [
+        "No task duplication occurs",
+        "No task is lost/orphaned",
+        "Handoff timeout handled correctly",
+        "Remaining drone takes ownership"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "TRD-002",
+      "name": "Conflicting Bids Race Condition",
+      "description": "Two drones bid on the same task simultaneously.\n        Tests CBBA consensus under contention.",
+      "category": "Task Redistribution",
+      "faults": [
+        {
+          "type": "COMMS_DELAYED",
+          "drone_id": -1,
+          "trigger_time": 0.0,
+          "severity": "WARNING",
+          "params": {
+            "latency_min": 0.5,
+            "latency_max": 1.0
+          }
+        }
+      ],
+      "expected_behavior": "1. New high-priority task appears\n        2. Alpha-1 and Alpha-2 both bid (due to latency)\n        3. CBBA consensus resolves winner deterministically\n        4. Loser accepts and moves to next task\n        5. No oscillation or deadlock occurs",
+      "success_criteria": [
+        "Exactly one drone assigned to task",
+        "Resolution within 5 seconds",
+        "No ping-pong reassignment",
+        "Both drones have consistent view"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "TRD-003",
+      "name": "Task Queue Overflow",
+      "description": "More tasks appear than drones can handle.\n        Tests prioritization and graceful degradation.",
+      "category": "Task Redistribution",
+      "faults": [
+        {
+          "type": "TASK_QUEUE_OVERFLOW",
+          "drone_id": -1,
+          "trigger_time": 10.0,
+          "severity": "WARNING",
+          "params": {
+            "extra_tasks": 20
+          }
+        }
+      ],
+      "expected_behavior": "1. System suddenly has 20+ pending tasks\n        2. CBBA distributes based on priority\n        3. Low-priority tasks queued, not dropped\n        4. High-priority tasks executed first\n        5. Backpressure signal sent to task source",
+      "success_criteria": [
+        "No task silently dropped",
+        "Priority ordering respected",
+        "System remains responsive",
+        "Overload status reported to GCS"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "COV-001",
+      "name": "Coverage Gap Detection",
+      "description": "Deliberate gap introduced in coverage.\n        System must detect and fill gap autonomously.",
+      "category": "Coverage Maintenance",
+      "faults": [
+        {
+          "type": "STATE_MACHINE_STUCK",
+          "drone_id": 1,
+          "trigger_time": 25.0,
+          "severity": "CRITICAL",
+          "params": {
+            "stuck_in_state": "HOVERING",
+            "duration": 15.0
+          }
+        }
+      ],
+      "expected_behavior": "1. Alpha-2 gets stuck hovering (not covering area)\n        2. Coverage monitor detects gap in V2 sector\n        3. Alpha-1 or Alpha-3 detects gap\n        4. Nearest drone extends coverage temporarily\n        5. When Alpha-2 recovers, coverage re-optimizes",
+      "success_criteria": [
+        "Gap detected within 10 seconds",
+        "Gap filled within 20 seconds",
+        "No duplicate coverage after fix",
+        "Original drone resumes when recovered"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "COV-002",
+      "name": "Dynamic Priority Change",
+      "description": "Sector priority changes mid-mission.\n        Tests real-time re-optimization.",
+      "category": "Coverage Maintenance",
+      "faults": [],
+      "expected_behavior": "1. V2 sector priority increases from 1 to 5\n        2. System detects priority change\n        3. Coverage re-allocates for higher scan rate\n        4. Other sectors maintain minimum coverage\n        5. Alpha-2 or nearest drone prioritizes V2",
+      "success_criteria": [
+        "Priority change propagates within 2 seconds",
+        "High-priority sector gets more coverage",
+        "No sector falls below minimum coverage",
+        "Re-allocation completes within 10 seconds"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "COV-003",
+      "name": "Overlapping Coverage Resolution",
+      "description": "Two drones accidentally cover the same area.\n        Tests deduplication logic.",
+      "category": "Coverage Maintenance",
+      "faults": [
+        {
+          "type": "GPS_DRIFT",
+          "drone_id": 0,
+          "trigger_time": 15.0,
+          "severity": "WARNING",
+          "params": {
+            "drift_vector": {
+              "x": 15,
+              "y": 0,
+              "z": 0
+            }
+          }
+        }
+      ],
+      "expected_behavior": "1. Alpha-1 drifts into Alpha-2's sector\n        2. Overlap detected via position broadcast\n        3. System determines authoritative drone\n        4. One drone adjusts path to eliminate overlap\n        5. Uncovered area from drift gets reassigned",
+      "success_criteria": [
+        "Overlap detected within 3 seconds",
+        "No collision between drones",
+        "Overlap eliminated within 10 seconds",
+        "No coverage gaps created by resolution"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "REC-001",
+      "name": "Drone Recovery After Failure",
+      "description": "Failed drone comes back online. Tests reintegration.",
+      "category": "Recovery Scenarios",
+      "faults": [
+        {
+          "type": "COMMS_TOTAL_LOSS",
+          "drone_id": 2,
+          "trigger_time": 10.0,
+          "severity": "CRITICAL",
+          "params": {
+            "duration": 30.0
+          }
+        }
+      ],
+      "expected_behavior": "1. Alpha-3 goes offline at t=10s\n        2. Alpha-1 and Alpha-2 redistribute tasks\n        3. Alpha-3 comes back at t=40s\n        4. Alpha-3 syncs current state via gossip\n        5. Tasks re-optimized for 3 drones\n        6. Alpha-3 gets optimal task assignment",
+      "success_criteria": [
+        "Recovery detected within 3 seconds",
+        "State sync completes within 5 seconds",
+        "Task redistribution within 10 seconds",
+        "Recovered drone immediately productive"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "REC-002",
+      "name": "Mission Resume After Abort",
+      "description": "Mission resumes from saved state after complete abort.\n        Tests state persistence and recovery.",
+      "category": "Recovery Scenarios",
+      "faults": [],
+      "expected_behavior": "1. Mission runs for 30 seconds\n        2. Manual abort issued\n        3. State saved to persistent storage\n        4. System restarts\n        5. Resume command issued\n        6. Mission continues from saved checkpoint",
+      "success_criteria": [
+        "State file created on abort",
+        "State file loads without corruption",
+        "Mission resumes at correct positions",
+        "No duplicate coverage of completed areas"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "REC-003",
+      "name": "Hot Drone Replacement",
+      "description": "Failed drone replaced with new drone mid-mission.\n        Tests dynamic swarm membership.",
+      "category": "Recovery Scenarios",
+      "faults": [
+        {
+          "type": "TOTAL_POWER_LOSS",
+          "drone_id": 1,
+          "trigger_time": 20.0,
+          "severity": "FATAL",
+          "params": {}
+        }
+      ],
+      "expected_behavior": "1. Alpha-2 fails at t=20s\n        2. Replacement drone Alpha-4 launched\n        3. Alpha-4 discovers swarm via broadcast\n        4. Alpha-4 receives current mission state\n        5. Alpha-4 assumes Alpha-2's tasks\n        6. Mission continues with Alpha-1, Alpha-3, Alpha-4",
+      "success_criteria": [
+        "New drone discovered within 5 seconds",
+        "New drone receives full state",
+        "New drone productive within 15 seconds",
+        "No task gaps during replacement"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "CON-001",
+      "name": "Split Brain Consensus",
+      "description": "Network partition creates two groups with different views.\n        Tests consistency after partition heals.",
+      "category": "Consensus Edge Cases",
+      "faults": [
+        {
+          "type": "COMMS_PARTIAL_LOSS",
+          "drone_id": 0,
+          "trigger_time": 15.0,
+          "severity": "CRITICAL",
+          "params": {
+            "can_reach": [
+              1
+            ],
+            "duration": 20.0
+          }
+        },
+        {
+          "type": "COMMS_PARTIAL_LOSS",
+          "drone_id": 2,
+          "trigger_time": 15.0,
+          "severity": "CRITICAL",
+          "params": {
+            "can_reach": [],
+            "duration": 20.0
+          }
+        }
+      ],
+      "expected_behavior": "1. Partition: {Alpha-1, Alpha-2} vs {Alpha-3}\n        2. Each partition makes local decisions\n        3. Partition heals at t=35s\n        4. Gossip detects conflicting state versions\n        5. Vector clock comparison resolves conflicts\n        6. Latest/highest priority decisions win",
+      "success_criteria": [
+        "No permanent inconsistency",
+        "Conflicts resolved deterministically",
+        "State converges within 10 seconds",
+        "No duplicate task execution after merge"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "CON-002",
+      "name": "Vector Clock Overflow",
+      "description": "Vector clock counter approaches max value.\n        Tests clock overflow handling.",
+      "category": "Consensus Edge Cases",
+      "faults": [
+        {
+          "type": "MEMORY_EXHAUSTION",
+          "drone_id": -1,
+          "trigger_time": 0.0,
+          "severity": "WARNING",
+          "params": {
+            "vector_clock_start": 2147483548
+          }
+        }
+      ],
+      "expected_behavior": "1. Vector clocks near overflow\n        2. System detects imminent overflow\n        3. Clock reset protocol initiated\n        4. All drones synchronize to new epoch\n        5. Comparisons account for epoch boundary",
+      "success_criteria": [
+        "Overflow detected before occurring",
+        "Reset propagates to all drones",
+        "No state corruption during reset",
+        "Operations continue uninterrupted"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "STR-001",
+      "name": "Rapid Successive Failures",
+      "description": "Multiple faults occur in quick succession.\n        Tests system stability under chaos.",
+      "category": "Stress Tests",
+      "faults": [
+        {
+          "type": "COMMS_DELAYED",
+          "drone_id": 0,
+          "trigger_time": 5.0,
+          "severity": "WARNING",
+          "params": {
+            "latency_min": 0.5,
+            "latency_max": 1.0
+          }
+        },
+        {
+          "type": "GPS_DRIFT",
+          "drone_id": 1,
+          "trigger_time": 7.0,
+          "severity": "WARNING",
+          "params": {
+            "drift_vector": {
+              "x": 5,
+              "y": 5,
+              "z": 0
+            }
+          }
+        },
+        {
+          "type": "SENSOR_FAILURE",
+          "drone_id": 2,
+          "trigger_time": 9.0,
+          "severity": "CRITICAL",
+          "params": {
+            "sensor": "lidar"
+          }
+        },
+        {
+          "type": "BATTERY_CRITICAL",
+          "drone_id": 0,
+          "trigger_time": 12.0,
+          "severity": "CRITICAL",
+          "params": {
+            "battery_level": 20.0
+          }
+        },
+        {
+          "type": "COMMS_PARTIAL_LOSS",
+          "drone_id": 1,
+          "trigger_time": 15.0,
+          "severity": "CRITICAL",
+          "params": {
+            "can_reach": [
+              2
+            ],
+            "duration": 10.0
+          }
+        }
+      ],
+      "expected_behavior": "1. Multiple faults cascade through system\n        2. Each fault handled in priority order\n        3. System degrades gracefully\n        4. No complete system failure\n        5. Recoverable faults eventually recover",
+      "success_criteria": [
+        "System remains responsive",
+        "No deadlocks or livelocks",
+        "At least one drone completes mission",
+        "All faults logged correctly"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "STR-002",
+      "name": "Message Flood",
+      "description": "One drone floods network with messages.\n        Tests rate limiting and fairness.",
+      "category": "Stress Tests",
+      "faults": [
+        {
+          "type": "TASK_QUEUE_OVERFLOW",
+          "drone_id": 0,
+          "trigger_time": 10.0,
+          "severity": "WARNING",
+          "params": {
+            "message_rate": 1000
+          }
+        }
+      ],
+      "expected_behavior": "1. Alpha-1 sends excessive messages\n        2. Other drones detect abnormal rate\n        3. Rate limiting applied to Alpha-1\n        4. Other drones continue normally\n        5. Alpha-1 throttled but not isolated",
+      "success_criteria": [
+        "Network not saturated",
+        "Other drones remain responsive",
+        "Rate limiting kicks in within 2 seconds",
+        "No messages dropped from normal drones"
+      ],
+      "timeout": 120.0
+    },
+    {
+      "id": "STR-003",
+      "name": "Maximum Scale Test",
+      "description": "Scale to maximum supported drones (10).\n        Tests scalability limits.",
+      "category": "Stress Tests",
+      "faults": [],
+      "expected_behavior": "1. Launch 10 drones\n        2. All drones discover each other\n        3. Gossip converges with 10 nodes\n        4. CBBA allocates tasks efficiently\n        5. Coverage completes with minimal overlap",
+      "success_criteria": [
+        "All 10 drones discover peers within 10 seconds",
+        "Gossip converges within 30 seconds",
+        "CBBA allocates without timeout",
+        "Full coverage achieved",
+        "Message overhead stays bounded"
+      ],
+      "timeout": 120.0
+    }
+  ],
+  "total_scenarios": 25
+}

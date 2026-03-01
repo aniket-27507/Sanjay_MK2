@@ -1,0 +1,153 @@
+# =============================================================================
+# Docker Compose for ROS 2 Autonomy Stack
+# =============================================================================
+#
+# Designed for WSL2 with mirrored networking to communicate with
+# Isaac Sim on Windows via loopback.
+#
+# Prerequisites:
+#   - WSL2 Ubuntu 22.04 with Docker Desktop integration
+#   - network/fastdds_profiles.xml mounted into containers
+#   - ROS_DOMAIN_ID=10 set to match Isaac Sim
+#
+# Usage:
+#   docker compose up -d                              # Start base services
+#   docker compose --profile autonomy up -d           # Start autonomy nodes
+#   docker compose --profile visualization up -d      # Start with RViz
+#   docker compose logs -f                            # View logs
+#   docker compose down                               # Stop all services
+#
+# =============================================================================
+
+services:
+  # =======================================================================
+  # Base service with shared configuration
+  # =======================================================================
+  #
+  # This service is NOT started directly. It acts as a template that
+  # other services inherit from using the "extends" keyword.
+  # Think of it like a base class in object-oriented programming.
+  #
+  ros2-base:
+    image: osrf/ros:humble-desktop
+    # Environment variables for ROS 2 + Fast DDS
+    environment:
+      # Domain ID - MUST match Isaac Sim's ROS_DOMAIN_ID
+      - ROS_DOMAIN_ID=10
+
+      # RMW Implementation - must use Fast DDS
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+
+      # Path to Fast DDS profile (mounted from host)
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/opt/config/fastdds_profiles.xml
+
+      # Allow non-localhost communication for WSL2 mirrored networking
+      - ROS_LOCALHOST_ONLY=0
+
+      # Optional: Reduce ROS verbosity
+      - 'RCUTILS_CONSOLE_OUTPUT_FORMAT=[{name}]: {message}'
+
+    # Mount Fast DDS profile into container
+    volumes:
+      - ./network/fastdds_profiles.xml:/opt/config/fastdds_profiles.xml:ro
+      # Shared workspace for code
+      - ./src:/workspace/src
+
+    # Network mode: host
+    # Uses WSL2's network stack, which is mirrored to Windows
+    # This is critical for Windows <-> WSL2 communication
+    network_mode: host
+
+    # Required for some robotics hardware access
+    privileged: true
+
+    # Auto-restart on failure
+    restart: unless-stopped
+
+    # Health check to verify ROS 2 is working
+    healthcheck:
+      test: [ "CMD", "bash", "-c", "source /opt/ros/humble/setup.bash && ros2 topic list" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # =======================================================================
+  # Autonomy Container 1 - Listener Node
+  # =======================================================================
+  #
+  # A simple ROS 2 listener node for testing connectivity.
+  # In production, this would be replaced with your actual autonomy code.
+  #
+  autonomy-1:
+    extends:
+      service: ros2-base
+    container_name: autonomy-1
+    hostname: autonomy-1
+    profiles:
+      - autonomy
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        echo 'Starting listener node...' &&
+        ros2 run demo_nodes_cpp listener
+      "
+
+  # =======================================================================
+  # Autonomy Container 2 - Talker Node
+  # =======================================================================
+  #
+  # A simple ROS 2 talker node for testing connectivity.
+  # Publishes "Hello World" messages that autonomy-1 should receive.
+  #
+  autonomy-2:
+    extends:
+      service: ros2-base
+    container_name: autonomy-2
+    hostname: autonomy-2
+    profiles:
+      - autonomy
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        echo 'Starting talker node...' &&
+        ros2 run demo_nodes_cpp talker
+      "
+
+  # =======================================================================
+  # Optional: RViz for Visualization
+  # =======================================================================
+  #
+  # RViz is a 3D visualization tool for ROS 2. It can show sensor data,
+  # robot models, maps, and more. Only needed for debugging.
+  #
+  # Requires X11 forwarding (DISPLAY variable must be set).
+  #
+  rviz:
+    image: osrf/ros:humble-desktop
+    container_name: rviz
+    profiles:
+      - visualization
+    environment:
+      # Display for GUI
+      - DISPLAY=${DISPLAY}
+
+      # ROS 2 configuration
+      - ROS_DOMAIN_ID=10
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/opt/config/fastdds_profiles.xml
+      - ROS_LOCALHOST_ONLY=0
+
+      # X11 authentication for GUI forwarding
+      - XAUTH=/tmp/.docker.xauth
+    volumes:
+      # Fast DDS profile
+      - ./network/fastdds_profiles.xml:/opt/config/fastdds_profiles.xml:ro
+      # X11 auth
+      - /tmp/.docker.xauth:/tmp/.docker.xauth:ro
+      # RViz config
+      - ./rviz:/root/.rviz2
+    network_mode: host
+    depends_on:
+      ros2-base:
+        condition: service_healthy

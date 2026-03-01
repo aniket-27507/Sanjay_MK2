@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Sanjay Mk2 - Architecture Visualizer</title>
+    <!-- Use Tailwind CSS for rapid styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Use Mermaid for diagrams -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+        }
+
+        .mermaid {
+            background-color: #1e293b;
+            padding: 2rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            margin-bottom: 2rem;
+            display: flex;
+            justify-content: center;
+        }
+
+        .tab-btn.active {
+            background-color: #3b82f6;
+            color: white;
+        }
+
+        .tab-btn {
+            background-color: #334155;
+            color: #cbd5e1;
+            transition: all 0.2s;
+        }
+
+        .tab-btn:hover {
+            background-color: #475569;
+        }
+
+        .tab-content {
+            position: absolute;
+            top: -9999px;
+            left: -9999px;
+            visibility: hidden;
+        }
+
+        .tab-content.active {
+            position: relative;
+            top: 0;
+            left: 0;
+            visibility: visible;
+            animation: fadeIn 0.3s;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(5px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+</head>
+
+<body class="min-h-screen p-8">
+
+    <header class="mb-10 text-center">
+        <h1
+            class="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400 mb-2">
+            Project Sanjay Mk2</h1>
+        <p class="text-xl text-slate-400">Interactive Architecture Visualizer</p>
+    </header>
+
+    <div class="max-w-6xl mx-auto">
+        <!-- Tabs -->
+        <div class="flex flex-wrap justify-center gap-4 mb-8">
+            <button class="tab-btn active px-6 py-3 rounded-lg font-semibold shadow-md" onclick="showTab('hybrid-sim')">
+                <i class="fas fa-network-wired mr-2"></i>Hybrid Simulation Setup (WSL2 + Windows)
+            </button>
+            <button class="tab-btn px-6 py-3 rounded-lg font-semibold shadow-md" onclick="showTab('software-stack')">
+                <i class="fas fa-layer-group mr-2"></i>Software Stack & Modules
+            </button>
+            <button class="tab-btn px-6 py-3 rounded-lg font-semibold shadow-md" onclick="showTab('state-machine')">
+                <i class="fas fa-project-diagram mr-2"></i>Flight State Machine
+            </button>
+            <button class="tab-btn px-6 py-3 rounded-lg font-semibold shadow-md" onclick="showTab('data-flow')">
+                <i class="fas fa-exchange-alt mr-2"></i>Data & Telemetry Flow
+            </button>
+        </div>
+
+        <!-- Tab Contents -->
+
+        <!-- Hybrid Sim Tab -->
+        <div id="hybrid-sim" class="tab-content active">
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                <h2 class="text-2xl font-bold mb-4 text-blue-300">Phase 3: Hybrid Simulation Architecture</h2>
+                <p class="text-slate-300 mb-6">This diagram shows the networking and container architecture that allows
+                    NVIDIA Isaac Sim running natively on Windows to communicate with ROS 2 Autonomy Nodes running in
+                    Docker on WSL2 using Mirrored Networking.</p>
+
+                <div class="mermaid">
+                    %%{init: {'theme': 'dark'}}%%
+                    graph TD
+                    subgraph Windows ["Windows Host"]
+                    rosBridge["Isaac Sim ROS 2 Bridge"]
+                    loopbackW["Loopback Interface (127.0.0.1)"]
+                    rosBridge <--> loopbackW
+                        end
+
+                        subgraph WSL ["WSL2 (Ubuntu 22.04)"]
+                        loopbackL["Loopback Interface (127.0.0.1)"]
+                        rosNode1["autonomy-1 Node"]
+                        rosNode2["autonomy-2 Node"]
+                        loopbackL <--> rosNode1
+                            loopbackL <--> rosNode2
+                                end
+
+                                loopbackW <-->|"Mirrored Networking Mode"| loopbackL
+
+                                    classDef net fill:#451a03,stroke:#f59e0b,stroke-width:2px;
+                                    class loopbackW,loopbackL net;
+                </div>
+            </div>
+        </div>
+
+        <!-- Software Stack Tab -->
+        <div id="software-stack" class="tab-content">
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                <h2 class="text-2xl font-bold mb-4 text-emerald-300">Autonomy Software Stack</h2>
+                <p class="text-slate-300 mb-6">The internal module structure of the Python codebase located in
+                    <code>src/</code>.
+                </p>
+
+                <div class="mermaid">
+                    %%{init: {'theme': 'dark'}}%%
+                    classDiagram
+                    class ConfigManager {
+                    +SwarmConfig swarm
+                    +SimulationConfig sim
+                    +get_drone_config(id)
+                    }
+
+                    class FlightController {
+                    +DroneState state
+                    +FlightMode mode
+                    +arm()
+                    +takeoff(alt)
+                    }
+
+                    class MAVSDKInterface {
+                    +connect()
+                    +start_telemetry()
+                    }
+
+                    class MuJoCoDroneSim {
+                    +spawn_drone()
+                    +step(dt)
+                    }
+
+                    class TaskRedistributor {
+                    +update_heartbeat()
+                    +check_failures()
+                    }
+
+                    class FaultInjector {
+                    +inject_fault()
+                    +update()
+                    }
+
+                    FlightController --> MAVSDKInterface : Uses
+                    MuJoCoDroneSim ..|> MAVSDKInterface : Simulates
+                    TaskRedistributor --> FaultInjector : Monitors
+                </div>
+            </div>
+        </div>
+
+        <!-- State Machine Tab -->
+        <div id="state-machine" class="tab-content">
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                <h2 class="text-2xl font-bold mb-4 text-purple-300">Flight Controller State Machine</h2>
+                <p class="text-slate-300 mb-6">The autonomous execution flow inside <code>FlightController</code> for
+                    each individual drone.</p>
+
+                <div class="mermaid">
+                    %%{init: {'theme': 'dark'}}%%
+                    stateDiagram-v2
+                    [*] --> IDLE
+
+                    IDLE --> ARMING : Target received
+                    ARMING --> TAKING_OFF : Motors armed
+                    TAKING_OFF --> HOVERING : Reached cruise alt
+                    HOVERING --> NAVIGATING : Moving to waypoint
+                    NAVIGATING --> HOVERING : Reached waypoint
+
+                    HOVERING --> LANDING : Mission complete / Low battery
+                    NAVIGATING --> LANDING : Mission complete / Low battery
+
+                    LANDING --> LANDED : Touchdown
+                    LANDED --> IDLE : Disarmed
+                    LANDED --> [*]
+
+                    IDLE --> EMERGENCY : Hardware failure
+                    ARMING --> EMERGENCY : Hardware failure
+                    TAKING_OFF --> EMERGENCY : Hardware failure
+                    HOVERING --> EMERGENCY : Hardware failure
+                    NAVIGATING --> EMERGENCY : Hardware failure
+
+                    EMERGENCY --> LANDING : Fallback procedure
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Flow Tab -->
+        <div id="data-flow" class="tab-content">
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                <h2 class="text-2xl font-bold mb-4 text-amber-300">Swarm Coordination & Telemetry Flow</h2>
+                <p class="text-slate-300 mb-6">How data moves between drones and the central simulation/visualization
+                    server.</p>
+
+                <div class="mermaid">
+                    %%{init: {'theme': 'dark'}}%%
+                    sequenceDiagram
+                    participant WebUI as Web Browser Frontend
+                    participant Server as WebSocket Server (simulation_server.py)
+                    participant Drone1 as Drone 1 Auto
+                    participant Drone2 as Drone 2 Auto
+                    participant Sim as Environment (MuJoCo/Isaac)
+
+                    Server->>WebUI: Stream Telemetry (JSON: Pos, Battery, Mode)
+
+                    loop Physics Loop (240Hz)
+                    Sim->>Drone1: Apply Gravity/Drag
+                    Sim->>Drone2: Apply Gravity/Drag
+                    end
+
+                    loop Control Loop (50Hz)
+                    Sim->>Drone1: Read Sensors (Pos, Vel)
+                    Drone1->>Sim: Motor Commands / Velocity
+
+                    Sim->>Drone2: Read Sensors (Pos, Vel)
+                    Drone2->>Sim: Motor Commands / Velocity
+                    end
+
+                    loop Swarm Check (10Hz)
+                    Drone1->>Server: Heartbeat & Telemetry
+                    Drone2->>Server: Heartbeat & Telemetry
+
+                    Drone1-->>Drone2: Mesh Gossip (Pos, Intent)
+                    Drone2-->>Drone1: Mesh Gossip (Pos, Intent)
+                    end
+
+                    opt Failure Detected
+                    Server->>Drone1: Inject Fault (Motor Failure)
+                    Drone1->>Server: Status -> EMERGENCY
+                    Drone1->>Sim: Cut thrust, auto-rotate
+                    Server->>Drone2: TaskRedistributor -> Take over bounds
+                    Drone2->>Sim: Adjust Waypoint
+                    end
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Script for handling tabs and Mermaid init -->
+    <script>
+        mermaid.initialize({ startOnLoad: true });
+
+        function showTab(tabId) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            // Remove active style from all buttons
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabId).classList.add('active');
+            // Add active style to clicked button
+            event.currentTarget.classList.add('active');
+
+            // Allow mermaid to re-calculate container widths in hidden tabs
+            // Some charts don't render correctly if initialized while display:none
+            // Mermaid doesn't need re-init here natively, but forcing a window resize event helps SVG scaling
+            window.dispatchEvent(new Event('resize'));
+        }
+    </script>
+</body>
+
+</html>

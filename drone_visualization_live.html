@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Sanjay Mk2 - Live Simulation</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: 'SF Pro Display', -apple-system, sans-serif; background: #0a0f1a; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #1a1f2e; }
+        ::-webkit-scrollbar-thumb { background: #3b4558; border-radius: 3px; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .connecting { animation: pulse 1.5s ease-in-out infinite; }
+        
+        @keyframes glow {
+            0%, 100% { filter: drop-shadow(0 0 3px currentColor); }
+            50% { filter: drop-shadow(0 0 8px currentColor); }
+        }
+        
+        .drone-active { animation: glow 2s ease-in-out infinite; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        const WS_URL = 'ws://localhost:8765';
+
+        const DroneSimulationLive = () => {
+            const [connected, setConnected] = useState(false);
+            const [state, setState] = useState(null);
+            const [selectedDrone, setSelectedDrone] = useState(0);
+            const [viewMode, setViewMode] = useState('topdown');
+            const wsRef = useRef(null);
+            const reconnectRef = useRef(null);
+
+            // WebSocket connection
+            const connect = useCallback(() => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) return;
+
+                console.log('Connecting to', WS_URL);
+                const ws = new WebSocket(WS_URL);
+
+                ws.onopen = () => {
+                    console.log('Connected to simulation server');
+                    setConnected(true);
+                    if (reconnectRef.current) {
+                        clearTimeout(reconnectRef.current);
+                        reconnectRef.current = null;
+                    }
+                };
+
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'state') {
+                            setState(data);
+                        }
+                    } catch (e) {
+                        console.error('Failed to parse message:', e);
+                    }
+                };
+
+                ws.onclose = () => {
+                    console.log('Disconnected from server');
+                    setConnected(false);
+                    wsRef.current = null;
+                    // Reconnect after 2 seconds
+                    reconnectRef.current = setTimeout(connect, 2000);
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+
+                wsRef.current = ws;
+            }, []);
+
+            useEffect(() => {
+                connect();
+                return () => {
+                    if (wsRef.current) wsRef.current.close();
+                    if (reconnectRef.current) clearTimeout(reconnectRef.current);
+                };
+            }, [connect]);
+
+            const sendCommand = (command, data = {}) => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify({ command, ...data }));
+                }
+            };
+            
+            const injectFault = (faultType, droneId, duration = 0) => {
+                sendCommand('inject_fault', { faultType, droneId, duration });
+            };
+            
+            const loadScenario = (scenarioId) => {
+                sendCommand('load_scenario', { scenarioId });
+            };
+
+            const getModeColor = (mode) => ({
+                'IDLE': '#6b7280', 'ARMING': '#f59e0b', 'ARMED': '#f59e0b',
+                'TAKING_OFF': '#3b82f6', 'HOVERING': '#10b981', 'NAVIGATING': '#8b5cf6',
+                'LANDING': '#f97316', 'LANDED': '#6b7280', 'EMERGENCY': '#ef4444'
+            }[mode] || '#6b7280');
+
+            if (!connected || !state) {
+                return (
+                    <div style={{ 
+                        minHeight: '100vh', 
+                        background: 'linear-gradient(135deg, #0a0f1a 0%, #1a1f2e 100%)',
+                        display: 'flex', 
+                        flexDirection: 'column',
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        color: 'white'
+                    }}>
+                        <div style={{ fontSize: '48px', marginBottom: '20px' }}>🛸</div>
+                        <h1 style={{ fontSize: '24px', fontWeight: '600', margin: '0 0 12px 0' }}>
+                            Project Sanjay Mk2
+                        </h1>
+                        <p className="connecting" style={{ color: '#60a5fa', fontSize: '16px' }}>
+                            Connecting to simulation server...
+                        </p>
+                        <p style={{ color: '#6b7280', fontSize: '14px', marginTop: '20px' }}>
+                            Make sure the server is running:
+                        </p>
+                        <code style={{ 
+                            background: '#1f2937', 
+                            padding: '12px 20px', 
+                            borderRadius: '8px',
+                            fontSize: '14px',
+                            color: '#10b981',
+                            marginTop: '8px'
+                        }}>
+                            python scripts/simulation_server.py
+                        </code>
+                    </div>
+                );
+            }
+
+            const { drones, time, isRunning, messages, allTasksComplete, config, scenarios, activeScenario, operationalDrones, failedDrones } = state;
+            const selectedDroneData = drones[selectedDrone];
+
+            return (
+                <div style={{ 
+                    minHeight: '100vh', 
+                    background: 'linear-gradient(135deg, #0a0f1a 0%, #1a1f2e 100%)',
+                    color: 'white', 
+                    padding: '16px' 
+                }}>
+                    {/* Header */}
+                    <div style={{ 
+                        display: 'flex', 
+                        justifyContent: 'space-between', 
+                        alignItems: 'center', 
+                        marginBottom: '16px',
+                        flexWrap: 'wrap',
+                        gap: '12px'
+                    }}>
+                        <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                <h1 style={{ fontSize: '24px', fontWeight: 'bold', color: '#60a5fa', margin: 0 }}>
+                                    Project Sanjay Mk2
+                                </h1>
+                                <span style={{ 
+                                    background: connected ? '#059669' : '#dc2626',
+                                    padding: '4px 10px',
+                                    borderRadius: '12px',
+                                    fontSize: '11px',
+                                    fontWeight: '600'
+                                }}>
+                                    {connected ? '● LIVE' : '○ OFFLINE'}
+                                </span>
+                            </div>
+                            <p style={{ fontSize: '14px', color: '#9ca3af', margin: '4px 0 0 0' }}>
+                                Hexagonal Coverage - Python Backend Connected
+                            </p>
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                                onClick={() => sendCommand(isRunning ? 'pause' : 'start')}
+                                style={{
+                                    padding: '10px 24px',
+                                    borderRadius: '8px',
+                                    border: 'none',
+                                    background: isRunning 
+                                        ? 'linear-gradient(135deg, #ca8a04 0%, #a16207 100%)' 
+                                        : 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)',
+                                    color: 'white',
+                                    fontWeight: '600',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                    boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+                                }}
+                            >
+                                {isRunning ? '⏸ Pause' : '▶ Start Mission'}
+                            </button>
+                            <button
+                                onClick={() => sendCommand('reset')}
+                                style={{
+                                    padding: '10px 20px',
+                                    borderRadius: '8px',
+                                    border: '1px solid #374151',
+                                    background: '#1f2937',
+                                    color: 'white',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                ↺ Reset
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* View Tabs */}
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                        {['topdown', '3d', 'stateMachine', 'faultTest'].map(mode => (
+                            <button
+                                key={mode}
+                                onClick={() => setViewMode(mode)}
+                                style={{
+                                    padding: '8px 16px',
+                                    borderRadius: '8px',
+                                    border: 'none',
+                                    background: viewMode === mode 
+                                        ? (mode === 'faultTest' ? 'linear-gradient(135deg, #dc2626 0%, #991b1b 100%)' : 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)')
+                                        : '#1f2937',
+                                    color: 'white',
+                                    cursor: 'pointer',
+                                    fontSize: '14px',
+                                    transition: 'all 0.2s'
+                                }}
+                            >
+                                {mode === 'topdown' ? '📍 Top Down' : mode === '3d' ? '🎯 3D View' : mode === 'stateMachine' ? '⚙️ State Machine' : '🧪 Fault Testing'}
+                            </button>
+                        ))}
+                        {failedDrones && failedDrones.length > 0 && (
+                            <span style={{ 
+                                padding: '8px 12px', 
+                                background: '#7f1d1d', 
+                                borderRadius: '8px',
+                                fontSize: '13px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px'
+                            }}>
+                                ⚠️ {failedDrones.length} drone(s) failed | {operationalDrones}/3 operational
+                            </span>
+                        )}
+                    </div>
+
+                    {/* Main Content */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: '16px' }}>
+                        {/* Visualization Panel */}
+                        <div style={{ 
+                            background: 'linear-gradient(135deg, #1f2937 0%, #111827 100%)',
+                            borderRadius: '12px',
+                            padding: '16px',
+                            border: '1px solid #374151'
+                        }}>
+                            {viewMode === 'stateMachine' ? (
+                                <StateMachine currentMode={selectedDroneData.mode} getModeColor={getModeColor} />
+                            ) : viewMode === 'faultTest' ? (
+                                <FaultTestPanel 
+                                    drones={drones}
+                                    scenarios={scenarios || []}
+                                    activeScenario={activeScenario}
+                                    injectFault={injectFault}
+                                    loadScenario={loadScenario}
+                                    sendCommand={sendCommand}
+                                />
+                            ) : (
+                                <HexagonView
+                                    drones={drones}
+                                    config={config}
+                                    selectedDrone={selectedDrone}
+                                    setSelectedDrone={setSelectedDrone}
+                                    viewMode={viewMode}
+                                    getModeColor={getModeColor}
+                                />
+                            )}
+                        </div>
+
+                        {/* Right Panel */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            {/* Fleet Status */}
+                            <div style={{ 
+                                background: 'linear-gradient(135deg, #1f2937 0%, #111827 100%)',
+                                borderRadius: '12px',
+                                padding: '14px',
+                                border: '1px solid #374151'
+                            }}>
+                                <h3 style={{ fontSize: '14px', fontWeight: '600', margin: '0 0 12px 0', color: '#60a5fa' }}>
+                                    🛸 Alpha Fleet
+                                </h3>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                    {drones.map((drone, idx) => (
+                                        <button
+                                            key={drone.id}
+                                            onClick={() => setSelectedDrone(idx)}
+                                            style={{
+                                                padding: '12px',
+                                                borderRadius: '8px',
+                                                border: selectedDrone === idx ? '2px solid #3b82f6' : '1px solid #374151',
+                                                background: selectedDrone === idx 
+                                                    ? 'linear-gradient(135deg, #1e3a5f 0%, #1e293b 100%)' 
+                                                    : '#111827',
+                                                color: 'white',
+                                                cursor: 'pointer',
+                                                textAlign: 'left',
+                                                transition: 'all 0.2s'
+                                            }}
+                                        >
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                                    <div style={{ 
+                                                        width: '12px', 
+                                                        height: '12px', 
+                                                        borderRadius: '50%', 
+                                                        background: drone.color,
+                                                        boxShadow: `0 0 8px ${drone.color}`
+                                                    }} />
+                                                    <span style={{ fontWeight: '600' }}>{drone.name}</span>
+                                                    {drone.taskComplete && <span style={{ color: '#22c55e' }}>✓</span>}
+                                                </div>
+                                                <span style={{
+                                                    fontSize: '11px',
+                                                    padding: '3px 10px',
+                                                    borderRadius: '4px',
+                                                    background: getModeColor(drone.mode),
+                                                    fontWeight: '500'
+                                                }}>
+                                                    {drone.mode}
+                                                </span>
+                                            </div>
+                                            <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '6px' }}>
+                                                Home: V{drone.homeVertex} | Alt: {drone.position.z.toFixed(1)}m | Batt: {drone.battery.toFixed(0)}%
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Telemetry */}
+                            <div style={{ 
+                                background: 'linear-gradient(135deg, #1f2937 0%, #111827 100%)',
+                                borderRadius: '12px',
+                                padding: '14px',
+                                border: '1px solid #374151'
+                            }}>
+                                <h3 style={{ fontSize: '14px', fontWeight: '600', margin: '0 0 12px 0', color: '#22c55e' }}>
+                                    📡 Telemetry - {selectedDroneData.name}
+                                </h3>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '12px' }}>
+                                    <TelemetryCard label="Position" value={`(${selectedDroneData.position.x.toFixed(1)}, ${selectedDroneData.position.y.toFixed(1)})`} />
+                                    <TelemetryCard label="Altitude" value={`${selectedDroneData.position.z.toFixed(1)} m`} />
+                                    <TelemetryCard 
+                                        label="Speed" 
+                                        value={`${Math.sqrt(
+                                            selectedDroneData.velocity.x**2 + 
+                                            selectedDroneData.velocity.y**2 + 
+                                            selectedDroneData.velocity.z**2
+                                        ).toFixed(1)} m/s`} 
+                                    />
+                                    <TelemetryCard 
+                                        label="Battery" 
+                                        value={`${selectedDroneData.battery.toFixed(1)}%`}
+                                        color={selectedDroneData.battery < 20 ? '#ef4444' : '#22c55e'}
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Mission Status */}
+                            <div style={{ 
+                                background: 'linear-gradient(135deg, #1f2937 0%, #111827 100%)',
+                                borderRadius: '12px',
+                                padding: '14px',
+                                border: '1px solid #374151'
+                            }}>
+                                <h3 style={{ fontSize: '14px', fontWeight: '600', margin: '0 0 12px 0', color: '#f59e0b' }}>
+                                    🎯 Mission Status
+                                </h3>
+                                <div style={{ marginBottom: '10px' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '6px' }}>
+                                        <span>Coverage Progress</span>
+                                        <span style={{ color: '#22c55e' }}>
+                                            {Math.round(drones.filter(d => d.taskComplete).length / 3 * 100)}%
+                                        </span>
+                                    </div>
+                                    <div style={{ background: '#1f2937', borderRadius: '6px', height: '10px', overflow: 'hidden' }}>
+                                        <div style={{
+                                            background: 'linear-gradient(90deg, #22c55e 0%, #16a34a 100%)',
+                                            borderRadius: '6px',
+                                            height: '100%',
+                                            width: `${drones.filter(d => d.taskComplete).length / 3 * 100}%`,
+                                            transition: 'width 0.3s'
+                                        }} />
+                                    </div>
+                                </div>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '6px' }}>
+                                    {drones.map((d, i) => (
+                                        <div key={d.id} style={{
+                                            padding: '8px',
+                                            borderRadius: '6px',
+                                            textAlign: 'center',
+                                            fontSize: '12px',
+                                            background: d.taskComplete ? 'rgba(34,197,94,0.15)' : '#111827',
+                                            color: d.taskComplete ? '#22c55e' : '#9ca3af',
+                                            border: `1px solid ${d.taskComplete ? '#22c55e' : '#374151'}`
+                                        }}>
+                                            Sec {['A', 'B', 'C'][i]} {d.taskComplete && '✓'}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Communication Log */}
+                            <div style={{ 
+                                background: 'linear-gradient(135deg, #1f2937 0%, #111827 100%)',
+                                borderRadius: '12px',
+                                padding: '14px',
+                                border: '1px solid #374151',
+                                flex: 1,
+                                minHeight: '160px'
+                            }}>
+                                <h3 style={{ fontSize: '14px', fontWeight: '600', margin: '0 0 12px 0', color: '#a855f7' }}>
+                                    💬 Swarm Communication
+                                </h3>
+                                <div style={{ maxHeight: '150px', overflowY: 'auto', fontSize: '11px' }}>
+                                    {messages.length === 0 ? (
+                                        <div style={{ color: '#6b7280', fontStyle: 'italic' }}>Waiting for messages...</div>
+                                    ) : (
+                                        messages.map((msg, idx) => (
+                                            <div key={idx} style={{
+                                                padding: '8px 10px',
+                                                marginBottom: '6px',
+                                                borderRadius: '6px',
+                                                background: msg.type === 'comm' ? 'rgba(168,85,247,0.1)' :
+                                                           msg.type === 'success' ? 'rgba(34,197,94,0.1)' : 'rgba(55,65,81,0.3)',
+                                                borderLeft: `3px solid ${msg.type === 'comm' ? '#a855f7' : msg.type === 'success' ? '#22c55e' : '#6b7280'}`
+                                            }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#9ca3af', marginBottom: '2px' }}>
+                                                    <span style={{ fontWeight: '600', color: 'white' }}>{msg.from}</span>
+                                                    <span>→ {msg.to}</span>
+                                                </div>
+                                                <div style={{ color: '#d1d5db' }}>{msg.content}</div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Footer */}
+                    <div style={{ 
+                        marginTop: '16px', 
+                        textAlign: 'center', 
+                        fontSize: '12px', 
+                        color: '#6b7280',
+                        padding: '12px',
+                        background: '#111827',
+                        borderRadius: '8px'
+                    }}>
+                        ⏱ Time: {time.toFixed(2)}s | 
+                        📐 Hexagon: {config?.hexRadius || 50}m radius | 
+                        ✈️ Cruise: {config?.cruiseAltitude || 25}m | 
+                        🔗 Backend: Python WebSocket
+                    </div>
+                </div>
+            );
+        };
+
+        // Telemetry Card Component
+        const TelemetryCard = ({ label, value, color }) => (
+            <div style={{ background: '#111827', padding: '10px', borderRadius: '8px', border: '1px solid #374151' }}>
+                <div style={{ color: '#9ca3af', fontSize: '11px' }}>{label}</div>
+                <div style={{ fontFamily: 'monospace', color: color || 'white', fontWeight: '500' }}>{value}</div>
+            </div>
+        );
+
+        // Hexagon Visualization Component
+        const HexagonView = ({ drones, config, selectedDrone, setSelectedDrone, viewMode, getModeColor }) => {
+            const width = 620;
+            const height = 440;
+            const scale = 3.2;
+            const centerX = width / 2;
+            const centerY = height / 2;
+
+            const hexVertices = config?.hexVertices || [];
+            const droneHomeVertices = [0, 2, 4];
+            const droneColors = ['#3b82f6', '#10b981', '#f59e0b'];
+
+            return (
+                <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ display: 'block' }}>
+                    {/* Background gradient */}
+                    <defs>
+                        <radialGradient id="bgGrad" cx="50%" cy="50%" r="70%">
+                            <stop offset="0%" stopColor="#1f2937" />
+                            <stop offset="100%" stopColor="#0a0f1a" />
+                        </radialGradient>
+                        <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+                            <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#1a2332" strokeWidth="1"/>
+                        </pattern>
+                    </defs>
+                    <rect width={width} height={height} fill="url(#bgGrad)" />
+                    <rect width={width} height={height} fill="url(#grid)" opacity="0.5" />
+
+                    {/* Hexagon sections fill */}
+                    {hexVertices.length > 0 && [0, 1, 2].map(i => {
+                        const home = droneHomeVertices[i];
+                        const next = (home + 1) % 6;
+                        const prev = (home + 5) % 6;
+                        const v = hexVertices;
+                        return (
+                            <g key={i}>
+                                <polygon
+                                    points={`${centerX},${centerY} ${centerX + v[home].x * scale},${centerY - v[home].y * scale} ${centerX + v[next].x * scale},${centerY - v[next].y * scale}`}
+                                    fill={droneColors[i]}
+                                    opacity="0.06"
+                                />
+                                <polygon
+                                    points={`${centerX},${centerY} ${centerX + v[home].x * scale},${centerY - v[home].y * scale} ${centerX + v[prev].x * scale},${centerY - v[prev].y * scale}`}
+                                    fill={droneColors[i]}
+                                    opacity="0.06"
+                                />
+                            </g>
+                        );
+                    })}
+
+                    {/* Hexagon outline */}
+                    {hexVertices.length > 0 && (
+                        <polygon
+                            points={hexVertices.map(v => `${centerX + v.x * scale},${centerY - v.y * scale}`).join(' ')}
+                            fill="none"
+                            stroke="#3b4558"
+                            strokeWidth="2"
+                        />
+                    )}
+
+                    {/* Spokes */}
+                    {hexVertices.map((v, i) => (
+                        <line
+                            key={i}
+                            x1={centerX}
+                            y1={centerY}
+                            x2={centerX + v.x * scale}
+                            y2={centerY - v.y * scale}
+                            stroke="#2a3444"
+                            strokeWidth="1"
+                            strokeDasharray="4,4"
+                        />
+                    ))}
+
+                    {/* Center */}
+                    <circle cx={centerX} cy={centerY} r="6" fill="#4b5563" stroke="#6b7280" strokeWidth="2" />
+                    <text x={centerX} y={centerY + 4} textAnchor="middle" fill="white" fontSize="9" fontWeight="bold">C</text>
+
+                    {/* Vertices */}
+                    {hexVertices.map((v, idx) => {
+                        const isHome = droneHomeVertices.includes(idx);
+                        const droneIdx = droneHomeVertices.indexOf(idx);
+                        const x = centerX + v.x * scale;
+                        const y = centerY - v.y * scale;
+                        return (
+                            <g key={idx}>
+                                <circle
+                                    cx={x} cy={y}
+                                    r={isHome ? 16 : 10}
+                                    fill={isHome ? droneColors[droneIdx] : '#2a3444'}
+                                    opacity={isHome ? 0.25 : 1}
+                                    stroke={isHome ? droneColors[droneIdx] : '#4b5563'}
+                                    strokeWidth="2"
+                                />
+                                <text x={x} y={y + 4} textAnchor="middle" fill="white" fontSize="11" fontWeight="bold">
+                                    {idx}
+                                </text>
+                            </g>
+                        );
+                    })}
+
+                    {/* Drone trails */}
+                    {drones.map(drone => (
+                        <polyline
+                            key={`trail-${drone.id}`}
+                            points={(drone.trail || []).map(p => `${centerX + p.x * scale},${centerY - p.y * scale}`).join(' ')}
+                            fill="none"
+                            stroke={drone.color}
+                            strokeWidth="3"
+                            opacity="0.6"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        />
+                    ))}
+
+                    {/* Drones */}
+                    {drones.map((drone, idx) => {
+                        const x = centerX + drone.position.x * scale;
+                        const y = centerY - drone.position.y * scale;
+                        const size = selectedDrone === idx ? 18 : 14;
+                        const isSelected = selectedDrone === idx;
+                        const isActive = drone.mode !== 'IDLE' && drone.mode !== 'LANDED';
+
+                        return (
+                            <g 
+                                key={drone.id} 
+                                onClick={() => setSelectedDrone(idx)} 
+                                style={{ cursor: 'pointer' }}
+                                className={isActive ? 'drone-active' : ''}
+                            >
+                                {/* 3D altitude line */}
+                                {viewMode === '3d' && drone.position.z > 1 && (
+                                    <>
+                                        <line
+                                            x1={x} y1={y}
+                                            x2={x} y2={y + drone.position.z * 2}
+                                            stroke={drone.color}
+                                            strokeWidth="1"
+                                            strokeDasharray="4,4"
+                                            opacity="0.4"
+                                        />
+                                        <ellipse
+                                            cx={x} cy={y + drone.position.z * 2}
+                                            rx="12" ry="6"
+                                            fill={drone.color}
+                                            opacity="0.15"
+                                        />
+                                    </>
+                                )}
+
+                                {/* Selection ring */}
+                                {isSelected && (
+                                    <circle 
+                                        cx={x} cy={y} r={size + 8} 
+                                        fill="none" 
+                                        stroke="white" 
+                                        strokeWidth="2" 
+                                        opacity="0.6"
+                                        strokeDasharray="4,4"
+                                    />
+                                )}
+
+                                {/* Drone body */}
+                                <polygon
+                                    points={`${x},${y-size} ${x+size},${y+size*0.6} ${x-size},${y+size*0.6}`}
+                                    fill={drone.color}
+                                    stroke={isSelected ? 'white' : 'rgba(0,0,0,0.4)'}
+                                    strokeWidth={isSelected ? 2.5 : 1.5}
+                                    style={{ filter: `drop-shadow(0 0 ${isActive ? '6px' : '3px'} ${drone.color})` }}
+                                />
+
+                                {/* Task complete badge */}
+                                {drone.taskComplete && drone.mode === 'HOVERING' && (
+                                    <circle cx={x + size} cy={y - size} r="7" fill="#22c55e" stroke="white" strokeWidth="2" />
+                                )}
+
+                                {/* Label */}
+                                <rect x={x - 32} y={y - size - 26} width="64" height="18" rx="4" fill="rgba(0,0,0,0.8)" />
+                                <text x={x} y={y - size - 12} textAnchor="middle" fill="white" fontSize="11" fontWeight="500">
+                                    {drone.name} [{drone.position.z.toFixed(0)}m]
+                                </text>
+                            </g>
+                        );
+                    })}
+
+                    {/* Legend */}
+                    <g transform="translate(16, 16)">
+                        <rect width="140" height="95" fill="rgba(10,15,26,0.95)" rx="8" stroke="#374151" />
+                        <text x="12" y="20" fill="white" fontSize="12" fontWeight="bold">Coverage Sections</text>
+                        {drones.map((d, i) => (
+                            <g key={i} transform={`translate(12, ${35 + i * 20})`}>
+                                <rect width="14" height="14" fill={d.color} rx="3" />
+                                <text x="22" y="11" fill="white" fontSize="11">
+                                    {d.name}: V{d.homeVertex} area
+                                </text>
+                            </g>
+                        ))}
+                    </g>
+
+                    {/* Compass */}
+                    <g transform={`translate(${width - 50}, 50)`}>
+                        <circle r="32" fill="rgba(10,15,26,0.95)" stroke="#374151" />
+                        <text y="-12" textAnchor="middle" fill="#ef4444" fontSize="14" fontWeight="bold">N</text>
+                        <text x="14" y="5" textAnchor="middle" fill="#9ca3af" fontSize="11">E</text>
+                        <text y="20" textAnchor="middle" fill="#9ca3af" fontSize="11">S</text>
+                        <text x="-14" y="5" textAnchor="middle" fill="#9ca3af" fontSize="11">W</text>
+                    </g>
+                </svg>
+            );
+        };
+
+        // State Machine Component
+        const StateMachine = ({ currentMode, getModeColor }) => {
+            const states = [
+                { id: 'IDLE', x: 80, y: 200 },
+                { id: 'ARMING', x: 200, y: 200 },
+                { id: 'ARMED', x: 320, y: 200 },
+                { id: 'TAKING_OFF', x: 440, y: 200 },
+                { id: 'HOVERING', x: 440, y: 100 },
+                { id: 'NAVIGATING', x: 560, y: 100 },
+                { id: 'LANDING', x: 320, y: 300 },
+                { id: 'LANDED', x: 200, y: 300 },
+                { id: 'EMERGENCY', x: 560, y: 300 }
+            ];
+
+            const arrows = [
+                { from: 'IDLE', to: 'ARMING' },
+                { from: 'ARMING', to: 'ARMED' },
+                { from: 'ARMED', to: 'TAKING_OFF' },
+                { from: 'TAKING_OFF', to: 'HOVERING' },
+                { from: 'HOVERING', to: 'NAVIGATING' },
+                { from: 'NAVIGATING', to: 'HOVERING' },
+                { from: 'HOVERING', to: 'LANDING' },
+                { from: 'LANDING', to: 'LANDED' },
+                { from: 'LANDED', to: 'IDLE' }
+            ];
+
+            return (
+                <div style={{ height: '440px', position: 'relative' }}>
+                    <svg width="100%" height="100%" viewBox="0 0 660 400">
+                        <defs>
+                            <radialGradient id="smBg" cx="50%" cy="50%" r="70%">
+                                <stop offset="0%" stopColor="#1f2937" />
+                                <stop offset="100%" stopColor="#0a0f1a" />
+                            </radialGradient>
+                            <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                                <polygon points="0 0, 10 3.5, 0 7" fill="#4b5563" />
+                            </marker>
+                        </defs>
+                        <rect width="660" height="400" fill="url(#smBg)" />
+
+                        {arrows.map((arrow, idx) => {
+                            const from = states.find(s => s.id === arrow.from);
+                            const to = states.find(s => s.id === arrow.to);
+                            return (
+                                <line key={idx}
+                                    x1={from.x + 52} y1={from.y}
+                                    x2={to.x - 52} y2={to.y}
+                                    stroke="#4b5563" strokeWidth="2"
+                                    markerEnd="url(#arrow)"
+                                />
+                            );
+                        })}
+
+                        {states.map(state => (
+                            <g key={state.id}>
+                                <rect
+                                    x={state.x - 52} y={state.y - 24}
+                                    width="104" height="48" rx="8"
+                                    fill={state.id === currentMode ? getModeColor(state.id) : '#1f2937'}
+                                    stroke={state.id === currentMode ? 'white' : '#4b5563'}
+                                    strokeWidth={state.id === currentMode ? 3 : 1}
+                                    style={state.id === currentMode ? { filter: `drop-shadow(0 0 10px ${getModeColor(state.id)})` } : {}}
+                                />
+                                <text x={state.x} y={state.y + 5} textAnchor="middle" fill="white" fontSize="13"
+                                    fontWeight={state.id === currentMode ? 'bold' : 'normal'}>
+                                    {state.id}
+                                </text>
+                            </g>
+                        ))}
+
+                        <text x="20" y="380" fill="#9ca3af" fontSize="13">
+                            Current State: <tspan fill="white" fontWeight="bold">{currentMode}</tspan>
+                        </text>
+                    </svg>
+                </div>
+            );
+        };
+
+        // Fault Test Panel Component
+        const FaultTestPanel = ({ drones, scenarios, activeScenario, injectFault, loadScenario, sendCommand }) => {
+            const faultTypes = [
+                { id: 'motor_failure', name: 'Motor Failure', icon: '⚙️', severity: 'fatal', desc: 'Drone motor fails, emergency landing' },
+                { id: 'power_loss', name: 'Power Loss', icon: '🔌', severity: 'fatal', desc: 'Total power failure, drone falls' },
+                { id: 'battery_critical', name: 'Battery Critical', icon: '🔋', severity: 'critical', desc: 'Battery drops to 15%, RTL' },
+                { id: 'comms_loss', name: 'Comms Loss', icon: '📡', severity: 'critical', desc: 'Communication blackout' },
+                { id: 'gps_loss', name: 'GPS Loss', icon: '🛰️', severity: 'critical', desc: 'GPS signal lost, hold position' },
+            ];
+
+            return (
+                <div style={{ height: '440px', overflow: 'auto' }}>
+                    <div style={{ marginBottom: '16px' }}>
+                        <h3 style={{ color: '#ef4444', margin: '0 0 8px 0', fontSize: '16px' }}>
+                            🧪 Fault Injection Testing
+                        </h3>
+                        <p style={{ color: '#9ca3af', fontSize: '12px', margin: 0 }}>
+                            Inject faults to test autonomous task redistribution and swarm resilience
+                        </p>
+                    </div>
+
+                    {/* Quick Fault Injection */}
+                    <div style={{ 
+                        background: '#111827', 
+                        borderRadius: '8px', 
+                        padding: '12px', 
+                        marginBottom: '12px',
+                        border: '1px solid #374151'
+                    }}>
+                        <h4 style={{ color: '#f59e0b', margin: '0 0 10px 0', fontSize: '13px' }}>
+                            ⚡ Quick Fault Injection
+                        </h4>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                            {faultTypes.map(fault => (
+                                <div key={fault.id} style={{ 
+                                    background: '#1f2937', 
+                                    borderRadius: '6px', 
+                                    padding: '8px',
+                                    border: '1px solid #374151'
+                                }}>
+                                    <div style={{ fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>
+                                        {fault.icon} {fault.name}
+                                    </div>
+                                    <div style={{ fontSize: '10px', color: '#6b7280', marginBottom: '8px' }}>
+                                        {fault.desc}
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '4px' }}>
+                                        {drones.map((drone, idx) => (
+                                            <button
+                                                key={idx}
+                                                onClick={() => injectFault(fault.id, idx)}
+                                                disabled={drone.isFailed}
+                                                style={{
+                                                    flex: 1,
+                                                    padding: '4px 6px',
+                                                    borderRadius: '4px',
+                                                    border: 'none',
+                                                    background: drone.isFailed ? '#374151' : drone.color,
+                                                    color: 'white',
+                                                    fontSize: '10px',
+                                                    cursor: drone.isFailed ? 'not-allowed' : 'pointer',
+                                                    opacity: drone.isFailed ? 0.5 : 1
+                                                }}
+                                            >
+                                                D{idx + 1}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        <button
+                            onClick={() => sendCommand('clear_faults')}
+                            style={{
+                                marginTop: '10px',
+                                width: '100%',
+                                padding: '8px',
+                                borderRadius: '6px',
+                                border: '1px solid #22c55e',
+                                background: 'transparent',
+                                color: '#22c55e',
+                                cursor: 'pointer',
+                                fontSize: '12px'
+                            }}
+                        >
+                            ✓ Clear All Faults & Recover
+                        </button>
+                    </div>
+
+                    {/* Test Scenarios */}
+                    <div style={{ 
+                        background: '#111827', 
+                        borderRadius: '8px', 
+                        padding: '12px',
+                        border: '1px solid #374151'
+                    }}>
+                        <h4 style={{ color: '#a855f7', margin: '0 0 10px 0', fontSize: '13px' }}>
+                            📋 Predefined Test Scenarios
+                        </h4>
+                        {activeScenario && (
+                            <div style={{ 
+                                background: '#4c1d95', 
+                                padding: '8px 10px', 
+                                borderRadius: '6px', 
+                                marginBottom: '10px',
+                                fontSize: '12px'
+                            }}>
+                                Active: <strong>{activeScenario}</strong>
+                            </div>
+                        )}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {(scenarios || []).map(scenario => (
+                                <button
+                                    key={scenario.id}
+                                    onClick={() => loadScenario(scenario.id)}
+                                    style={{
+                                        padding: '10px',
+                                        borderRadius: '6px',
+                                        border: activeScenario === scenario.id ? '2px solid #a855f7' : '1px solid #374151',
+                                        background: activeScenario === scenario.id ? '#1e1b4b' : '#1f2937',
+                                        color: 'white',
+                                        cursor: 'pointer',
+                                        textAlign: 'left'
+                                    }}
+                                >
+                                    <div style={{ fontSize: '12px', fontWeight: '600' }}>{scenario.name}</div>
+                                    <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '2px' }}>
+                                        {scenario.description} ({scenario.fault_count} fault{scenario.fault_count !== 1 ? 's' : ''})
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                        <p style={{ fontSize: '10px', color: '#6b7280', marginTop: '10px', marginBottom: 0 }}>
+                            💡 Load a scenario, then click Start Mission. Faults will inject automatically at timed intervals.
+                        </p>
+                    </div>
+
+                    {/* Drone Status */}
+                    <div style={{ 
+                        background: '#111827', 
+                        borderRadius: '8px', 
+                        padding: '12px',
+                        marginTop: '12px',
+                        border: '1px solid #374151'
+                    }}>
+                        <h4 style={{ color: '#60a5fa', margin: '0 0 10px 0', fontSize: '13px' }}>
+                            📊 Current Drone Status
+                        </h4>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {drones.map((drone, idx) => (
+                                <div key={idx} style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    padding: '8px',
+                                    borderRadius: '6px',
+                                    background: drone.isFailed ? '#7f1d1d' : '#1f2937',
+                                    border: `1px solid ${drone.isFailed ? '#ef4444' : '#374151'}`
+                                }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <div style={{ 
+                                            width: '10px', 
+                                            height: '10px', 
+                                            borderRadius: '50%', 
+                                            background: drone.isFailed ? '#ef4444' : drone.color 
+                                        }} />
+                                        <span style={{ fontSize: '12px', fontWeight: '500' }}>{drone.name}</span>
+                                    </div>
+                                    <div style={{ fontSize: '11px' }}>
+                                        {drone.isFailed ? (
+                                            <span style={{ color: '#ef4444' }}>❌ {drone.failureReason || 'FAILED'}</span>
+                                        ) : (
+                                            <span style={{ color: '#22c55e' }}>✓ {drone.mode}</span>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        ReactDOM.render(<DroneSimulationLive />, document.getElementById('root'));
+    </script>
+</body>
+</html>
