@@ -1,0 +1,65 @@
+# =============================================================================
+# Project Sanjay Mk2 - Isaac Sim Bridge Configuration
+# =============================================================================
+#
+# Defines drone-to-topic mappings and fusion parameters for the
+# Isaac Sim ↔ ROS 2 bridge node.
+#
+# Used by: src/integration/isaac_sim_bridge.py
+# =============================================================================
+
+# --- Drone Definitions ---
+# Each entry maps a drone name to its type, operating altitude,
+# and the ROS 2 topics published by Isaac Sim's ROS 2 Bridge.
+
+drones:
+  alpha_0:
+    type: ALPHA
+    altitude: 65.0
+    rgb_fov_deg: 84.0       # Wide FOV for surveillance
+    topics:
+      rgb: /alpha_0/rgb/image_raw
+      depth: /alpha_0/depth/image_raw
+      odom: /alpha_0/odom
+      imu: /alpha_0/imu
+      cmd_vel: /alpha_0/cmd_vel
+
+  alpha_1:
+    type: ALPHA
+    altitude: 65.0
+    rgb_fov_deg: 84.0
+    topics:
+      rgb: /alpha_1/rgb/image_raw
+      depth: /alpha_1/depth/image_raw
+      odom: /alpha_1/odom
+      imu: /alpha_1/imu
+      cmd_vel: /alpha_1/cmd_vel
+
+  beta_0:
+    type: BETA
+    altitude: 25.0
+    rgb_fov_deg: 50.0       # Narrow FOV for identification
+    topics:
+      rgb: /beta_0/rgb/image_raw
+      depth: /beta_0/depth/image_raw
+      odom: /beta_0/odom
+      imu: /beta_0/imu
+      cmd_vel: /beta_0/cmd_vel
+
+# --- Sensor Fusion Parameters ---
+fusion:
+  tick_rate_hz: 10           # How often to fuse buffered observations
+  match_radius: 15.0         # Max distance (m) for cross-sensor matching
+  min_change_confidence: 0.35
+
+# --- Isaac Sim Scene ---
+scene:
+  world_width: 1000.0        # Must match WorldModel defaults
+  world_height: 1000.0
+  cell_size: 5.0
+  usd_save_path: simulation/worlds/surveillance_arena.usd
+
+# --- ROS 2 ---
+ros2:
+  domain_id: 10
+  qos_depth: 10

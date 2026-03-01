@@ -6,6 +6,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.7.0] - 2026-03-01
+
+### Added — NVIDIA Isaac Sim Integration
+
+Infrastructure for connecting NVIDIA Isaac Sim (Windows) to the autonomy pipeline
+via ROS 2. Isaac Sim provides photorealistic sensor simulation (RTX cameras, depth,
+LiDAR) while autonomy code runs in Docker containers on WSL2.
+
+#### New Source Files
+
+| File | Purpose |
+|------|---------|
+| `src/integration/isaac_sim_bridge.py` | ROS 2 bridge node: subscribes to Isaac Sim sensor topics, converts to `SensorObservation`, feeds into `SensorFusionPipeline`. Includes `ImageToObservation`, `OdometryAdapter` (ENU↔NED), and `DepthToObservation` adapters. Graceful degradation when `rclpy` is unavailable. |
+| `scripts/isaac_sim/create_surveillance_scene.py` | Isaac Sim scene builder: creates buildings, roads, vegetation, Alpha/Beta drones with RGB+depth cameras matching `WorldModel` terrain |
+| `scripts/isaac_sim/launch_bridge.py` | Convenience launcher with config validation and single-drone filtering |
+| `config/isaac_sim.yaml` | Centralized drone-to-topic mapping, fusion parameters, and scene config |
+| `docker/Dockerfile.autonomy` | Autonomy container extending `osrf/ros:humble-desktop` with cv_bridge, OpenCV, and project deps |
+| `docs/ISAAC_SIM_SETUP.md` | Step-by-step setup guide for Isaac Sim + ROS 2 Bridge + Docker |
+
+#### Modified Files
+
+| File | Changes |
+|------|---------|
+| `docker-compose.yml` | Added `isaac-bridge` service under `isaac` profile |
+
+#### New Test Files
+
+| File | Tests |
+|------|-------|
+| `tests/test_isaac_sim_bridge.py` | 15 tests: config loading, image→observation adapter, ENU↔NED conversion, depth adapter, fusion pipeline integration, ROS 2 availability check |
+
+---
+
+
 ## [0.6.0] - 2026-02-27
 
 ### Added — Sensor Fusion Simulation (Change Detection + Tiered Sensors)
@@ -235,26 +269,34 @@ Sanjay_MK2/
 │   ├── simulation/
 │   │   └── mujoco_sim.py                 # MuJoCo physics simulation
 │   └── integration/
-│       └── coordinator/
+│       ├── coordinator/
+│       └── isaac_sim_bridge.py          # Isaac Sim ↔ ROS 2 bridge node
 ├── scripts/
 │   ├── simulation_server.py              # WebSocket sim server (969 lines)
 │   ├── setup_macos.sh                    # macOS dev setup
 │   ├── setup_isaac_env.ps1               # Windows Isaac Sim env setup
 │   ├── setup_wsl2_env.sh                 # WSL2 bashrc configuration
 │   ├── validate_setup.sh                 # WSL2 setup validator
-│   └── install_ubuntu_wsl2.ps1           # Ubuntu WSL2 installer
+│   ├── install_ubuntu_wsl2.ps1           # Ubuntu WSL2 installer
+│   └── isaac_sim/
+│       ├── create_surveillance_scene.py  # Isaac Sim USD scene builder
+│       └── launch_bridge.py             # Bridge launcher
 ├── tests/
 │   ├── test_config_manager.py
 │   ├── test_drone_types.py
 │   ├── test_flight_controller.py
+│   ├── test_isaac_sim_bridge.py          # Isaac Sim bridge tests (15)
 │   ├── swarm_edge_cases.py
 │   └── swarm_test_scenarios.json
 ├── simulation/
 │   ├── models/                           # Simulation 3D models
-│   └── worlds/                           # Simulation world files
-├── config/                               # Runtime configuration
-├── docker/                               # Dockerfile(s)
+│   └── worlds/                           # Simulation world files / USD scenes
+├── config/
+│   └── isaac_sim.yaml                    # Isaac Sim bridge configuration
+├── docker/
+│   └── Dockerfile.autonomy               # ROS 2 autonomy container
 ├── docs/
-│   └── INSTALLATION_SUMMARY.md
+│   ├── INSTALLATION_SUMMARY.md
+│   └── ISAAC_SIM_SETUP.md               # Isaac Sim setup guide
 └── examples/                             # Usage examples
 ```

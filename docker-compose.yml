@@ -151,3 +151,46 @@ services:
     depends_on:
       ros2-base:
         condition: service_healthy
+
+  # =======================================================================
+  # Isaac Sim Bridge - Autonomy Pipeline
+  # =======================================================================
+  #
+  # Subscribes to Isaac Sim's ROS 2 topics (RGB, depth, odom) and
+  # feeds sensor data into the Sanjay MK2 autonomy pipeline:
+  #   SensorFusionPipeline → ChangeDetector → ThreatManager
+  #
+  # Requires Isaac Sim running on Windows with ROS 2 Bridge enabled.
+  #
+  isaac-bridge:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.autonomy
+    container_name: isaac-bridge
+    hostname: isaac-bridge
+    profiles:
+      - isaac
+    environment:
+      - ROS_DOMAIN_ID=10
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/opt/config/fastdds_profiles.xml
+      - ROS_LOCALHOST_ONLY=0
+      - 'RCUTILS_CONSOLE_OUTPUT_FORMAT=[{name}]: {message}'
+      - PYTHONPATH=/workspace
+    volumes:
+      # Fast DDS profile
+      - ./network/fastdds_profiles.xml:/opt/config/fastdds_profiles.xml:ro
+      # Project source code (hot-reload)
+      - ./src:/workspace/src
+      # Configuration
+      - ./config:/workspace/config
+      # Scripts
+      - ./scripts:/workspace/scripts
+    network_mode: host
+    restart: unless-stopped
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        echo 'Starting Isaac Sim bridge...' &&
+        python3 -m src.integration.isaac_sim_bridge --config config/isaac_sim.yaml
+      "

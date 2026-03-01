@@ -1,0 +1,50 @@
+# =============================================================================
+# Project Sanjay Mk2 - Autonomy Container
+# =============================================================================
+#
+# ROS 2 Humble container with Python dependencies for running the
+# Isaac Sim bridge and autonomy code.
+#
+# Build:
+#   docker build -f docker/Dockerfile.autonomy -t sanjay-autonomy .
+#
+# Usage (standalone):
+#   docker run --network host \
+#     -v ./src:/workspace/src \
+#     -v ./config:/workspace/config \
+#     -v ./network:/workspace/network \
+#     sanjay-autonomy
+#
+# Typically launched via docker-compose.yml with --profile isaac.
+# =============================================================================
+
+FROM osrf/ros:humble-desktop
+
+# Avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    python3-opencv \
+    ros-humble-cv-bridge \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create workspace
+WORKDIR /workspace
+
+# Install Python dependencies
+COPY requirements.txt /workspace/requirements.txt
+RUN pip3 install --no-cache-dir \
+    pyyaml \
+    numpy \
+    opencv-python-headless \
+    && pip3 install --no-cache-dir -r /workspace/requirements.txt 2>/dev/null || true
+
+# Source ROS 2 in every shell
+RUN echo "source /opt/ros/humble/setup.bash" >> /etc/bash.bashrc
+
+# Default: launch the bridge
+CMD ["bash", "-c", \
+     "source /opt/ros/humble/setup.bash && \
+      python3 -m src.integration.isaac_sim_bridge --config config/isaac_sim.yaml"]
