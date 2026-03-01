@@ -30,9 +30,9 @@ except ImportError:
 
 import numpy as np
 
+import asyncio
 from omni.isaac.core import World
-from omni.isaac.core.objects import VisualCuboid, GroundPlane
-from omni.isaac.core.prims import XFormPrim
+from omni.isaac.core.objects import VisualCuboid
 import omni.isaac.core.utils.stage as stage_utils
 import omni.kit.commands
 
@@ -150,12 +150,11 @@ def create_scene():
         pos = drone_cfg["position"]
         _spawn_drone(world, name, pos, drone_type="beta")
 
-    # Reset the world
-    world.reset()
+    # Reset asynchronously — avoids blocking the Script Editor UI thread
+    asyncio.ensure_future(world.reset_async())
 
     print("[Sanjay] ✅ Surveillance scene created!")
     print("[Sanjay] Save with: File → Save As → simulation/worlds/surveillance_arena.usd")
-    print("[Sanjay] Enable ROS 2 Bridge: Window → Extensions → omni.isaac.ros2_bridge")
 
     return world
 
@@ -177,6 +176,7 @@ def _spawn_drone(world, name: str, position: list, drone_type: str = "alpha"):
             name=name.lower(),
             usd_path=QUADROTOR_USD,
             position=np.array(position),
+            orientation=np.array([1, 0, 0, 0]),
         ))
         print(f"[Sanjay] Spawned {drone_type.upper()} drone '{name}' at {position}")
     except Exception as e:
@@ -224,15 +224,31 @@ def _attach_cameras(drone_name: str, prim_path: str, drone_type: str):
 
         print(f"[Sanjay]   Attached RGB + depth cameras to {drone_name}")
 
-        # Configure ROS 2 publishing
+        # Configure ROS 2 publishing (Isaac Sim 5.x API)
         try:
-            from omni.isaac.ros2_bridge import CameraHelper
-
-            topic_prefix = drone_name.lower().replace("_", "_")
-            CameraHelper.init(rgb, f"{topic_prefix}/rgb", frame_id=f"{topic_prefix}_camera")
-            print(f"[Sanjay]   ROS 2 topics: /{topic_prefix}/rgb/image_raw")
-        except ImportError:
-            print(f"[Sanjay]   ROS 2 Bridge not enabled — enable in Extensions menu")
+            import omni.graph.core as og
+            topic_prefix = drone_name.lower()
+            # Use OmniGraph ROS2 camera publisher node (Isaac Sim 5.x)
+            og.Controller.edit(
+                {"graph_path": f"/ROS2_{drone_name}", "evaluator_name": "execution"},
+                {
+                    og.Controller.Keys.CREATE_NODES: [
+                        ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+                        ("ROS2CamHelper", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+                    ],
+                    og.Controller.Keys.CONNECT: [
+                        ("OnPlaybackTick.outputs:tick", "ROS2CamHelper.inputs:execIn"),
+                    ],
+                    og.Controller.Keys.SET_VALUES: [
+                        ("ROS2CamHelper.inputs:topicName", f"/{topic_prefix}/rgb/image_raw"),
+                        ("ROS2CamHelper.inputs:frameId", f"{topic_prefix}_camera"),
+                        ("ROS2CamHelper.inputs:renderProductPath", rgb.get_render_product_path()),
+                    ],
+                },
+            )
+            print(f"[Sanjay]   ROS 2 topic: /{topic_prefix}/rgb/image_raw")
+        except Exception as e:
+            print(f"[Sanjay]   ROS 2 OmniGraph setup skipped: {e}")
 
     except ImportError:
         print(f"[Sanjay]   Camera module not available — skipping sensor attachment")
