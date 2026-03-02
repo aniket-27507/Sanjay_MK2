@@ -7,13 +7,9 @@ The baseline captures a snapshot of the world at a point in time.
 Subsequent sensor observations are compared against this baseline
 to detect anomalies (new objects, removed objects, thermal anomalies).
 
-Usage:
-    baseline = BaselineMap(200, 200, cell_size=5.0)
-    baseline.build_from_world_model(world_model)
-    
-    # Check if a cell has been surveyed
-    if baseline.is_surveyed(row, col):
-        objects = baseline.get_cell_objects(row, col)
+Features full-build instantiation and incremental patching.
+
+@author: Prathamesh Hiwarkar
 """
 
 from __future__ import annotations

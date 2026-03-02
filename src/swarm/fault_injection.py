@@ -6,8 +6,14 @@ Runtime fault injection for testing swarm resilience.
 Supports:
 - Drone failures (motor, power, battery)
 - Communication failures (loss, delay, partition)
-- Sensor failures (GPS, LiDAR)
+- Sensor degradation (GPS drift, LiDAR failure)
 - State machine faults
+
+Features `TaskRedistributor` to implement heartbeat tracking
+and dynamic assignment handoff. Provides deterministic
+testing loops within `ScenarioRunner`.
+
+@author: Archishman Paul
 """
 
 import time

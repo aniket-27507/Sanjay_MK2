@@ -6,16 +6,12 @@ Real-time drone simulation backend that streams telemetry to the web frontend.
 
 Features:
 - 3-drone hexagonal coverage simulation
-- Real-time WebSocket streaming at 50Hz
-- Uses actual flight controller state machine
-- Physics-based movement simulation
+- Real-time WebSocket broadcasting (port 8765)
+- Internal MuJoCo or kinematic physics model
+- Fault injection and autonomous task redistribution
+- HTTP server for static assets
 
-Usage:
-    cd ~/Sanjay_MK2
-    source venv/bin/activate
-    python scripts/simulation_server.py
-
-Then open: http://localhost:8080
+@author: Archishman Paul
 """
 
 import asyncio

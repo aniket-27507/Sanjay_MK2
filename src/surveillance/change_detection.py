@@ -11,11 +11,9 @@ Classification rules:
     - Thermal-only anomaly:   MEDIUM
     - Missing baseline obj:   LOW
 
-Usage:
-    detector = ChangeDetector(baseline_map)
-    changes = detector.detect_changes(fused_observation)
-    for change in changes:
-        print(f"{change.change_type}: {change.description} [{change.threat_level}]")
+Applies heuristic cooldown periods against object signatures.
+
+@author: Archishman Paul
 """
 
 from __future__ import annotations

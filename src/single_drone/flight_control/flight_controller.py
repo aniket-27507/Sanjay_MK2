@@ -5,28 +5,15 @@ High-level flight controller with state machine for autonomous drone operations.
 
 State Machine:
     IDLE ─────> ARMING ────> TAKING_OFF ────> HOVERING ────> NAVIGATING
-                                  │               │              │
-                                  │               └──────────────┤
-                                  │                              │
-                                  └──────────────> LANDING ──────┘
-                                                     │
-                                                     v
-                                                  LANDED
-                                                     │
-                                                     v
-                                                  *ANY* ──> EMERGENCY
+    IDLE -> ARMING -> TAKING_OFF -> HOVERING -> NAVIGATING -> LANDING -> LANDED
+    (Plus EMERGENCY state available from any active tracking state).
 
-Usage:
-    controller = FlightController(drone_id=0)
-    await controller.initialize("udp://:14540")
-    
-    # Execute flight
-    await controller.takeoff(10.0)
-    await controller.goto_position(Vector3(50, 0, -10))
-    await controller.land()
-    
-    # Shutdown
-    await controller.shutdown()
+Features:
+- Enforces valid state transitions
+- Implements safety geofence constraint logic
+- Implements hardware health tracking overrides
+
+@author: Archishman Paul
 """
 
 from __future__ import annotations

@@ -1,14 +1,16 @@
 """
 Project Sanjay Mk2 - Core Type Definitions
 ==========================================
-Fundamental data types used throughout the drone swarm system.
+Fundamental data structures and models used throughout the drone swarm system.
 
 This module provides:
-- Vector3: 3D vector for positions, velocities, forces
-- FlightMode: State machine states for flight control
-- DroneConfig: Configuration parameters for individual drones
-- DroneState: Complete state representation of a drone
-- TelemetryData: Real-time sensor data from autopilot
+- Vector3: 3D vector for NED positions, velocities, forces
+- Quaternion: Orientation representation and Euler angle parsing
+- State Transition Models for Drone Flight Control
+- Sensor type enumerations
+- Detected Object tracking states
+
+@author: Prathamesh Hiwarkar
 """
 
 from __future__ import annotations

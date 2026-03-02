@@ -1,10 +1,15 @@
 """
-Tests for configuration manager.
+Project Sanjay Mk2 - Test Suite
+=================================
+ConfigManager tests. Covers singleton edge cases, YAML loading, 
+and env overrides.
+
+@author: Aniket More
 """
 
-import pytest
 import os
-import tempfile
+import pytest
+from pathlib import Path
 
 from src.core.config.config_manager import (
     ConfigManager,

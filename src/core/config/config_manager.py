@@ -5,10 +5,13 @@ Centralized configuration management for the drone swarm system.
 
 Provides:
 - YAML-based configuration loading
-- Environment variable overrides
+- Environment variable overrides (SANJAY_*)
 - Per-drone configuration
 - Swarm-wide settings
 - Runtime configuration updates
+- Singleton access pattern
+
+@author: Archishman Paul
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ import os
 import yaml
 import logging
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass
 from typing import Dict, Optional, Any, List
 
 from ..types.drone_types import DroneConfig, DroneType, Vector3

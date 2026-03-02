@@ -2,6 +2,14 @@
 Tests for core drone type definitions.
 """
 
+"""
+Project Sanjay Mk2 - Test Suite
+=================================
+Core drone type / class method unit tests.
+
+@author: Aniket More
+"""
+
 import pytest
 import numpy as np
 import time

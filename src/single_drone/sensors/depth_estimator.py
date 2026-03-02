@@ -3,13 +3,10 @@ Project Sanjay Mk2 - Simulated Depth Estimator
 ================================================
 Simulates AI monocular depth estimation (e.g. Depth Anything V2).
 
-Takes "ground truth" elevation from the world model and adds
-realistic noise that scales with altitude, simulating the accuracy
-degradation of real monocular depth networks at higher altitudes.
+Takes "ground truth" elevation from the world model and injects robust
+altitude-driven stochastic noise curves to emulate visual depth artifacts.
 
-Usage:
-    estimator = SimulatedDepthEstimator()
-    depth_grid = estimator.estimate(drone_pos, altitude, world_model)
+@author: Archishman Paul
 """
 
 from __future__ import annotations

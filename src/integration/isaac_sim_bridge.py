@@ -3,15 +3,6 @@ Project Sanjay Mk2 - Isaac Sim ↔ ROS 2 Bridge
 ===============================================
 Subscribes to Isaac Sim sensor topics (published via Isaac Sim's
 built-in ROS 2 Bridge) and feeds the data into the existing
-SensorFusionPipeline → ChangeDetector → ThreatManager chain.
-
-Architecture:
-    Isaac Sim (Windows)
-        │
-        ├─ /alpha_0/rgb/image_raw      ──► ImageToObservation ──► SensorFusionPipeline
-        ├─ /alpha_0/depth/image_raw    ──►                   ──►
-        ├─ /alpha_0/odom               ──► OdometryAdapter   ──► TelemetryData
-        │
         └─ /alpha_0/cmd_vel            ◄── velocity commands ◄── autonomy logic
 
 Requirements:

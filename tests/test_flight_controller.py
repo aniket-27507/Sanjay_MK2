@@ -5,6 +5,14 @@ Note: These tests use mocking since they don't connect to real PX4.
 For integration tests with simulation, see tests/integration/
 """
 
+"""
+Project Sanjay Mk2 - Test Suite
+=================================
+Flight controller asynchronous state machine tests.
+
+@author: Aniket More
+"""
+
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch

@@ -1,22 +1,7 @@
 """
-Configuration management for Project Sanjay Mk2.
+Project Sanjay Mk2 - Configuration Submodule
+=============================================
+Centralized configuration schemas and loaders.
+
+@author: Archishman Paul
 """
-
-from .config_manager import (
-    ConfigManager,
-    SwarmConfig,
-    SimulationConfig,
-    NetworkConfig,
-    get_config,
-    reset_config
-)
-
-__all__ = [
-    'ConfigManager',
-    'SwarmConfig',
-    'SimulationConfig',
-    'NetworkConfig',
-    'get_config',
-    'reset_config'
-]
-

@@ -9,11 +9,9 @@ Confidence boosting rules:
     - RGB + thermal corroboration:     0.6 - 0.85
     - RGB + thermal + depth context:   0.85 - 0.95
 
-Usage:
-    pipeline = SensorFusionPipeline()
-    pipeline.add_observation(rgb_obs)
-    pipeline.add_observation(thermal_obs)
-    fused = pipeline.fuse()
+Implements temporal buffering to cross reference proximal sensors.
+
+@author: Archishman Paul
 """
 
 from __future__ import annotations

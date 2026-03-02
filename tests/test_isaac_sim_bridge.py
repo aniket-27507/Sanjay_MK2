@@ -1,12 +1,14 @@
 """
 Tests for Isaac Sim bridge logic.
+Project Sanjay Mk2 - Test Suite
+=================================
+Isaac Sim integration bridging network tests.
 
-These tests validate the adapter classes and config loading WITHOUT
-requiring rclpy, Isaac Sim, or any ROS 2 infrastructure. They run
-in the standard pytest environment.
+@author: Aniket More
 """
 
 import os
+import sys
 import pytest
 import numpy as np
 import tempfile

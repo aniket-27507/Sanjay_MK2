@@ -5,24 +5,22 @@ Manages the lifecycle of detected threats and coordinates
 Beta drone dispatch for visual confirmation.
 
 Threat Lifecycle:
-    DETECTED → PENDING_CONFIRMATION → CONFIRMING → CONFIRMED/CLEARED → RESOLVED
+    DETECTED -> PENDING -> CONFIRMING -> CONFIRMED | CLEARED -> RESOLVED
+    
+    - DETECTED: New anomaly from ChangeDetector
+    - PENDING: Queued for Beta inspection
+    - CONFIRMING: Beta is en route
+    - CONFIRMED: Beta verified threat
+    - CLEARED: Beta confirmed false positive
 
-Usage:
-    manager = ThreatManager()
-    threat = manager.report_change(change_event)
-    
-    # When confidence is high enough, request Beta confirmation
-    beta_id = manager.request_confirmation(threat.threat_id, available_betas)
-    
-    # When Beta arrives and observes
-    manager.confirm_threat(threat.threat_id, is_confirmed=True)
+@author: Prathamesh Hiwarkar
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 
 from src.core.types.drone_types import (
     Vector3, ThreatLevel, ThreatStatus, Threat,

@@ -4,18 +4,12 @@ Project Sanjay Mk2 - World Model
 Procedural 2D grid world representing the terrain and dynamic objects.
 
 This is the "ground truth" that simulated sensors query against.
-The world contains static terrain features (buildings, roads, vegetation)
-and dynamically spawnable objects (vehicles, people, camps) that may be threats.
 
-Usage:
-    world = WorldModel(width=1000, height=1000, cell_size=5.0)
-    world.generate_terrain(seed=42)
-    
-    # Spawn a threat
-    world.spawn_object("person", Vector3(100, 50, 0), is_threat=True)
-    
-    # Query what a sensor would see from a drone position
-    visible = world.query_fov(drone_pos, altitude=65, fov_deg=84)
+World Coordinate System:
+    - Hexagonal bounding box generated around mathematical center.
+    - Objects implement full lifecycle models (spawn, persist, purge).
+
+@author: Archishman Paul
 """
 
 from __future__ import annotations

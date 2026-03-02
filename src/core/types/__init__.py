@@ -1,34 +1,7 @@
 """
-Core type definitions for Project Sanjay Mk2.
+Project Sanjay Mk2 - Types Submodule
+=====================================
+Core domain models and typing definitions.
+
+@author: Prathamesh Hiwarkar
 """
-
-from .drone_types import (
-    Vector3,
-    Quaternion,
-    FlightMode,
-    DroneType,
-    DroneConfig,
-    DroneState,
-    TelemetryData,
-    Waypoint,
-    GeofenceZone,
-    Position,
-    Velocity,
-    Force
-)
-
-__all__ = [
-    'Vector3',
-    'Quaternion',
-    'FlightMode',
-    'DroneType',
-    'DroneConfig',
-    'DroneState',
-    'TelemetryData',
-    'Waypoint',
-    'GeofenceZone',
-    'Position',
-    'Velocity',
-    'Force'
-]
-

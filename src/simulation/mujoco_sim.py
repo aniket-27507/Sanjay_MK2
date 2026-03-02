@@ -4,15 +4,6 @@ Project Sanjay Mk2 - MuJoCo Drone Simulation
 Native macOS drone simulation using MuJoCo physics engine.
 
 Provides a lightweight drone simulation that mirrors the MAVSDK interface,
-allowing algorithm development without PX4 SITL.
-
-Features:
-- Quadrotor dynamics (thrust, drag, gravity)
-- Simulated sensors (position, velocity, attitude)
-- GUI visualization
-- Multiple drone support
-
-Usage:
     # Create simulation
     sim = MuJoCoDroneSim(gui=True)
     

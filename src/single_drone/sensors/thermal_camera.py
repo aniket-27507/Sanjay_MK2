@@ -3,19 +3,12 @@ Project Sanjay Mk2 - Simulated Thermal Camera
 ===============================================
 Simulates an LWIR (Long-Wave Infrared) thermal imaging sensor.
 
-Detects objects based on their thermal signature relative to ambient.
-Excellent for night operations and detecting people/vehicles
-that emit heat.
-
 Detection Model:
-    - Only detects objects above a thermal threshold
-    - Higher thermal contrast = higher detection probability
-    - Narrower FOV than RGB camera (40° default)
-    - Works independently of lighting conditions
+    - Queries `WorldModel` against objects that emit heat profiles.
+    - Calculates a thermal contrast vs. ambient environment curve.
+    - Narrower FOV than RGB.
 
-Usage:
-    thermal = SimulatedThermalCamera()
-    observation = thermal.capture(drone_pos, altitude, world_model)
+@author: Archishman Paul
 """
 
 from __future__ import annotations

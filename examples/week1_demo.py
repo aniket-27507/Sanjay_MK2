@@ -7,9 +7,16 @@ Demonstrates basic flight control capabilities developed in Week 1.
 This script shows:
 1. Configuration management
 2. Type system usage
-3. Flight controller state machine
-4. Simulated flight operations
+3. Mocked flight controller state transitions
+4. Simple waypoint mission execution
 
+@author: Aniket More
+"""
+
+import os
+import sys
+
+"""
 Usage:
     cd ~/Sanjay_MK2
     source venv/bin/activate

@@ -9,20 +9,10 @@ This module provides:
 - Offboard control commands (position, velocity, attitude)
 - Action commands (arm, disarm, takeoff, land)
 - Health and status monitoring
+- High frequency asynchronous telemetry subscription routines
+- Intelligent caching model for thread safe telemetry sharing
 
-Usage:
-    interface = MAVSDKInterface()
-    await interface.connect("udp://:14540")
-    
-    await interface.arm()
-    await interface.takeoff(10.0)
-    
-    # Send velocity commands
-    await interface.set_velocity_ned(5.0, 0.0, 0.0, 0.0)
-    
-    # Get telemetry
-    position = interface.get_position()
-    battery = interface.get_battery()
+@author: Archishman Paul
 """
 
 from __future__ import annotations
@@ -30,8 +20,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Optional, Callable, List, Any
+import math
+from typing import Optional, Callable, Dict, Any
 from dataclasses import dataclass
+
+from builtins import int, float, bool, str
 
 from mavsdk import System
 from mavsdk.offboard import (

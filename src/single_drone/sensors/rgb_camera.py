@@ -7,14 +7,11 @@ Alpha drones carry a 4K wide-angle camera (84° FOV) at 65m altitude.
 Beta drones carry a 1080p narrow-FOV camera (50° FOV) at 25m altitude.
 
 Detection Model:
-    - Detection probability decreases with altitude
-    - Alpha: detects but may not identify (lower confidence)
-    - Beta: high-detail identification (higher confidence)
-    - Objects with larger size are easier to detect
+    - Detection probability is scaled inversely against relative altitude.
+    - Alpha drones establish visual tracking but require Beta identification.
+    - Factors in object physical size to detection coefficient.
 
-Usage:
-    camera = SimulatedRGBCamera(drone_type=DroneType.ALPHA)
-    observation = camera.capture(drone_pos, altitude, world_model)
+@author: Archishman Paul
 """
 
 from __future__ import annotations
