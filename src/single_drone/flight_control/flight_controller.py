@@ -35,6 +35,16 @@ from ...core.types.drone_types import (
 )
 from ...core.config.config_manager import get_config
 
+# Lazy import to avoid circular dependency — only needed when avoidance is enabled
+_AvoidanceManager = None
+
+def _get_avoidance_manager_class():
+    global _AvoidanceManager
+    if _AvoidanceManager is None:
+        from ..obstacle_avoidance.avoidance_manager import AvoidanceManager
+        _AvoidanceManager = AvoidanceManager
+    return _AvoidanceManager
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,6 +121,10 @@ class FlightController:
         
         # Background tasks
         self._tasks: List[asyncio.Task] = []
+        
+        # ── Obstacle Avoidance (optional — attach via enable_avoidance) ──
+        self._avoidance_manager = None
+        self._avoidance_enabled = False
         
         logger.info(f"FlightController initialized for drone {drone_id}")
     
@@ -526,7 +540,14 @@ class FlightController:
             await asyncio.sleep(dt)
     
     async def _navigate_step(self):
-        """Execute one step of navigation control."""
+        """
+        Execute one step of navigation control.
+        
+        If obstacle avoidance is enabled, the velocity is computed
+        by the AvoidanceManager (APF → HPL gate) instead of raw
+        proportional control.  The avoidance system may override the
+        target to follow tactical sub-waypoints.
+        """
         if not self._target_position:
             return
         
@@ -540,13 +561,34 @@ class FlightController:
         if distance < 0.1:
             return
         
-        # Proportional velocity control
-        velocity = error * self._position_p_gain
-        
-        # Limit velocity
-        speed = velocity.magnitude()
-        if speed > self._velocity_limit:
-            velocity = velocity * (self._velocity_limit / speed)
+        # ── Obstacle Avoidance Path ────────────────────────────
+        if self._avoidance_enabled and self._avoidance_manager is not None:
+            # Set the strategic goal — avoidance manager may generate
+            # its own sub-waypoints via the tactical A* planner
+            self._avoidance_manager.set_goal(target)
+            
+            # Compute safe velocity through APF + HPL pipeline
+            velocity = self._avoidance_manager.compute_avoidance(
+                drone_position=current,
+                drone_velocity=self.velocity,
+            )
+            
+            # Log state transitions for telemetry
+            avoidance_state = self._avoidance_manager.state
+            if self._avoidance_manager.is_hpl_overriding:
+                logger.warning(
+                    f"Drone {self.drone_id}: HPL override active "
+                    f"(state={avoidance_state.name}, "
+                    f"closest={self._avoidance_manager.closest_obstacle_distance:.2f}m)"
+                )
+        else:
+            # ── Standard P-control (no avoidance) ─────────────
+            velocity = error * self._position_p_gain
+            
+            # Limit velocity
+            speed = velocity.magnitude()
+            if speed > self._velocity_limit:
+                velocity = velocity * (self._velocity_limit / speed)
         
         # Send velocity command
         await self._interface.set_velocity_ned(
@@ -635,6 +677,57 @@ class FlightController:
             
             if self.is_in_air:
                 await self.emergency_stop()
+    
+    # ==================== OBSTACLE AVOIDANCE ====================
+    
+    def enable_avoidance(self, avoidance_manager=None):
+        """
+        Enable obstacle avoidance for this flight controller.
+        
+        If no manager is provided, creates a default AvoidanceManager.
+        
+        Args:
+            avoidance_manager: Pre-configured AvoidanceManager (optional)
+        """
+        if avoidance_manager is not None:
+            self._avoidance_manager = avoidance_manager
+        else:
+            AvoidanceManagerClass = _get_avoidance_manager_class()
+            self._avoidance_manager = AvoidanceManagerClass(drone_id=self.drone_id)
+        
+        self._avoidance_enabled = True
+        logger.info(
+            f"Drone {self.drone_id}: Obstacle avoidance ENABLED "
+            f"(APF + HPL + Tactical A*)"
+        )
+    
+    def disable_avoidance(self):
+        """Disable obstacle avoidance — revert to raw P-control."""
+        self._avoidance_enabled = False
+        logger.info(f"Drone {self.drone_id}: Obstacle avoidance DISABLED")
+    
+    @property
+    def avoidance_enabled(self) -> bool:
+        return self._avoidance_enabled
+    
+    @property
+    def avoidance_manager(self):
+        """Get the attached AvoidanceManager (or None)."""
+        return self._avoidance_manager
+    
+    def feed_lidar_points(self, points):
+        """
+        Feed raw 3D LiDAR points to the avoidance system.
+        
+        Convenience method — calls through to the AvoidanceManager.
+        
+        Args:
+            points: Nx3 numpy array of (x, y, z) in body frame.
+        """
+        if self._avoidance_manager is not None:
+            self._avoidance_manager.feed_lidar_points(
+                points, drone_position=self.position
+            )
     
     # ==================== STATE EXPORT ====================
     
