@@ -36,7 +36,7 @@ from mavsdk.offboard import (
 )
 from mavsdk.action import ActionError
 
-from ...core.types.drone_types import (
+from src.core.types.drone_types import (
     Vector3, 
     Quaternion, 
     TelemetryData,

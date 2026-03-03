@@ -26,7 +26,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from ...core.types.drone_types import Vector3, Waypoint
+from src.core.types.drone_types import Vector3, Waypoint
 
 logger = logging.getLogger(__name__)
 

@@ -37,11 +37,11 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
-from ...core.types.drone_types import Vector3, Waypoint
-from ..sensors.lidar_3d import Lidar3DDriver, Lidar3DConfig
-from .apf_3d import APF3DAvoidance, APF3DConfig, AvoidanceState, Obstacle3D
-from .hardware_protection import HardwareProtectionLayer, HPLConfig, HPLState
-from .tactical_planner import TacticalPlanner, PlannerConfig
+from src.core.types.drone_types import Vector3, Waypoint
+from src.single_drone.sensors.lidar_3d import Lidar3DDriver, Lidar3DConfig
+from src.single_drone.obstacle_avoidance.apf_3d import APF3DAvoidance, APF3DConfig, AvoidanceState, Obstacle3D
+from src.single_drone.obstacle_avoidance.hardware_protection import HardwareProtectionLayer, HPLConfig, HPLState
+from src.single_drone.obstacle_avoidance.tactical_planner import TacticalPlanner, PlannerConfig
 
 logger = logging.getLogger(__name__)
 

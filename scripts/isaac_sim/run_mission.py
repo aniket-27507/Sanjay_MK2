@@ -307,12 +307,7 @@ MISSION_WAYPOINTS = [
 ]
 
 
-def _hex_positions(cx, cy, spacing, n=6):
-    positions = [(cx, cy)]
-    for i in range(min(n - 1, 6)):
-        angle = i * (2 * math.pi / 6)
-        positions.append((cx + spacing * math.cos(angle), cy + spacing * math.sin(angle)))
-    return positions[:n]
+from src.core.utils.geometry import hex_positions as _hex_positions
 
 
 class MissionRunner:

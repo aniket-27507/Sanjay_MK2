@@ -27,8 +27,8 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from ...core.types.drone_types import Vector3
-from ..obstacle_avoidance.apf_3d import Obstacle3D
+from src.core.types.drone_types import Vector3
+from src.single_drone.obstacle_avoidance.apf_3d import Obstacle3D
 
 logger = logging.getLogger(__name__)
 

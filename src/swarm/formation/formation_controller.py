@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ...core.types.drone_types import DroneState, Vector3
+from src.core.types.drone_types import DroneState, Vector3
 
 logger = logging.getLogger(__name__)
 

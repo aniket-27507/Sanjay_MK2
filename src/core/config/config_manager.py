@@ -23,7 +23,7 @@ from pathlib import Path
 from dataclasses import dataclass, field, is_dataclass
 from typing import Dict, Optional, Any, List
 
-from ..types.drone_types import DroneConfig, DroneType, Vector3
+from src.core.types.drone_types import DroneConfig, DroneType, Vector3
 
 logger = logging.getLogger(__name__)
 

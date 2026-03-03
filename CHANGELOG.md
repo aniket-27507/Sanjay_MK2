@@ -6,6 +6,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.7.1] - 2026-03-03
+
+### Fixed — Code Review & Codebase Hygiene
+
+Comprehensive code review identifying and fixing bugs, naming collisions,
+inconsistent imports, duplicated code, and missing safety guards.
+
+#### Bug Fixes
+
+| File | Fix |
+|------|-----|
+| `tests/test_config_manager.py` | Added missing `import tempfile` — `test_save_and_load_config` crashed with `NameError` |
+| `src/simulation/mujoco_sim.py` | Renamed `DroneState` → `MuJoCoState` to eliminate name collision with `src/core/types/drone_types.DroneState` (completely different fields) |
+| `src/simulation/mujoco_sim.py` | Added timeout guards (5 000 iterations / ~50 s) to `takeoff()` and `land()` spin loops — previously could loop forever if simulation couldn't reach target altitude |
+
+#### Import Standardisation (10 files)
+
+Converted all relative imports (`from ...core.types…`) to absolute (`from src.core.types…`)
+for consistency with surveillance, sensor, and simulation modules.
+
+| File | Import Changed |
+|------|---------------|
+| `src/core/config/config_manager.py` | `..types` → `src.core.types` |
+| `src/single_drone/flight_control/flight_controller.py` | `...core.types`, `...core.config`, `..obstacle_avoidance` → absolute |
+| `src/single_drone/flight_control/mavsdk_interface.py` | `...core.types` → `src.core.types` |
+| `src/single_drone/obstacle_avoidance/apf_3d.py` | `...core.types` → `src.core.types` |
+| `src/single_drone/obstacle_avoidance/avoidance_manager.py` | 5 relative imports → absolute |
+| `src/single_drone/obstacle_avoidance/hardware_protection.py` | `...core.types` → `src.core.types` |
+| `src/single_drone/obstacle_avoidance/tactical_planner.py` | `...core.types` → `src.core.types` |
+| `src/single_drone/sensors/lidar_3d.py` | `...core.types`, `..obstacle_avoidance` → absolute |
+| `src/swarm/coordination/regiment_coordinator.py` | `...core.types` → `src.core.types` |
+| `src/swarm/formation/formation_controller.py` | `...core.types` → `src.core.types` |
+
+#### Code Deduplication
+
+| Change | Details |
+|--------|---------|
+| **New:** `src/core/utils/geometry.py` | Extracted shared `hex_positions()` utility |
+| `scripts/isaac_sim/run_mission.py` | Replaced local `_hex_positions()` with import from `src.core.utils.geometry` |
+| `scripts/isaac_sim/create_surveillance_scene.py` | Replaced local `_hex_positions()` with import from `src.core.utils.geometry` |
+
+---
+
 ## [0.7.0] - 2026-03-01
 
 ### Added — NVIDIA Isaac Sim Integration

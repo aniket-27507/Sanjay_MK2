@@ -39,8 +39,8 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class DroneState:
-    """State of a simulated drone."""
+class MuJoCoState:
+    """State of a simulated drone (MuJoCo-native numpy representation)."""
     position: np.ndarray       # [x, y, z]
     velocity: np.ndarray       # [vx, vy, vz]
     orientation: np.ndarray    # quaternion [w, x, y, z]
@@ -303,7 +303,7 @@ class MuJoCoDroneSim:
         
         return quat_new
     
-    def get_state(self, drone_id: int) -> DroneState:
+    def get_state(self, drone_id: int) -> MuJoCoState:
         """
         Get the current state of a drone.
         
@@ -311,14 +311,14 @@ class MuJoCoDroneSim:
             drone_id: Drone identifier
             
         Returns:
-            DroneState with current position, velocity, etc.
+            MuJoCoState with current position, velocity, etc.
         """
         if drone_id not in self._drones:
             raise ValueError(f"Unknown drone ID: {drone_id}")
         
         drone = self._drones[drone_id]
         
-        return DroneState(
+        return MuJoCoState(
             position=drone['position'].copy(),
             velocity=drone['velocity'].copy(),
             orientation=drone['orientation'].copy(),
@@ -492,11 +492,18 @@ class SimulatedMAVSDKInterface:
         """Simulate takeoff."""
         logger.info(f"[SIM] Taking off to {altitude}m")
         
-        # Command upward velocity until altitude reached
-        while self.get_altitude() < altitude - 0.5:
+        # Command upward velocity until altitude reached (with timeout)
+        max_iterations = 5000  # ~50s at 0.01s sleep
+        for _ in range(max_iterations):
+            if self.get_altitude() >= altitude - 0.5:
+                break
             self._sim.set_velocity(self._drone_id, [0, 0, 2.0])
             self._sim.step()
             await asyncio.sleep(0.01)
+        else:
+            logger.warning(f"[SIM] Takeoff timed out at {self.get_altitude():.1f}m (target: {altitude}m)")
+            self._sim.hover(self._drone_id)
+            return False
         
         self._sim.hover(self._drone_id)
         return True
@@ -505,10 +512,15 @@ class SimulatedMAVSDKInterface:
         """Simulate landing."""
         logger.info("[SIM] Landing")
         
-        while self.get_altitude() > 0.2:
+        max_iterations = 5000  # ~50s at 0.01s sleep
+        for _ in range(max_iterations):
+            if self.get_altitude() <= 0.2:
+                break
             self._sim.set_velocity(self._drone_id, [0, 0, -1.0])
             self._sim.step()
             await asyncio.sleep(0.01)
+        else:
+            logger.warning(f"[SIM] Landing timed out at {self.get_altitude():.1f}m")
         
         self._sim.hover(self._drone_id)
         self._armed = False

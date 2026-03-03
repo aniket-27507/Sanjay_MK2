@@ -24,8 +24,8 @@ import time
 from typing import Optional, List, Callable, Awaitable
 from dataclasses import dataclass
 
-from .mavsdk_interface import MAVSDKInterface
-from ...core.types.drone_types import (
+from src.single_drone.flight_control.mavsdk_interface import MAVSDKInterface
+from src.core.types.drone_types import (
     Vector3,
     FlightMode,
     DroneConfig,
@@ -33,7 +33,7 @@ from ...core.types.drone_types import (
     TelemetryData,
     Waypoint
 )
-from ...core.config.config_manager import get_config
+from src.core.config.config_manager import get_config
 
 # Lazy import to avoid circular dependency — only needed when avoidance is enabled
 _AvoidanceManager = None
@@ -41,7 +41,7 @@ _AvoidanceManager = None
 def _get_avoidance_manager_class():
     global _AvoidanceManager
     if _AvoidanceManager is None:
-        from ..obstacle_avoidance.avoidance_manager import AvoidanceManager
+        from src.single_drone.obstacle_avoidance.avoidance_manager import AvoidanceManager
         _AvoidanceManager = AvoidanceManager
     return _AvoidanceManager
 
