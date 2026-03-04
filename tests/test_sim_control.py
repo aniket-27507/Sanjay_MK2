@@ -13,7 +13,7 @@ class FakeMCP:
         self.tools = {}
         self.resources = {}
 
-    def tool(self):
+    def tool(self, **_kwargs):
         def wrapper(func):
             self.tools[func.__name__] = func
             return func
@@ -72,7 +72,7 @@ class FakeInstanceManager:
 async def test_sim_start_dispatch() -> None:
     mcp = FakeMCP()
     ws = FakeWS()
-    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(ws)))
+    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(ws)), enable_mutations=True)
     register(host)
 
     result = json.loads(await mcp.tools["sim_start"]())
@@ -85,7 +85,7 @@ async def test_sim_start_dispatch() -> None:
 async def test_sim_inject_fault_validation() -> None:
     mcp = FakeMCP()
     ws = FakeWS()
-    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(ws)))
+    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(ws)), enable_mutations=True)
     register(host)
 
     result = json.loads(await mcp.tools["sim_inject_fault"]("bad_fault", 0))

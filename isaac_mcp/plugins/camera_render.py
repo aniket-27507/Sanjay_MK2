@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from mcp.types import ToolAnnotations
+
 from isaac_mcp.plugin_host import PluginHost
 from isaac_mcp.tool_contract import error, exception_details, success
 
 _VALID_RENDER_MODES = {"rtx_realtime", "rtx_pathtraced", "wireframe", "normals", "depth"}
 _VALID_SETTINGS = {"samples_per_pixel", "max_bounces", "denoiser_enabled", "resolution"}
+
+_READONLY_ANNOTATION = ToolAnnotations(readOnlyHint=True, idempotentHint=True)
+_CAPTURE_ANNOTATION = ToolAnnotations(readOnlyHint=True, idempotentHint=False)
+_MUTATING_ANNOTATION = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
 
 
 def _validation_error(tool: str, instance: str, message: str, details: dict[str, Any] | None = None) -> str:
@@ -36,7 +42,7 @@ async def _kit_client(host: PluginHost, instance: str):
 def register(host: PluginHost) -> None:
     """Register camera/render tools."""
 
-    @host.tool()
+    @host.tool(annotations=_CAPTURE_ANNOTATION)
     async def camera_capture(
         camera_path: str = "",
         resolution: str = "1280x720",
@@ -58,7 +64,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to capture camera image", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def camera_set_viewpoint(
         position_x: float,
         position_y: float,
@@ -85,7 +91,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to set camera viewpoint", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def camera_list(instance: str = "primary") -> str:
         tool = "camera_list"
         try:
@@ -95,7 +101,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to list cameras", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def render_set_mode(mode: str, instance: str = "primary") -> str:
         tool = "render_set_mode"
         if mode not in _VALID_RENDER_MODES:
@@ -108,7 +114,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to set render mode", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def render_get_settings(instance: str = "primary") -> str:
         tool = "render_get_settings"
         try:
@@ -118,7 +124,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to get render settings", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def render_set_settings(setting: str, value: str, instance: str = "primary") -> str:
         tool = "render_set_settings"
         if setting not in _VALID_SETTINGS:

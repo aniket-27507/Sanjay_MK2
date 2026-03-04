@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import logging
 from pathlib import Path
 from typing import Any, Callable
+
+from mcp.types import ToolAnnotations
+
+from isaac_mcp.tool_contract import error
 
 logger = logging.getLogger(__name__)
 
@@ -13,11 +18,13 @@ logger = logging.getLogger(__name__)
 class PluginHost:
     """Host interface used by plugins to register tools and resources."""
 
-    def __init__(self, mcp_server: Any, instance_manager: Any):
+    def __init__(self, mcp_server: Any, instance_manager: Any, *, enable_mutations: bool = False):
         self._mcp = mcp_server
         self._instance_manager = instance_manager
+        self._enable_mutations = enable_mutations
         self._registered_tools: list[str] = []
         self._registered_resources: list[str] = []
+        self._registered_tool_annotations: dict[str, ToolAnnotations | None] = {}
 
     @property
     def registered_tools(self) -> list[str]:
@@ -27,11 +34,61 @@ class PluginHost:
     def registered_resources(self) -> list[str]:
         return list(self._registered_resources)
 
-    def tool(self) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    @property
+    def registered_tool_annotations(self) -> dict[str, ToolAnnotations | None]:
+        return dict(self._registered_tool_annotations)
+
+    @property
+    def mutations_enabled(self) -> bool:
+        return self._enable_mutations
+
+    def tool(
+        self,
+        *,
+        name: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        annotations: ToolAnnotations | None = None,
+        meta: dict[str, Any] | None = None,
+        structured_output: bool | None = None,
+        mutating: bool = False,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-            self._mcp.tool()(func)
-            self._registered_tools.append(func.__name__)
-            return func
+            tool_name = name or func.__name__
+
+            async def wrapped(*args: Any, **kwargs: Any) -> Any:
+                if mutating and not self._enable_mutations:
+                    instance = _resolve_instance_arg(func, args, kwargs)
+                    return error(
+                        tool_name,
+                        instance,
+                        "mutation_disabled",
+                        "This tool is blocked because ISAAC_MCP_ENABLE_MUTATIONS is false",
+                        {"hint": "Set ISAAC_MCP_ENABLE_MUTATIONS=true to allow mutating tools"},
+                    )
+
+                result = func(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    return await result
+                return result
+
+            wrapped.__name__ = func.__name__
+            wrapped.__doc__ = func.__doc__
+            wrapped.__annotations__ = getattr(func, "__annotations__", {})
+            wrapped.__signature__ = inspect.signature(func)  # type: ignore[attr-defined]
+
+            self._mcp.tool(
+                name=name,
+                title=title,
+                description=description,
+                annotations=annotations,
+                meta=meta,
+                structured_output=structured_output,
+            )(wrapped)
+
+            self._registered_tools.append(tool_name)
+            self._registered_tool_annotations[tool_name] = annotations
+            return wrapped
 
         return decorator
 
@@ -107,3 +164,17 @@ def discover_and_load_plugins(host: PluginHost, plugin_dir: str, disabled: list[
             logger.exception("Failed to load plugin '%s'", plugin_name)
 
     return loaded
+
+
+def _resolve_instance_arg(func: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+    if "instance" in kwargs:
+        return str(kwargs["instance"])
+
+    try:
+        bound = inspect.signature(func).bind_partial(*args, **kwargs)
+    except Exception:
+        return "primary"
+
+    if "instance" in bound.arguments:
+        return str(bound.arguments["instance"])
+    return "primary"

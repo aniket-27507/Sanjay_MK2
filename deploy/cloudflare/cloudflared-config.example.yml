@@ -1,0 +1,15 @@
+# Example Cloudflare Tunnel config for exposing Isaac MCP remote endpoint.
+# Replace placeholders before use.
+
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /etc/cloudflared/YOUR_TUNNEL_ID.json
+
+ingress:
+  - hostname: mcp.your-domain.com
+    service: http://127.0.0.1:8000
+    originRequest:
+      noTLSVerify: true
+      connectTimeout: 10s
+      tlsTimeout: 10s
+      httpHostHeader: mcp.your-domain.com
+  - service: http_status:404

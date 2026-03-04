@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from mcp.types import ToolAnnotations
+
 from isaac_mcp.plugin_host import PluginHost
 from isaac_mcp.tool_contract import error, exception_details, success
 
@@ -15,6 +17,10 @@ _VALID_FAULT_TYPES = {
     "comms_loss",
     "gps_loss",
 }
+
+_READONLY_ANNOTATION = ToolAnnotations(readOnlyHint=True, idempotentHint=True)
+_MUTATING_ANNOTATION = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
+_DESTRUCTIVE_ANNOTATION = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False)
 
 
 def _validation_error(tool: str, instance: str, message: str, details: dict[str, Any] | None = None) -> str:
@@ -48,7 +54,7 @@ def _read_drone(state: dict[str, Any], drone_id: int) -> dict[str, Any] | None:
 def register(host: PluginHost) -> None:
     """Register simulation control tools and sim resources."""
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def sim_start(instance: str = "primary") -> str:
         tool = "sim_start"
         try:
@@ -58,7 +64,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to start simulation", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def sim_pause(instance: str = "primary") -> str:
         tool = "sim_pause"
         try:
@@ -68,7 +74,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to pause/resume simulation", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def sim_reset(instance: str = "primary") -> str:
         tool = "sim_reset"
         try:
@@ -78,7 +84,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to reset simulation", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def sim_get_state(instance: str = "primary") -> str:
         tool = "sim_get_state"
         try:
@@ -87,7 +93,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to read simulation state", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def sim_get_drone(drone_id: int, instance: str = "primary") -> str:
         tool = "sim_get_drone"
         if drone_id < 0 or drone_id > 2:
@@ -102,7 +108,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to read drone state", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def sim_get_messages(count: int = 15, instance: str = "primary") -> str:
         tool = "sim_get_messages"
         if count < 1 or count > 30:
@@ -117,7 +123,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to read simulation messages", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_DESTRUCTIVE_ANNOTATION, mutating=True)
     async def sim_inject_fault(
         fault_type: str,
         drone_id: int,
@@ -162,7 +168,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to inject fault", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def sim_clear_faults(instance: str = "primary") -> str:
         tool = "sim_clear_faults"
         try:
@@ -172,7 +178,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to clear faults", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def sim_load_scenario(scenario_id: str, instance: str = "primary") -> str:
         tool = "sim_load_scenario"
         if not scenario_id.strip():
@@ -195,7 +201,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to load scenario", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def sim_list_scenarios(instance: str = "primary") -> str:
         tool = "sim_list_scenarios"
         try:

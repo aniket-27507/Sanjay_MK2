@@ -13,7 +13,7 @@ class FakeMCP:
         self.tools = {}
         self.resources = {}
 
-    def tool(self):
+    def tool(self, **_kwargs):
         def wrapper(func):
             self.tools[func.__name__] = func
             return func
@@ -65,7 +65,7 @@ class FakeInstanceManager:
 async def test_rl_start_and_metrics() -> None:
     mcp = FakeMCP()
     kit = FakeKit()
-    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(kit)))
+    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(kit)), enable_mutations=True)
     register(host)
 
     start = json.loads(await mcp.tools["rl_start_training"]("drone_navigation", ""))
@@ -81,7 +81,7 @@ async def test_rl_start_and_metrics() -> None:
 async def test_rl_adjust_reward_validation() -> None:
     mcp = FakeMCP()
     kit = FakeKit()
-    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(kit)))
+    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(kit)), enable_mutations=True)
     register(host)
 
     bad_component = json.loads(await mcp.tools["rl_adjust_reward"]("unknown", 1.0, "run"))

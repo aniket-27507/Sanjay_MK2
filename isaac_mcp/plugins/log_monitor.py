@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from mcp.types import ToolAnnotations
+
 from isaac_mcp.log_parser import match_error_patterns, parse_log_lines, summarize_errors
 from isaac_mcp.plugin_host import PluginHost
 from isaac_mcp.tool_contract import error, exception_details, success
 
 _TAIL_SNAPSHOTS: dict[str, list[str]] = {}
+_READONLY_ANNOTATION = ToolAnnotations(readOnlyHint=True, idempotentHint=False)
+_MUTATING_ANNOTATION = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
 
 
 def _validation_error(tool: str, instance: str, message: str, details: dict[str, Any] | None = None) -> str:
@@ -45,7 +49,7 @@ def _incremental_diff(previous: list[str], current: list[str]) -> list[str]:
 def register(host: PluginHost) -> None:
     """Register log tools and resources."""
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def logs_read(lines: int = 100, severity: str = "all", instance: str = "primary") -> str:
         tool = "logs_read"
         severity_normalized = severity.lower().strip()
@@ -84,7 +88,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to read logs", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def logs_tail(instance: str = "primary") -> str:
         tool = "logs_tail"
         try:
@@ -106,7 +110,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to tail logs", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def logs_search(pattern: str, lines: int = 50, instance: str = "primary") -> str:
         tool = "logs_search"
 
@@ -133,7 +137,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to search logs", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def logs_errors(instance: str = "primary") -> str:
         tool = "logs_errors"
         try:
@@ -161,7 +165,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to summarize log errors", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def logs_set_path(path: str, instance: str = "primary") -> str:
         tool = "logs_set_path"
 

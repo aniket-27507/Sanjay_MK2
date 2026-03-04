@@ -13,7 +13,7 @@ class FakeMCP:
         self.tools = {}
         self.resources = {}
 
-    def tool(self):
+    def tool(self, **_kwargs):
         def wrapper(func):
             self.tools[func.__name__] = func
             return func

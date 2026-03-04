@@ -13,7 +13,7 @@ class FakeMCP:
         self.tools = {}
         self.resources = {}
 
-    def tool(self):
+    def tool(self, **_kwargs):
         def wrapper(func):
             self.tools[func.__name__] = func
             return func
@@ -65,7 +65,7 @@ class FakeInstanceManager:
 async def test_camera_capture_and_render_mode() -> None:
     mcp = FakeMCP()
     kit = FakeKit()
-    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(kit)))
+    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(kit)), enable_mutations=True)
     register(host)
 
     capture = json.loads(await mcp.tools["camera_capture"]("/World/Cam", "1920x1080"))

@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from mcp.types import ToolAnnotations
+
 from isaac_mcp.plugin_host import PluginHost
 from isaac_mcp.tool_contract import error, exception_details, success
+
+_READONLY_ANNOTATION = ToolAnnotations(readOnlyHint=True, idempotentHint=True)
 
 
 def _validation_error(tool: str, instance: str, message: str, details: dict[str, Any] | None = None) -> str:
@@ -24,7 +28,7 @@ async def _kit_client(host: PluginHost, instance: str):
 def register(host: PluginHost) -> None:
     """Register scene inspection tools and scene hierarchy resource."""
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def scene_list_prims(path: str = "/World", depth: int = 2, instance: str = "primary") -> str:
         tool = "scene_list_prims"
         if not _validate_usd_path(path):
@@ -39,7 +43,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to list scene prims", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def scene_get_prim(prim_path: str, instance: str = "primary") -> str:
         tool = "scene_get_prim"
         if not _validate_usd_path(prim_path):
@@ -52,7 +56,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to get prim details", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def scene_find_prims(pattern: str, prim_type: str = "", instance: str = "primary") -> str:
         tool = "scene_find_prims"
         if not pattern.strip():
@@ -69,7 +73,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to search prims", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def scene_get_materials(prim_path: str = "", instance: str = "primary") -> str:
         tool = "scene_get_materials"
         if prim_path and not _validate_usd_path(prim_path):
@@ -85,7 +89,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to fetch materials", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def scene_get_physics(instance: str = "primary") -> str:
         tool = "scene_get_physics"
         try:
@@ -95,7 +99,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to fetch physics settings", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def scene_get_hierarchy(path: str = "/World", max_depth: int = 4, instance: str = "primary") -> str:
         tool = "scene_get_hierarchy"
         if not _validate_usd_path(path):

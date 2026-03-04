@@ -51,3 +51,5 @@ def test_real_plugin_and_resource_discovery_from_project_config() -> None:
 
     assert _EXPECTED_PLUGINS.issubset(set(loaded_plugins))
     assert _EXPECTED_RESOURCES.issubset(set(host.registered_resources))
+    assert len(host.registered_tools) == 36
+    assert all(host.registered_tool_annotations.get(name) is not None for name in host.registered_tools)

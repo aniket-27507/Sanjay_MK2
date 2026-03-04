@@ -5,8 +5,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from mcp.types import ToolAnnotations
+
 from isaac_mcp.plugin_host import PluginHost
 from isaac_mcp.tool_contract import error, exception_details, success
+
+_READONLY_ANNOTATION = ToolAnnotations(readOnlyHint=True, idempotentHint=True)
+_STREAM_READ_ANNOTATION = ToolAnnotations(readOnlyHint=True, idempotentHint=False)
 
 
 def _validation_error(tool: str, instance: str, message: str, details: dict[str, Any] | None = None) -> str:
@@ -27,7 +32,7 @@ def _ensure_ros2_client(host: PluginHost, instance: str):
 def register(host: PluginHost) -> None:
     """Register ROS2 tools and status resource."""
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def ros2_list_topics(instance: str = "primary") -> str:
         tool = "ros2_list_topics"
         try:
@@ -37,7 +42,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "dependency_unavailable", "Unable to list ROS2 topics", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def ros2_get_odom(drone_name: str, instance: str = "primary") -> str:
         tool = "ros2_get_odom"
         if not drone_name.strip() or len(drone_name) > 64:
@@ -53,7 +58,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "dependency_unavailable", "Unable to read ROS2 odometry", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def ros2_get_image(drone_name: str, camera_type: str = "rgb", instance: str = "primary") -> str:
         tool = "ros2_get_image"
         if not drone_name.strip() or len(drone_name) > 64:
@@ -72,7 +77,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "dependency_unavailable", "Unable to read ROS2 image", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def ros2_get_imu(drone_name: str, instance: str = "primary") -> str:
         tool = "ros2_get_imu"
         if not drone_name.strip() or len(drone_name) > 64:
@@ -88,7 +93,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "dependency_unavailable", "Unable to read ROS2 IMU", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_STREAM_READ_ANNOTATION)
     async def ros2_subscribe(topic: str, duration_s: float = 5.0, instance: str = "primary") -> str:
         tool = "ros2_subscribe"
         if not topic.startswith("/") or len(topic) > 256:

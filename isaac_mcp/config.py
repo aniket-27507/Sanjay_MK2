@@ -77,9 +77,43 @@ class PluginConfig:
 
 
 @dataclass(slots=True)
+class RuntimeConfig:
+    transport_mode: str = "stdio"
+    host: str = "127.0.0.1"
+    port: int = 8000
+    mount_path: str = "/"
+    streamable_http_path: str = "/mcp"
+    sse_path: str = "/sse"
+    public_base_url: str = ""
+    health_path: str = "/healthz"
+
+
+@dataclass(slots=True)
+class AuthConfig:
+    enabled: bool = False
+    issuer_url: str = ""
+    resource_server_url: str = ""
+    service_documentation_url: str = ""
+    required_scopes: list[str] = field(default_factory=lambda: ["mcp:read"])
+    jwks_url: str = ""
+    audience: str = ""
+    algorithms: list[str] = field(default_factory=lambda: ["RS256"])
+    client_id_claim: str = "client_id"
+    scopes_claim: str = "scope"
+
+
+@dataclass(slots=True)
+class SecurityConfig:
+    enable_mutations: bool = False
+
+
+@dataclass(slots=True)
 class ServerConfig:
     name: str = "isaac-sim-mcp"
     version: str = "0.1.0"
+    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
+    security: SecurityConfig = field(default_factory=SecurityConfig)
     instances: dict[str, InstanceConfig] = field(default_factory=lambda: {"primary": InstanceConfig()})
     plugins: PluginConfig = field(default_factory=PluginConfig)
 
@@ -102,9 +136,12 @@ def load_config(config_path: str | Path = "config/mcp_server.yaml") -> ServerCon
 
 
 def _parse_config(raw: dict[str, Any]) -> ServerConfig:
-    server = raw.get("server", {})
-    instances_raw = raw.get("instances", {})
-    plugins_raw = raw.get("plugins", {})
+    server = raw.get("server", {}) or {}
+    runtime_raw = server.get("runtime", {}) or {}
+    auth_raw = server.get("auth", {}) or {}
+    security_raw = server.get("security", {}) or {}
+    instances_raw = raw.get("instances", {}) or {}
+    plugins_raw = raw.get("plugins", {}) or {}
 
     instances: dict[str, InstanceConfig] = {}
     for instance_name, instance_raw_any in instances_raw.items():
@@ -162,6 +199,31 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
     return ServerConfig(
         name=str(server.get("name", "isaac-sim-mcp")),
         version=str(server.get("version", "0.1.0")),
+        runtime=RuntimeConfig(
+            transport_mode=str(runtime_raw.get("transport_mode", server.get("transport_mode", "stdio"))),
+            host=str(runtime_raw.get("host", "127.0.0.1")),
+            port=int(runtime_raw.get("port", 8000)),
+            mount_path=str(runtime_raw.get("mount_path", "/")),
+            streamable_http_path=str(runtime_raw.get("streamable_http_path", "/mcp")),
+            sse_path=str(runtime_raw.get("sse_path", "/sse")),
+            public_base_url=str(runtime_raw.get("public_base_url", "")),
+            health_path=str(runtime_raw.get("health_path", "/healthz")),
+        ),
+        auth=AuthConfig(
+            enabled=bool(auth_raw.get("enabled", False)),
+            issuer_url=str(auth_raw.get("issuer_url", "")),
+            resource_server_url=str(auth_raw.get("resource_server_url", "")),
+            service_documentation_url=str(auth_raw.get("service_documentation_url", "")),
+            required_scopes=_parse_str_list(auth_raw.get("required_scopes"), default=["mcp:read"]),
+            jwks_url=str(auth_raw.get("jwks_url", "")),
+            audience=str(auth_raw.get("audience", "")),
+            algorithms=_parse_str_list(auth_raw.get("algorithms"), default=["RS256"]),
+            client_id_claim=str(auth_raw.get("client_id_claim", "client_id")),
+            scopes_claim=str(auth_raw.get("scopes_claim", "scope")),
+        ),
+        security=SecurityConfig(
+            enable_mutations=bool(security_raw.get("enable_mutations", False)),
+        ),
         instances=instances,
         plugins=PluginConfig(
             auto_discover=bool(plugins_raw.get("auto_discover", True)),
@@ -173,18 +235,75 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
 
 def _apply_env_overrides(config: ServerConfig) -> None:
     primary = config.instances.get("primary")
-    if not primary:
-        return
+    if primary is not None:
+        if websocket_url := os.environ.get("ISAAC_MCP_WS_URL"):
+            primary.simulation.websocket_url = websocket_url
 
-    if websocket_url := os.environ.get("ISAAC_MCP_WS_URL"):
-        primary.simulation.websocket_url = websocket_url
+        if kit_url := os.environ.get("ISAAC_MCP_KIT_URL"):
+            primary.kit_api.base_url = kit_url
+            primary.kit_api.enabled = True
 
-    if kit_url := os.environ.get("ISAAC_MCP_KIT_URL"):
-        primary.kit_api.base_url = kit_url
-        primary.kit_api.enabled = True
+        if log_path := os.environ.get("ISAAC_MCP_LOG_PATH"):
+            primary.logs.remote_path = log_path
 
-    if log_path := os.environ.get("ISAAC_MCP_LOG_PATH"):
-        primary.logs.remote_path = log_path
+        if ssh_host := os.environ.get("ISAAC_MCP_SSH_HOST"):
+            primary.logs.ssh.host = ssh_host
 
-    if ssh_host := os.environ.get("ISAAC_MCP_SSH_HOST"):
-        primary.logs.ssh.host = ssh_host
+    if transport := os.environ.get("ISAAC_MCP_TRANSPORT"):
+        config.runtime.transport_mode = transport
+
+    if host := os.environ.get("ISAAC_MCP_HOST"):
+        config.runtime.host = host
+
+    if port := os.environ.get("ISAAC_MCP_PORT"):
+        config.runtime.port = int(port)
+
+    if path := os.environ.get("ISAAC_MCP_PATH"):
+        config.runtime.streamable_http_path = path
+
+    if base_url := os.environ.get("ISAAC_MCP_PUBLIC_BASE_URL"):
+        config.runtime.public_base_url = base_url
+
+    if health_path := os.environ.get("ISAAC_MCP_HEALTH_PATH"):
+        config.runtime.health_path = health_path
+
+    if auth_enabled := os.environ.get("ISAAC_MCP_AUTH_ENABLED"):
+        config.auth.enabled = _parse_bool(auth_enabled)
+
+    if issuer := os.environ.get("ISAAC_MCP_AUTH_ISSUER_URL"):
+        config.auth.issuer_url = issuer
+
+    if resource_url := os.environ.get("ISAAC_MCP_AUTH_RESOURCE_URL"):
+        config.auth.resource_server_url = resource_url
+
+    if jwks := os.environ.get("ISAAC_MCP_AUTH_JWKS_URL"):
+        config.auth.jwks_url = jwks
+
+    if audience := os.environ.get("ISAAC_MCP_AUTH_AUDIENCE"):
+        config.auth.audience = audience
+
+    if scopes := os.environ.get("ISAAC_MCP_AUTH_REQUIRED_SCOPES"):
+        config.auth.required_scopes = _parse_str_list(scopes, default=["mcp:read"])
+
+    if algorithms := os.environ.get("ISAAC_MCP_AUTH_ALGORITHMS"):
+        config.auth.algorithms = _parse_str_list(algorithms, default=["RS256"])
+
+    if enable_mutations := os.environ.get("ISAAC_MCP_ENABLE_MUTATIONS"):
+        config.security.enable_mutations = _parse_bool(enable_mutations)
+
+
+def _parse_str_list(value: Any, default: list[str]) -> list[str]:
+    if value is None:
+        return list(default)
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",") if item.strip()]
+        return items or list(default)
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return items or list(default)
+    return list(default)
+
+
+def _parse_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    return normalized in {"1", "true", "yes", "on"}

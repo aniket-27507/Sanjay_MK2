@@ -11,6 +11,8 @@ def test_load_config_defaults_when_file_missing(tmp_path: Path) -> None:
     assert cfg.name == "isaac-sim-mcp"
     assert "primary" in cfg.instances
     assert cfg.instances["primary"].simulation.websocket_url == "ws://localhost:8765"
+    assert cfg.runtime.transport_mode == "stdio"
+    assert cfg.security.enable_mutations is False
 
 
 def test_load_config_from_yaml(tmp_path: Path) -> None:
@@ -20,6 +22,18 @@ def test_load_config_from_yaml(tmp_path: Path) -> None:
 server:
   name: custom-server
   version: 9.9.9
+  runtime:
+    transport_mode: streamable-http
+    host: 0.0.0.0
+    port: 8123
+    streamable_http_path: /custom-mcp
+  auth:
+    enabled: true
+    issuer_url: https://issuer.example.com
+    resource_server_url: https://mcp.example.com
+    required_scopes: [mcp:read, mcp:write]
+  security:
+    enable_mutations: true
 instances:
   primary:
     label: Local Instance
@@ -44,6 +58,13 @@ plugins:
     assert cfg.plugins.auto_discover is False
     assert cfg.plugins.plugin_dir == "plugins_dir"
     assert cfg.plugins.disabled == ["foo"]
+    assert cfg.runtime.transport_mode == "streamable-http"
+    assert cfg.runtime.host == "0.0.0.0"
+    assert cfg.runtime.port == 8123
+    assert cfg.runtime.streamable_http_path == "/custom-mcp"
+    assert cfg.auth.enabled is True
+    assert cfg.auth.required_scopes == ["mcp:read", "mcp:write"]
+    assert cfg.security.enable_mutations is True
 
 
 def test_env_overrides(monkeypatch, tmp_path: Path) -> None:
@@ -54,6 +75,15 @@ def test_env_overrides(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("ISAAC_MCP_KIT_URL", "http://env-host:8211")
     monkeypatch.setenv("ISAAC_MCP_LOG_PATH", "/remote/logs")
     monkeypatch.setenv("ISAAC_MCP_SSH_HOST", "env-ssh-host")
+    monkeypatch.setenv("ISAAC_MCP_TRANSPORT", "streamable-http")
+    monkeypatch.setenv("ISAAC_MCP_HOST", "0.0.0.0")
+    monkeypatch.setenv("ISAAC_MCP_PORT", "9001")
+    monkeypatch.setenv("ISAAC_MCP_PATH", "/remote-mcp")
+    monkeypatch.setenv("ISAAC_MCP_ENABLE_MUTATIONS", "true")
+    monkeypatch.setenv("ISAAC_MCP_AUTH_ENABLED", "1")
+    monkeypatch.setenv("ISAAC_MCP_AUTH_ISSUER_URL", "https://issuer.example.com")
+    monkeypatch.setenv("ISAAC_MCP_AUTH_RESOURCE_URL", "https://mcp.example.com")
+    monkeypatch.setenv("ISAAC_MCP_AUTH_REQUIRED_SCOPES", "mcp:read,mcp:write")
 
     cfg = load_config(config_file)
 
@@ -63,3 +93,12 @@ def test_env_overrides(monkeypatch, tmp_path: Path) -> None:
     assert primary.kit_api.enabled is True
     assert primary.logs.remote_path == "/remote/logs"
     assert primary.logs.ssh.host == "env-ssh-host"
+    assert cfg.runtime.transport_mode == "streamable-http"
+    assert cfg.runtime.host == "0.0.0.0"
+    assert cfg.runtime.port == 9001
+    assert cfg.runtime.streamable_http_path == "/remote-mcp"
+    assert cfg.security.enable_mutations is True
+    assert cfg.auth.enabled is True
+    assert cfg.auth.issuer_url == "https://issuer.example.com"
+    assert cfg.auth.resource_server_url == "https://mcp.example.com"
+    assert cfg.auth.required_scopes == ["mcp:read", "mcp:write"]

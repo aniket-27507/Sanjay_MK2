@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from mcp.types import ToolAnnotations
+
 from isaac_mcp.plugin_host import PluginHost
 from isaac_mcp.tool_contract import error, exception_details, success
 
@@ -14,6 +16,9 @@ _VALID_REWARD_COMPONENTS = {
     "smooth_control",
     "progress_reward",
 }
+
+_READONLY_ANNOTATION = ToolAnnotations(readOnlyHint=True, idempotentHint=True)
+_MUTATING_ANNOTATION = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False)
 
 
 def _validation_error(tool: str, instance: str, message: str, details: dict[str, Any] | None = None) -> str:
@@ -27,7 +32,7 @@ async def _kit_client(host: PluginHost, instance: str):
 def register(host: PluginHost) -> None:
     """Register RL training tools."""
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def rl_start_training(task: str, config: str = "", instance: str = "primary") -> str:
         tool = "rl_start_training"
         if not task.strip():
@@ -44,7 +49,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to start training", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_READONLY_ANNOTATION)
     async def rl_get_metrics(run_id: str = "", instance: str = "primary") -> str:
         tool = "rl_get_metrics"
         if len(run_id) > 128:
@@ -57,7 +62,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to get training metrics", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def rl_stop_training(run_id: str = "", instance: str = "primary") -> str:
         tool = "rl_stop_training"
         if len(run_id) > 128:
@@ -70,7 +75,7 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to stop training", exception_details(exc))
 
-    @host.tool()
+    @host.tool(annotations=_MUTATING_ANNOTATION, mutating=True)
     async def rl_adjust_reward(component: str, weight: float, run_id: str = "", instance: str = "primary") -> str:
         tool = "rl_adjust_reward"
         if component not in _VALID_REWARD_COMPONENTS:

@@ -1,66 +1,43 @@
 # Isaac Sim MCP Server (`isaac-mcp`)
 
-Bridge AI assistants (Claude Code, Cursor, any MCP client) to NVIDIA Isaac Sim with a production-structured MCP server over stdio.
+Remote-capable MCP server that bridges Claude/Cursor/Claude Code to NVIDIA Isaac Sim.
 
-This project exposes:
-- 30 MCP tools across 6 plugins
-- 6 MCP resources
-- Multi-instance connection management
-- Structured JSON tool response contract
-- Plugin auto-discovery and per-plugin fault isolation
+The project supports:
+- Local `stdio` mode for development
+- Remote HTTPS mode (`streamable-http`, optional `sse`) for URL-based onboarding
+- OAuth bearer-token verification for private rollouts
+- Read-only-by-default safety posture with explicit mutation gating
 
-## Features
+## What Ships
 
-- Simulation control over WebSocket (`simulation_server.py` compatible)
-- USD scene inspection over Kit REST API
-- Camera capture and render control
-- Remote log read/search/error summarization over SSH
-- ROS 2 topic access with graceful degrade when `rclpy` is unavailable
-- RL training run control and metric retrieval
+- 36 tools across 6 plugins:
+  - `sim_control` (10)
+  - `scene_inspect` (6)
+  - `camera_render` (6)
+  - `log_monitor` (5)
+  - `ros2_bridge` (5)
+  - `rl_training` (4)
+- 6 MCP resources:
+  - `isaac://logs/latest`
+  - `isaac://logs/errors`
+  - `isaac://sim/state`
+  - `isaac://sim/config`
+  - `isaac://scene/hierarchy`
+  - `isaac://ros2/status`
+- Multi-instance connection lifecycle manager
+- Structured JSON tool contract for success/error responses
+- Tool safety annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`)
 
-## Architecture
+## Key Paths
 
-- MCP transport: `stdio` via `FastMCP`
-- Core services:
-  - Config loader: `isaac_mcp/config.py`
-  - Instance lifecycle: `isaac_mcp/instance_manager.py`
-  - Plugin framework: `isaac_mcp/plugin_host.py`
-  - Tool output contract: `isaac_mcp/tool_contract.py`
-- Connections:
-  - `WebSocketClient` for sim state/commands
-  - `KitApiClient` for scene/render/RL endpoints
-  - `SSHLogReader` for Kit log ingestion
-  - `Ros2Client` for topic cache/status
-
-## Project Layout
-
-```text
-.
-├── config/
-│   └── mcp_server.yaml
-├── docs/
-│   └── registration_and_verification.md
-├── isaac_mcp/
-│   ├── connections/
-│   ├── plugins/
-│   ├── config.py
-│   ├── instance_manager.py
-│   ├── plugin_host.py
-│   ├── server.py
-│   ├── error_patterns.py
-│   ├── log_parser.py
-│   └── tool_contract.py
-├── tests/
-├── .mcp.json
-├── pyproject.toml
-└── README.md
-```
-
-## Requirements
-
-- Python `>=3.10`
-- Network access from this machine to your Isaac Sim host/services
-- Optional for ROS 2 tools: `rclpy`
+- Server entry: `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/server.py`
+- Config schema: `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/config.py`
+- OAuth/JWKS verifier: `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/auth.py`
+- Plugin host + safety gate: `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/plugin_host.py`
+- Default config: `/Users/archishmanpaul/Desktop/MCP/config/mcp_server.yaml`
+- Cloudflare deployment assets: `/Users/archishmanpaul/Desktop/MCP/deploy/cloudflare`
+- Cursor one-click helper script: `/Users/archishmanpaul/Desktop/MCP/scripts/generate_cursor_deeplink.py`
+- Cursor install page template: `/Users/archishmanpaul/Desktop/MCP/docs/cursor_install.html`
 
 ## Install
 
@@ -71,294 +48,243 @@ python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 ```
 
-Optional ROS 2 extras (if your local Python has compatible ROS bindings):
+Optional ROS2 extras:
+
 ```bash
 .venv/bin/pip install -e '.[ros2]'
 ```
 
-## Configuration
+## Run Modes
 
-Primary config file: `config/mcp_server.yaml`
-
-Key sections:
-- `server`: MCP server metadata
-- `instances`: one or more Isaac Sim targets (`primary` default)
-- `plugins`: auto-discovery and disable-list
-
-### Environment Overrides
-
-These override `instances.primary` values:
-- `ISAAC_MCP_WS_URL` → `simulation.websocket_url`
-- `ISAAC_MCP_KIT_URL` → `kit_api.base_url` (also enables kit API)
-- `ISAAC_MCP_LOG_PATH` → `logs.remote_path`
-- `ISAAC_MCP_SSH_HOST` → `logs.ssh.host`
-
-Example:
-```bash
-export ISAAC_MCP_WS_URL='ws://192.168.1.100:8765'
-export ISAAC_MCP_KIT_URL='http://192.168.1.100:8211'
-export ISAAC_MCP_SSH_HOST='192.168.1.100'
-export ISAAC_MCP_LOG_PATH='~/.local/share/ov/pkg/isaac-sim/kit/logs/'
-```
-
-## Run
+### 1) Local stdio (default)
 
 ```bash
 .venv/bin/python -m isaac_mcp.server
 ```
 
-Expected startup behavior:
-- logs to `stderr` only
-- keeps `stdout` clean for MCP JSON-RPC
-- loads plugins from `isaac_mcp/plugins`
+Or explicitly:
 
-## Register with MCP Clients
+```bash
+.venv/bin/python -m isaac_mcp.server --transport stdio
+```
 
-### Claude Code (project scope)
+### 2) Remote streamable HTTP (URL-first)
 
-Project file already exists: `.mcp.json`
+```bash
+ISAAC_MCP_TRANSPORT=streamable-http \
+ISAAC_MCP_HOST=127.0.0.1 \
+ISAAC_MCP_PORT=8000 \
+ISAAC_MCP_PATH=/mcp \
+ISAAC_MCP_PUBLIC_BASE_URL='https://mcp.your-domain.com' \
+.venv/bin/python -m isaac_mcp.server
+```
 
-CLI alternative:
+Health route default:
+
+```bash
+curl -fsS http://127.0.0.1:8000/healthz
+```
+
+## OAuth (Remote)
+
+Remote auth is disabled by default. Enable via config or env:
+
+```bash
+export ISAAC_MCP_AUTH_ENABLED=true
+export ISAAC_MCP_AUTH_ISSUER_URL='https://auth.example.com'
+export ISAAC_MCP_AUTH_RESOURCE_URL='https://mcp.your-domain.com'
+export ISAAC_MCP_AUTH_REQUIRED_SCOPES='mcp:read'
+export ISAAC_MCP_AUTH_JWKS_URL='https://auth.example.com/.well-known/jwks.json'
+```
+
+Notes:
+- JWT verification uses JWKS (`kid` required in token header).
+- Required scopes are enforced.
+- Expired/invalid tokens are rejected by auth middleware.
+
+## Safety Defaults
+
+Mutation tools are blocked by default.
+
+Enable explicitly only when required:
+
+```bash
+export ISAAC_MCP_ENABLE_MUTATIONS=true
+```
+
+When disabled, mutating tools return:
+- `status=error`
+- `error.code=mutation_disabled`
+
+## Configuration
+
+Main file: `/Users/archishmanpaul/Desktop/MCP/config/mcp_server.yaml`
+
+Top-level sections:
+- `server.runtime`: transport + bind + URL paths
+- `server.auth`: OAuth issuer/resource/scopes/JWKS
+- `server.security`: mutation gate
+- `instances`: per-instance Isaac endpoints
+- `plugins`: auto-discovery and plugin disable list
+
+Environment overrides:
+- `ISAAC_MCP_WS_URL`
+- `ISAAC_MCP_KIT_URL`
+- `ISAAC_MCP_LOG_PATH`
+- `ISAAC_MCP_SSH_HOST`
+- `ISAAC_MCP_TRANSPORT`
+- `ISAAC_MCP_HOST`
+- `ISAAC_MCP_PORT`
+- `ISAAC_MCP_PATH`
+- `ISAAC_MCP_PUBLIC_BASE_URL`
+- `ISAAC_MCP_HEALTH_PATH`
+- `ISAAC_MCP_AUTH_ENABLED`
+- `ISAAC_MCP_AUTH_ISSUER_URL`
+- `ISAAC_MCP_AUTH_RESOURCE_URL`
+- `ISAAC_MCP_AUTH_JWKS_URL`
+- `ISAAC_MCP_AUTH_AUDIENCE`
+- `ISAAC_MCP_AUTH_REQUIRED_SCOPES`
+- `ISAAC_MCP_AUTH_ALGORITHMS`
+- `ISAAC_MCP_ENABLE_MUTATIONS`
+
+## Cloudflare-First Remote Exposure
+
+Use Cloudflare Tunnel to expose only HTTPS while keeping MCP local near Isaac.
+
+See:
+- `/Users/archishmanpaul/Desktop/MCP/deploy/cloudflare/README.md`
+- `/Users/archishmanpaul/Desktop/MCP/deploy/cloudflare/cloudflared-config.example.yml`
+- `/Users/archishmanpaul/Desktop/MCP/deploy/cloudflare/systemd/isaac-mcp.service`
+- `/Users/archishmanpaul/Desktop/MCP/deploy/cloudflare/systemd/cloudflared.service`
+
+## Claude Connector Onboarding (Remote URL)
+
+Use your remote endpoint URL (example `https://mcp.your-domain.com/mcp`) in Claude connector settings.
+
+Docs:
+- [Custom connectors setup](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)
+- [Remote MCP auth/transport behavior](https://support.claude.com/en/articles/11503834-building-custom-connectors-via-remote-mcp-servers)
+- [Directory submission guide](https://support.claude.com/en/articles/12922490-remote-mcp-server-submission-guide)
+
+## Cursor One-Click Install
+
+Generate deeplink/install URL:
+
+```bash
+cd /Users/archishmanpaul/Desktop/MCP
+.venv/bin/python scripts/generate_cursor_deeplink.py \
+  --name isaac-sim \
+  --remote-url 'https://mcp.your-domain.com/mcp'
+```
+
+Outputs:
+- `cursor://anysphere.cursor-deeplink/mcp/install?...`
+- `https://cursor.com/install-mcp?...`
+
+You can also host `/Users/archishmanpaul/Desktop/MCP/docs/cursor_install.html` as a simple install landing page.
+
+## Claude Code Compatibility
+
+### Local stdio (project scope)
+
+`/Users/archishmanpaul/Desktop/MCP/.mcp.json` already contains stdio config.
+
+CLI:
+
 ```bash
 cd /Users/archishmanpaul/Desktop/MCP
 claude mcp add --transport stdio --scope project isaac-sim -- .venv/bin/python -m isaac_mcp.server
 claude mcp list
 ```
 
-### Cursor
+### Remote URL mode
 
-Add to `~/.cursor/mcp.json`:
+If your Claude Code build supports remote MCP config, use the same remote endpoint and OAuth setup used for Connectors.
 
-```json
-{
-  "mcpServers": {
-    "isaac-sim": {
-      "type": "stdio",
-      "command": "/Users/archishmanpaul/Desktop/MCP/.venv/bin/python",
-      "args": ["-m", "isaac_mcp.server"],
-      "env": {
-        "PYTHONPATH": "/Users/archishmanpaul/Desktop/MCP"
-      }
-    }
-  }
-}
-```
+## Integrating With Any Isaac Sim Project
 
-## Integrating Into Any Isaac Sim Project
+For arbitrary Isaac Sim projects, integration is mostly endpoint/topic mapping:
 
-This MCP server is designed to be project-agnostic. You can connect it to an arbitrary Isaac Sim project by mapping your project's endpoints, topics, and workflows to this server's config and tools.
+1. Ensure your project exposes equivalent surfaces:
+- simulation command/state channel (WebSocket)
+- scene/render/RL HTTP endpoints (or adapters)
+- log access (SSH path or local)
+- optional ROS2 topics
 
-### 1) Confirm your Isaac Sim project exposes required surfaces
+2. Update `/Users/archishmanpaul/Desktop/MCP/config/mcp_server.yaml` for your project:
+- `instances.<id>.simulation.websocket_url`
+- `instances.<id>.kit_api.base_url`
+- `instances.<id>.logs.*`
+- `instances.<id>.ros2.*`
+- `instances.<id>.training.log_dir`
 
-At minimum, ensure your project provides:
-- A simulation command/state channel over WebSocket (compatible with `start/pause/reset/...` command pattern)
-- Kit API endpoints for scene/render/RL operations (or equivalent endpoints you can map)
-- Access to Kit logs (SSH path or local mount)
-- Optional: ROS 2 topics for sensor data
+3. If your endpoint paths differ, adapt plugin endpoint mappings in:
+- `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/plugins/scene_inspect.py`
+- `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/plugins/camera_render.py`
+- `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/plugins/rl_training.py`
 
-If your project uses different endpoint paths, adapt plugin endpoint calls accordingly.
+4. If ROS naming differs, update topic construction in:
+- `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/plugins/ros2_bridge.py`
 
-### 2) Point MCP config to your project
-
-Edit `config/mcp_server.yaml` (or use env overrides) so `instances.primary` targets your running project.
-
-Map these fields:
-- `simulation.websocket_url` -> your simulation WebSocket host:port
-- `kit_api.base_url` -> your Kit/HTTP control API
-- `logs.ssh.host/user/key_path/remote_path` -> your log host + path
-- `ros2.domain_id/topics` -> your actual ROS domain and topics
-- `training.log_dir` -> your RL outputs (if used)
-
-### 3) Align topic and naming conventions
-
-If your drones/entities are not named like `alpha_0`, update usage expectations:
-- `ros2_get_odom`, `ros2_get_image`, `ros2_get_imu` construct topic names from `drone_name`
-- Ensure callers use your project's entity names, or adapt topic construction in `isaac_mcp/plugins/ros2_bridge.py`
-
-### 4) Validate endpoint compatibility
-
-Plugins expect these logical API groups:
-- `scene_inspect`: `/scene/*`
-- `camera_render`: `/camera/*`, `/render/*`
-- `rl_training`: `/rl/*`
-
-If your project differs:
-- Add a translation layer in the plugin, or
-- Expose compatibility endpoints in your Isaac Sim project
-
-### 5) Register MCP in your assistant context
-
-For each project repo where you want assistant access, register:
-- Claude Code: project `.mcp.json` or `claude mcp add --scope project`
-- Cursor: `~/.cursor/mcp.json`
-
-Use the Python executable where `isaac-mcp` is installed (typically this repo's `.venv/bin/python`).
-
-### 6) Smoke-test against your project
-
-After wiring config:
-1. Start your Isaac Sim project services.
-2. Start MCP server:
-   ```bash
-   .venv/bin/python -m isaac_mcp.server
-   ```
-3. Run representative prompts/tools:
-   - `sim_get_state`
-   - `scene_list_prims`
-   - `camera_capture`
-   - `logs_errors`
-   - `ros2_list_topics` (if enabled)
-   - `rl_get_metrics` (if enabled)
-
-### 7) Common adaptation points
-
-Most arbitrary-project integrations only need edits in:
-- `config/mcp_server.yaml` (host/ports/paths/topics)
-- `isaac_mcp/plugins/scene_inspect.py` (custom scene endpoint mapping)
-- `isaac_mcp/plugins/camera_render.py` (capture/render endpoint mapping)
-- `isaac_mcp/plugins/rl_training.py` (training launch/metric endpoint mapping)
-- `isaac_mcp/plugins/ros2_bridge.py` (topic naming conventions)
-
-### 8) Recommended integration workflow for teams
-
-1. Keep one shared `config/mcp_server.yaml` with safe placeholders.
-2. Use environment variables for machine-specific values.
-3. Add a project `docs/mcp_integration.md` that records:
-   - service URLs
-   - ROS topic map
-   - known endpoint deviations from defaults
-4. Add CI smoke tests calling `.venv/bin/python -m pytest -q` to prevent regressions in plugin contracts.
+5. Smoke-test representative tools after mapping:
+- `sim_get_state`
+- `scene_list_prims`
+- `camera_capture`
+- `logs_errors`
+- `ros2_list_topics`
+- `rl_get_metrics`
 
 ## Tool Response Contract
 
-All tools return a JSON string.
+All tools return JSON string payloads.
 
 Success:
+
 ```json
-{
-  "status": "ok",
-  "tool": "<name>",
-  "instance": "<id>",
-  "data": {"...": "..."},
-  "error": null
-}
+{"status":"ok","tool":"<name>","instance":"<id>","data":{},"error":null}
 ```
 
-Failure:
+Error:
+
 ```json
-{
-  "status": "error",
-  "tool": "<name>",
-  "instance": "<id>",
-  "data": null,
-  "error": {
-    "code": "validation_error|not_connected|timeout|upstream_error|dependency_unavailable|not_found",
-    "message": "...",
-    "details": {}
-  }
-}
+{"status":"error","tool":"<name>","instance":"<id>","data":null,"error":{"code":"<code>","message":"<msg>","details":{}}}
 ```
 
-## Plugins and Tools
+Common error codes:
+- `validation_error`
+- `not_found`
+- `upstream_error`
+- `dependency_unavailable`
+- `mutation_disabled`
 
-### 1) `sim_control` (10)
-- `sim_start`
-- `sim_pause`
-- `sim_reset`
-- `sim_get_state`
-- `sim_get_drone`
-- `sim_get_messages`
-- `sim_inject_fault`
-- `sim_clear_faults`
-- `sim_load_scenario`
-- `sim_list_scenarios`
+## Tests
 
-### 2) `scene_inspect` (6)
-- `scene_list_prims`
-- `scene_get_prim`
-- `scene_find_prims`
-- `scene_get_materials`
-- `scene_get_physics`
-- `scene_get_hierarchy`
-
-### 3) `camera_render` (6)
-- `camera_capture`
-- `camera_set_viewpoint`
-- `camera_list`
-- `render_set_mode`
-- `render_get_settings`
-- `render_set_settings`
-
-### 4) `log_monitor` (5)
-- `logs_read`
-- `logs_tail`
-- `logs_search`
-- `logs_errors`
-- `logs_set_path`
-
-### 5) `ros2_bridge` (5)
-- `ros2_list_topics`
-- `ros2_get_odom`
-- `ros2_get_image`
-- `ros2_get_imu`
-- `ros2_subscribe`
-
-### 6) `rl_training` (4)
-- `rl_start_training`
-- `rl_get_metrics`
-- `rl_stop_training`
-- `rl_adjust_reward`
-
-## Resources
-
-- `isaac://logs/latest`
-- `isaac://logs/errors`
-- `isaac://sim/state`
-- `isaac://sim/config`
-- `isaac://scene/hierarchy`
-- `isaac://ros2/status`
-
-## Testing
-
-Run full suite:
 ```bash
+cd /Users/archishmanpaul/Desktop/MCP
 .venv/bin/python -m pytest -q
 ```
 
-Current suite validates:
-- config parsing and env overrides
-- plugin discovery and registration
-- connection clients (WS/HTTP/SSH)
-- per-plugin behavior and validation paths
-- integration smoke for plugin/resource loading
+Coverage includes:
+- config parsing + env overrides
+- plugin host registration/discovery + mutation gate
+- transport/auth wiring
+- connection/client behavior
+- per-plugin tool behavior
+- integration smoke and annotation presence
 
-## Security and Reliability Notes
+## Troubleshooting
 
-- Keep real host/user/key values out of git-tracked files.
-- Use env vars or local untracked config edits for secrets.
-- SSH path/pattern handling is bounded and validated.
-- Plugin load failures are logged and isolated.
-- ROS 2 plugin does not crash server when dependency is missing.
+- Auth errors on remote connector:
+  - verify issuer, JWKS URL, and required scopes
+  - verify OAuth callback allowlist required by Claude
+- Connector reachable but tools fail:
+  - run `/healthz` and inspect instance health fields
+  - validate internal WS/Kit/SSH endpoints are reachable from MCP host
+- Mutation calls blocked:
+  - expected unless `ISAAC_MCP_ENABLE_MUTATIONS=true`
+- ROS2 failures:
+  - install `rclpy` or disable ROS2 plugin
 
-## Quick Troubleshooting
+## Registration/Verification Doc
 
-- `Not connected to simulation server`: verify WebSocket endpoint and remote server process.
-- `Kit API` failures: verify host/port and endpoint availability (`/health`).
-- `SSH` failures: validate host/user/key and log path.
-- `ros2_bridge` dependency errors: install `rclpy` or disable plugin in config.
-- MCP client does not see server: re-check client config JSON and restart client.
-
-## Git Push (branch mismatch fix)
-
-If your local branch is `master` and remote expects `main`:
-
-```bash
-git branch -m master main
-git push -u origin main
-```
-
-If you keep `master`:
-
-```bash
-git push -u origin master
-```
+See `/Users/archishmanpaul/Desktop/MCP/docs/registration_and_verification.md` for step-by-step verification flows.

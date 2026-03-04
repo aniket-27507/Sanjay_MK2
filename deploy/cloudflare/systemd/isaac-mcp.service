@@ -1,0 +1,21 @@
+[Unit]
+Description=Isaac MCP Server
+After=network.target
+
+[Service]
+Type=simple
+User=isaac
+WorkingDirectory=/opt/isaac-mcp
+Environment=PYTHONUNBUFFERED=1
+Environment=ISAAC_MCP_TRANSPORT=streamable-http
+Environment=ISAAC_MCP_HOST=127.0.0.1
+Environment=ISAAC_MCP_PORT=8000
+Environment=ISAAC_MCP_PATH=/mcp
+Environment=ISAAC_MCP_AUTH_ENABLED=true
+Environment=ISAAC_MCP_ENABLE_MUTATIONS=false
+ExecStart=/opt/isaac-mcp/.venv/bin/python -m isaac_mcp.server
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

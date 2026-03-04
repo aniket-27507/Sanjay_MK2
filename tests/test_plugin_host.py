@@ -2,17 +2,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import json
+import pytest
+from mcp.types import ToolAnnotations
+
 from isaac_mcp.plugin_host import PluginHost, discover_and_load_plugins
 
 
 class FakeMCP:
     def __init__(self) -> None:
         self.tools: list[str] = []
+        self.tool_annotations: dict[str, object] = {}
         self.resources: list[str] = []
 
-    def tool(self):
+    def tool(self, **kwargs):
         def wrapper(func):
             self.tools.append(func.__name__)
+            self.tool_annotations[func.__name__] = kwargs.get("annotations")
             return func
 
         return wrapper
@@ -54,6 +60,15 @@ def test_tool_and_resource_registration() -> None:
     assert "isaac://sim/state" in mcp.resources
     assert host.registered_tools == ["sample_tool"]
     assert host.registered_resources == ["isaac://sim/state"]
+
+    annotation = ToolAnnotations(readOnlyHint=True, idempotentHint=True)
+
+    @host.tool(annotations=annotation)
+    async def annotated_tool() -> str:
+        return "ok"
+
+    assert mcp.tool_annotations["annotated_tool"] == annotation
+    assert host.registered_tool_annotations["annotated_tool"] == annotation
 
 
 def test_get_connection_and_state_cache() -> None:
@@ -99,3 +114,16 @@ raise RuntimeError('boom')
     loaded = discover_and_load_plugins(host, str(plugin_dir), disabled=["disabled_plugin"])
 
     assert loaded == ["good_plugin"]
+
+
+@pytest.mark.asyncio
+async def test_mutating_tool_blocked_when_disabled() -> None:
+    host = PluginHost(FakeMCP(), FakeInstanceManager(), enable_mutations=False)
+
+    @host.tool(mutating=True)
+    async def change_state(instance: str = "primary") -> str:
+        return "should-not-run"
+
+    result = json.loads(await change_state())
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "mutation_disabled"

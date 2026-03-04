@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "isaac-mcp"
 version = "0.1.0"
 description = "MCP server bridging AI coding assistants with NVIDIA Isaac Sim"
-readme = "create.md"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "mcp[cli]>=1.2.0",
@@ -15,6 +15,7 @@ dependencies = [
     "asyncssh>=2.14.0",
     "pyyaml>=6.0",
     "Pillow>=10.0",
+    "PyJWT[crypto]>=2.10.0",
 ]
 
 [project.optional-dependencies]
