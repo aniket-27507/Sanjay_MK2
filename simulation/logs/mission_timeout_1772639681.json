@@ -1,0 +1,73 @@
+{
+  "result": "TIMEOUT",
+  "duration_s": 8.573109149932861,
+  "min_inter_drone_distance_m": 79.88740986353748,
+  "hpl_overrides": 0,
+  "collisions": 0,
+  "drone_finals": {
+    "alpha_0": {
+      "position": [
+        400.0535281165758,
+        350.0997972768576,
+        -65.0
+      ],
+      "battery": 99.99996666666667
+    },
+    "alpha_1": {
+      "position": [
+        479.97003357706905,
+        350.10894473304666,
+        -65.0
+      ],
+      "battery": 99.99996666666667
+    },
+    "alpha_2": {
+      "position": [
+        440.07634139259864,
+        419.3223218981262,
+        -65.0
+      ],
+      "battery": 99.99996666666667
+    },
+    "alpha_3": {
+      "position": [
+        360.1074476029265,
+        419.28830971660636,
+        -65.0
+      ],
+      "battery": 99.99996666666667
+    },
+    "alpha_4": {
+      "position": [
+        320.1043905262821,
+        350.0568524691513,
+        -65.0
+      ],
+      "battery": 99.99996666666667
+    },
+    "alpha_5": {
+      "position": [
+        360.0583359706363,
+        280.8228049865328,
+        -65.0
+      ],
+      "battery": 99.99996666666667
+    }
+  },
+  "events": [
+    {
+      "timestamp": 1772639672.8943589,
+      "elapsed": 1.430511474609375e-06,
+      "source": "SYSTEM",
+      "level": "INFO",
+      "message": "Mission started"
+    },
+    {
+      "timestamp": 1772639681.4669335,
+      "elapsed": 8.57257628440857,
+      "source": "SYSTEM",
+      "level": "CRITICAL",
+      "message": "Mission TIMEOUT"
+    }
+  ]
+}

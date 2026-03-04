@@ -61,6 +61,9 @@ class FlockCoordinator:
         self._original_spacing = self.config.formation.spacing
         self._current_goal: Optional[Vector3] = None
         self._last_cbba_sync = 0.0
+        self._boids_enabled = True
+        self._cbba_enabled = True
+        self._formation_enabled = True
 
     @property
     def current_goal(self) -> Optional[Vector3]:
@@ -97,6 +100,36 @@ class FlockCoordinator:
             "timestamp": my_state.timestamp,
         }
 
+    @property
+    def boids_enabled(self) -> bool:
+        return self._boids_enabled
+
+    @property
+    def cbba_enabled(self) -> bool:
+        return self._cbba_enabled
+
+    @property
+    def formation_enabled(self) -> bool:
+        return self._formation_enabled
+
+    def enable_boids(self, enabled: bool = True):
+        self._boids_enabled = enabled
+
+    def disable_boids(self):
+        self._boids_enabled = False
+
+    def enable_cbba(self, enabled: bool = True):
+        self._cbba_enabled = enabled
+
+    def disable_cbba(self):
+        self._cbba_enabled = False
+
+    def enable_formation(self, enabled: bool = True):
+        self._formation_enabled = enabled
+
+    def disable_formation(self):
+        self._formation_enabled = False
+
     def tick(
         self,
         my_state: DroneState,
@@ -123,10 +156,12 @@ class FlockCoordinator:
             radius = float(getattr(sectors[0], "radius", 100.0))
             self.upsert_tasks(self.task_gen.generate_perimeter_tasks(center, radius, segments=4))
 
-        self.cbba.bundle_phase(my_state)
-        current_task = self.cbba.get_current_task()
+        current_task = None
+        if self._cbba_enabled:
+            self.cbba.bundle_phase(my_state)
+            current_task = self.cbba.get_current_task()
 
-        slot = self.formation.get_slot_for_drone(my_state.drone_id)
+        slot = self.formation.get_slot_for_drone(my_state.drone_id) if self._formation_enabled else None
         goal = current_task.position if current_task else slot
         if goal is None:
             goal = my_state.position
@@ -134,15 +169,19 @@ class FlockCoordinator:
 
         all_states = {my_state.drone_id: my_state, **peer_states}
 
-        self._apply_dynamic_behaviors(all_states)
+        if self._formation_enabled:
+            self._apply_dynamic_behaviors(all_states)
 
-        velocity = self.boids.compute(
-            drone_id=my_state.drone_id,
-            states=all_states,
-            goal=goal,
-            obstacles=obstacles or [],
-            formation_slot=slot,
-        )
+        if self._boids_enabled:
+            velocity = self.boids.compute(
+                drone_id=my_state.drone_id,
+                states=all_states,
+                goal=goal,
+                obstacles=obstacles or [],
+                formation_slot=slot,
+            )
+        else:
+            velocity = self._direct_goal_velocity(my_state.position, goal)
 
         # For RTL tasks, bias strongly toward home.
         if current_task and current_task.task_type == TaskType.RTL:
@@ -197,3 +236,11 @@ class FlockCoordinator:
         if abs(self.formation.config.spacing - scaled_spacing) > 1e-6:
             self.formation.config.spacing = scaled_spacing
             self.formation._generate_slots()
+
+    def _direct_goal_velocity(self, current: Vector3, goal: Vector3) -> Vector3:
+        direction = goal - current
+        if direction.magnitude() < 1e-6:
+            return Vector3()
+        # Use boids max speed config as common command cap.
+        max_speed = max(0.1, float(self.config.boids.max_speed))
+        return direction.normalized() * min(direction.magnitude(), max_speed)

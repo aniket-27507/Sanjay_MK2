@@ -27,7 +27,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-opencv \
+    python3-pyqt5 \
+    qtbase5-dev \
+    libglx-mesa0 \
+    libgl1-mesa-dri \
     ros-humble-cv-bridge \
+    ros-humble-sensor-msgs \
+    ros-humble-nav-msgs \
+    ros-humble-geometry-msgs \
     && rm -rf /var/lib/apt/lists/*
 
 # Create workspace
@@ -38,8 +45,7 @@ COPY requirements.txt /workspace/requirements.txt
 RUN pip3 install --no-cache-dir \
     pyyaml \
     numpy \
-    opencv-python-headless \
-    && pip3 install --no-cache-dir -r /workspace/requirements.txt 2>/dev/null || true
+    && pip3 install --no-cache-dir -r /workspace/requirements.txt
 
 # Source ROS 2 in every shell
 RUN echo "source /opt/ros/humble/setup.bash" >> /etc/bash.bashrc

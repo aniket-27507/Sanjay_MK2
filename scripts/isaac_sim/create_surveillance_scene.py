@@ -34,7 +34,7 @@ The scene is saved to simulation/worlds/surveillance_arena.usd
 # ─── Guard: only runs inside Isaac Sim ─────────────────────────
 
 try:
-    import omni.isaac.core  # noqa: F401
+    import isaacsim.core.api  # noqa: F401
 except ImportError:
     raise RuntimeError(
         "This script must be run inside NVIDIA Isaac Sim.\n"
@@ -48,10 +48,8 @@ import asyncio
 import numpy as np
 from collections import defaultdict
 
-import omni.isaac.core.utils.stage as stage_utils
-import omni.kit.commands
-from omni.isaac.core import World
-from omni.isaac.core.objects import VisualCuboid
+from isaacsim.core.api import World
+from isaacsim.core.api.objects import VisualCuboid
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -538,10 +536,11 @@ def _build_powerline_corridor(world):
             mid_x = (x + next_x) / 2.0
             wire_len = CORRIDOR_SPACING
 
-            for wire_offset in [-8, -4, 0, 4, 8]:
+            # Use a clean index for prim/name to avoid invalid SdfPath components
+            for wire_idx, wire_offset in enumerate([-8, -4, 0, 4, 8]):
                 world.scene.add(VisualCuboid(
-                    prim_path=f"{base_path}/wire_{i}_{wire_offset}",
-                    name=f"wire_{i}_{wire_offset}",
+                    prim_path=f"{base_path}/wire_{i}_{wire_idx}",
+                    name=f"wire_{i}_{wire_idx}",
                     position=np.array([mid_x, y + wire_offset, PYLON_HEIGHT - 3]),
                     size=1.0,
                     scale=np.array([wire_len, 0.08, 0.08]),
@@ -641,7 +640,7 @@ def _spawn_drone(world, name: str, position: list, drone_type: str = "alpha"):
     prim_path = f"/World/Drones/{name}"
 
     try:
-        from omni.isaac.core.robots import Robot
+        from isaacsim.core.api import Robot
         drone = world.scene.add(Robot(
             prim_path=prim_path,
             name=name.lower(),
@@ -670,7 +669,8 @@ def _spawn_drone(world, name: str, position: list, drone_type: str = "alpha"):
 def _attach_sensors(drone_name: str, prim_path: str, drone_type: str):
     """Attach RGB + depth cameras and RTX 3D LiDAR."""
     try:
-        from omni.isaac.sensor import Camera
+        from isaacsim.sensors.camera import Camera
+        lidar_prim_path = None
 
         fov_lens = 2.12 if drone_type == "alpha" else 3.5
         rgb = Camera(
@@ -688,18 +688,32 @@ def _attach_sensors(drone_name: str, prim_path: str, drone_type: str):
 
         # ── RTX 3D LiDAR (Alpha only) ──
         if drone_type == "alpha":
+            lidar_prim_path = f"{prim_path}/lidar_3d"
             try:
-                from omni.isaac.sensor import RotatingLidarPhysX
+                from isaacsim.sensors.physx import RotatingLidarPhysX
                 lidar = RotatingLidarPhysX(
-                    prim_path=f"{prim_path}/lidar_3d",
+                    prim_path=lidar_prim_path,
                     rotation_frequency=10.0,
                     translation=np.array([0, 0, -0.1]),  # Below drone
                 )
-                # Configure LiDAR params
-                lidar.set_fov([360.0, 30.0])  # H, V
-                lidar.set_resolution([0.4, 2.0])  # H, V resolution deg
-                lidar.set_valid_range([0.3, 30.0])  # min, max range
-                lidar.enable_semantics(True)
+                # Configure LiDAR params. Isaac Sim LiDAR API has changed across
+                # releases, so apply settings defensively.
+                try:
+                    lidar.set_fov([360.0, 30.0])  # H, V
+                except Exception:
+                    pass
+                try:
+                    lidar.set_resolution([0.4, 2.0])  # H, V resolution deg
+                except Exception:
+                    pass
+                try:
+                    lidar.set_valid_range([0.3, 30.0])  # min, max range
+                except Exception:
+                    pass
+                try:
+                    lidar.enable_semantics(True)
+                except Exception:
+                    pass
             except Exception:
                 # Fallback: create visual marker for lidar position
                 world_ref = World.instance()
@@ -713,78 +727,165 @@ def _attach_sensors(drone_name: str, prim_path: str, drone_type: str):
                     ))
 
         # ── ROS 2 topic wiring ──
-        _wire_ros2_topics(drone_name, prim_path, drone_type, rgb, depth)
+        _wire_ros2_topics(
+            drone_name,
+            prim_path,
+            drone_type,
+            rgb,
+            depth,
+            lidar_prim_path=lidar_prim_path,
+        )
 
     except ImportError:
         print(f"    └─ Sensor module unavailable — skipping for {drone_name}")
 
 
-def _wire_ros2_topics(drone_name, prim_path, drone_type, rgb_cam, depth_cam):
+def _wire_ros2_topics(
+    drone_name,
+    prim_path,
+    drone_type,
+    rgb_cam,
+    depth_cam,
+    lidar_prim_path=None,
+):
     """Wire OmniGraph ROS 2 publishers for camera + LiDAR topics."""
     try:
         import omni.graph.core as og
         prefix = drone_name.lower()
+        camera_helper_nodes = [
+            "isaacsim.ros2.bridge.ROS2CameraHelper",
+        ]
+        pointcloud_nodes = [
+            "isaacsim.ros2.bridge.ROS2PublishPointCloud",
+        ]
+        lidar_reader_nodes = [
+            "isaacsim.sensors.rtx.ReadLidarPointCloud",
+        ]
+
+        rgb_path = rgb_cam.get_render_product_path() if rgb_cam else None
+        depth_path = depth_cam.get_render_product_path() if depth_cam else None
+        if not rgb_path or not depth_path:
+            print(f"    └─ ROS 2 graph skipped for {drone_name}: no valid render product (placeholder drone)")
+            return
 
         # RGB camera publisher
-        og.Controller.edit(
-            {"graph_path": f"/ROS2_{drone_name}_RGB", "evaluator_name": "execution"},
-            {
-                og.Controller.Keys.CREATE_NODES: [
-                    ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
-                    ("CamHelper", "isaacsim.ros2.bridge.ROS2CameraHelper"),
-                ],
-                og.Controller.Keys.CONNECT: [
-                    ("OnPlaybackTick.outputs:tick", "CamHelper.inputs:execIn"),
-                ],
-                og.Controller.Keys.SET_VALUES: [
-                    ("CamHelper.inputs:topicName", f"/{prefix}/rgb/image_raw"),
-                    ("CamHelper.inputs:frameId", f"{prefix}_rgb"),
-                    ("CamHelper.inputs:renderProductPath", rgb_cam.get_render_product_path()),
-                ],
-            },
-        )
-
-        # Depth camera publisher
-        og.Controller.edit(
-            {"graph_path": f"/ROS2_{drone_name}_Depth", "evaluator_name": "execution"},
-            {
-                og.Controller.Keys.CREATE_NODES: [
-                    ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
-                    ("DepthHelper", "isaacsim.ros2.bridge.ROS2CameraHelper"),
-                ],
-                og.Controller.Keys.CONNECT: [
-                    ("OnPlaybackTick.outputs:tick", "DepthHelper.inputs:execIn"),
-                ],
-                og.Controller.Keys.SET_VALUES: [
-                    ("DepthHelper.inputs:topicName", f"/{prefix}/depth/image_raw"),
-                    ("DepthHelper.inputs:frameId", f"{prefix}_depth"),
-                    ("DepthHelper.inputs:renderProductPath", depth_cam.get_render_product_path()),
-                    ("DepthHelper.inputs:type", "depth"),
-                ],
-            },
-        )
-
-        # LiDAR PointCloud2 publisher (Alpha only)
-        if drone_type == "alpha":
+        rgb_ok = False
+        for camera_helper in camera_helper_nodes:
             try:
                 og.Controller.edit(
-                    {"graph_path": f"/ROS2_{drone_name}_LiDAR", "evaluator_name": "execution"},
+                    {"graph_path": f"/ROS2_{drone_name}_RGB", "evaluator_name": "execution"},
                     {
                         og.Controller.Keys.CREATE_NODES: [
                             ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
-                            ("PC2Pub", "isaacsim.ros2.bridge.ROS2PublishPointCloud"),
+                            ("CamHelper", camera_helper),
                         ],
                         og.Controller.Keys.CONNECT: [
-                            ("OnPlaybackTick.outputs:tick", "PC2Pub.inputs:execIn"),
+                            ("OnPlaybackTick.outputs:tick", "CamHelper.inputs:execIn"),
                         ],
                         og.Controller.Keys.SET_VALUES: [
-                            ("PC2Pub.inputs:topicName", f"/{prefix}/lidar/points"),
-                            ("PC2Pub.inputs:frameId", f"{prefix}_lidar"),
+                            ("CamHelper.inputs:topicName", f"/{prefix}/rgb/image_raw"),
+                            ("CamHelper.inputs:frameId", f"{prefix}_rgb"),
+                            ("CamHelper.inputs:renderProductPath", rgb_path),
                         ],
                     },
                 )
+                rgb_ok = True
+                break
             except Exception:
-                pass
+                continue
+        if not rgb_ok:
+            raise RuntimeError(f"Could not create RGB ROS2 graph for {drone_name}")
+
+        # Depth camera publisher
+        depth_ok = False
+        for camera_helper in camera_helper_nodes:
+            try:
+                og.Controller.edit(
+                    {"graph_path": f"/ROS2_{drone_name}_Depth", "evaluator_name": "execution"},
+                    {
+                        og.Controller.Keys.CREATE_NODES: [
+                            ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+                            ("DepthHelper", camera_helper),
+                        ],
+                        og.Controller.Keys.CONNECT: [
+                            ("OnPlaybackTick.outputs:tick", "DepthHelper.inputs:execIn"),
+                        ],
+                        og.Controller.Keys.SET_VALUES: [
+                            ("DepthHelper.inputs:topicName", f"/{prefix}/depth/image_raw"),
+                            ("DepthHelper.inputs:frameId", f"{prefix}_depth"),
+                            ("DepthHelper.inputs:renderProductPath", depth_path),
+                            ("DepthHelper.inputs:type", "depth"),
+                        ],
+                    },
+                )
+                depth_ok = True
+                break
+            except Exception:
+                continue
+        if not depth_ok:
+            raise RuntimeError(f"Could not create depth ROS2 graph for {drone_name}")
+
+        # LiDAR PointCloud2 publisher (Alpha only)
+        if drone_type == "alpha" and lidar_prim_path:
+            lidar_ok = False
+            for pointcloud_node in pointcloud_nodes:
+                for lidar_reader in lidar_reader_nodes:
+                    try:
+                        og.Controller.edit(
+                            {"graph_path": f"/ROS2_{drone_name}_LiDAR", "evaluator_name": "execution"},
+                            {
+                                og.Controller.Keys.CREATE_NODES: [
+                                    ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+                                    ("ReadLidar", lidar_reader),
+                                    ("PC2Pub", pointcloud_node),
+                                ],
+                                og.Controller.Keys.CONNECT: [
+                                    ("OnPlaybackTick.outputs:tick", "ReadLidar.inputs:execIn"),
+                                    ("ReadLidar.outputs:execOut", "PC2Pub.inputs:execIn"),
+                                    ("ReadLidar.outputs:data", "PC2Pub.inputs:data"),
+                                ],
+                                og.Controller.Keys.SET_VALUES: [
+                                    ("ReadLidar.inputs:lidarPrim", lidar_prim_path),
+                                    ("PC2Pub.inputs:topicName", f"/{prefix}/lidar/points"),
+                                    ("PC2Pub.inputs:frameId", f"{prefix}_lidar"),
+                                ],
+                            },
+                        )
+                        lidar_ok = True
+                        break
+                    except Exception:
+                        continue
+                if lidar_ok:
+                    break
+
+            # Fallback graph for variants where PC2 publisher can read lidar prim directly.
+            if not lidar_ok:
+                for pointcloud_node in pointcloud_nodes:
+                    try:
+                        og.Controller.edit(
+                            {"graph_path": f"/ROS2_{drone_name}_LiDAR", "evaluator_name": "execution"},
+                            {
+                                og.Controller.Keys.CREATE_NODES: [
+                                    ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+                                    ("PC2Pub", pointcloud_node),
+                                ],
+                                og.Controller.Keys.CONNECT: [
+                                    ("OnPlaybackTick.outputs:tick", "PC2Pub.inputs:execIn"),
+                                ],
+                                og.Controller.Keys.SET_VALUES: [
+                                    ("PC2Pub.inputs:lidarPrim", lidar_prim_path),
+                                    ("PC2Pub.inputs:topicName", f"/{prefix}/lidar/points"),
+                                    ("PC2Pub.inputs:frameId", f"{prefix}_lidar"),
+                                ],
+                            },
+                        )
+                        lidar_ok = True
+                        break
+                    except Exception:
+                        continue
+
+            if not lidar_ok:
+                print(f"    └─ LiDAR ROS 2 graph unavailable for {drone_name} (API variant mismatch)")
 
     except Exception as e:
         print(f"    └─ ROS 2 graph skipped for {drone_name}: {e}")
@@ -850,6 +951,7 @@ class MissionOverlay:
         self._event_log = []
         self._max_log = 500
         self._failure_dumped = False
+        self._manual_override = False
 
         self._log_event("SYSTEM", "Mission overlay initialized")
         self._log_event("SYSTEM", f"Regiment: {len(ALPHA_DRONES)} Alpha drones")
@@ -933,6 +1035,12 @@ class MissionOverlay:
     def set_status(self, status: str):
         self._status = status
 
+    def set_manual_override(self, enabled: bool):
+        if self._manual_override != enabled:
+            self._manual_override = enabled
+            mode = "ENABLED" if enabled else "DISABLED"
+            self._log_event("SYSTEM", f"Manual overtake {mode}")
+
     # ── Viewport OSD ──────────────────────────────────────────────
 
     def render_osd(self) -> str:
@@ -956,6 +1064,9 @@ class MissionOverlay:
                      f"/{self._total_waypoints}                        "
                      f"    ║")
         lines.append("╠══════════════════════════════════════════════╣")
+        if self._manual_override:
+            lines.append("║  MANUAL CONTROL ACTIVE                       ║")
+            lines.append("╠══════════════════════════════════════════════╣")
 
         # Per-drone status rows
         for drone_name, ds in sorted(self._drone_states.items()):
@@ -1003,14 +1114,20 @@ class MissionOverlay:
         """
         try:
             import omni.ui as ui
+            flags_no_collapse = getattr(
+                ui, "WINDOW_FLAGS_NO_COLLAPSE", getattr(getattr(ui, "WindowFlags", object), "NO_COLLAPSE", 0)
+            )
+            flags_no_resize = getattr(
+                ui, "WINDOW_FLAGS_NO_RESIZE", getattr(getattr(ui, "WindowFlags", object), "NO_RESIZE", 0)
+            )
 
             self._osd_window = ui.Window(
                 "Sanjay MK2 — Mission Control",
                 width=520,
                 height=450,
                 flags=(
-                    ui.WINDOW_FLAGS_NO_COLLAPSE |
-                    ui.WINDOW_FLAGS_NO_RESIZE
+                    flags_no_collapse |
+                    flags_no_resize
                 ),
             )
             self._osd_window.frame.set_style({

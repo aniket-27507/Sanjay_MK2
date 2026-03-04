@@ -25,6 +25,7 @@ from typing import Optional, List, Callable, Awaitable
 from dataclasses import dataclass
 
 from src.single_drone.flight_control.mavsdk_interface import MAVSDKInterface
+from src.single_drone.flight_control.isaac_sim_interface import IsaacSimInterface, IsaacInterfaceConfig
 from src.core.types.drone_types import (
     Vector3,
     FlightMode,
@@ -79,15 +80,22 @@ class FlightController:
         FlightMode.ARMING: [FlightMode.ARMED, FlightMode.IDLE, FlightMode.EMERGENCY],
         FlightMode.ARMED: [FlightMode.TAKING_OFF, FlightMode.IDLE, FlightMode.EMERGENCY],
         FlightMode.TAKING_OFF: [FlightMode.HOVERING, FlightMode.EMERGENCY],
-        FlightMode.HOVERING: [FlightMode.NAVIGATING, FlightMode.LANDING, FlightMode.EMERGENCY],
-        FlightMode.NAVIGATING: [FlightMode.HOVERING, FlightMode.LANDING, FlightMode.EMERGENCY],
+        FlightMode.HOVERING: [FlightMode.NAVIGATING, FlightMode.MANUAL, FlightMode.LANDING, FlightMode.EMERGENCY],
+        FlightMode.NAVIGATING: [FlightMode.HOVERING, FlightMode.MANUAL, FlightMode.LANDING, FlightMode.EMERGENCY],
+        FlightMode.MANUAL: [FlightMode.HOVERING, FlightMode.NAVIGATING, FlightMode.LANDING, FlightMode.EMERGENCY],
         FlightMode.LANDING: [FlightMode.LANDED, FlightMode.EMERGENCY],
         FlightMode.LANDED: [FlightMode.IDLE, FlightMode.ARMING, FlightMode.EMERGENCY],
         FlightMode.EMERGENCY: [FlightMode.LANDED, FlightMode.IDLE],
         FlightMode.RETURN_TO_LAUNCH: [FlightMode.LANDED, FlightMode.EMERGENCY]
     }
     
-    def __init__(self, drone_id: int = 0, config: Optional[DroneConfig] = None):
+    def __init__(
+        self,
+        drone_id: int = 0,
+        config: Optional[DroneConfig] = None,
+        backend: str = "mavsdk",
+        isaac_config: Optional[IsaacInterfaceConfig] = None,
+    ):
         """
         Initialize the flight controller.
         
@@ -99,7 +107,11 @@ class FlightController:
         self.config = config or get_config().get_drone_config(drone_id)
         
         # Low-level interface
-        self._interface = MAVSDKInterface()
+        self._backend = backend.lower()
+        if self._backend == "isaac_sim":
+            self._interface = IsaacSimInterface(drone_id=drone_id, config=isaac_config)
+        else:
+            self._interface = MAVSDKInterface()
         
         # State
         self._mode = FlightMode.IDLE
@@ -125,6 +137,7 @@ class FlightController:
         # ── Obstacle Avoidance (optional — attach via enable_avoidance) ──
         self._avoidance_manager = None
         self._avoidance_enabled = False
+        self._flock_coordinator = None
         
         logger.info(f"FlightController initialized for drone {drone_id}")
     
@@ -174,6 +187,10 @@ class FlightController:
     def target_position(self) -> Optional[Vector3]:
         """Get current target position."""
         return self._target_position
+
+    @property
+    def is_initialized(self) -> bool:
+        return self._status.is_initialized
     
     # ==================== INITIALIZATION ====================
     
@@ -187,6 +204,9 @@ class FlightController:
         Returns:
             True if initialization successful
         """
+        if self._status.is_initialized:
+            return True
+
         if connection_string is None:
             connection_string = get_config().get_connection_string(self.drone_id)
         
@@ -209,6 +229,9 @@ class FlightController:
     async def shutdown(self):
         """Shutdown the flight controller."""
         logger.info("Shutting down FlightController...")
+
+        if not self._status.is_initialized:
+            return
         
         self._running = False
         
@@ -507,6 +530,33 @@ class FlightController:
             return True
         
         return False
+
+    async def enter_manual_mode(self) -> bool:
+        """Switch controller to manual assisted mode."""
+        if self._mode not in (FlightMode.HOVERING, FlightMode.NAVIGATING, FlightMode.MANUAL):
+            return False
+        if self._mode != FlightMode.MANUAL:
+            return await self._transition_to(FlightMode.MANUAL)
+        return True
+
+    async def exit_manual_mode(self, hover: bool = True) -> bool:
+        """Leave manual mode and return to autonomous hover/navigation."""
+        if self._mode != FlightMode.MANUAL:
+            return True
+        return await self._transition_to(FlightMode.HOVERING if hover else FlightMode.NAVIGATING)
+
+    async def set_manual_velocity(
+        self,
+        vx: float,
+        vy: float,
+        vz: float,
+        yaw_rate: float = 0.0,
+    ) -> bool:
+        """Send operator-commanded velocity while in manual mode."""
+        if self._mode != FlightMode.MANUAL:
+            return False
+        await self._interface.set_velocity_ned(vx, vy, vz, yaw_rate)
+        return True
     
     # ==================== CALLBACKS ====================
     
@@ -589,6 +639,33 @@ class FlightController:
             speed = velocity.magnitude()
             if speed > self._velocity_limit:
                 velocity = velocity * (self._velocity_limit / speed)
+
+        # Optional swarm modifier path (Boids/CBBA/formation).
+        if self._flock_coordinator is not None:
+            try:
+                my_state = self.get_state()
+                # Keep the flock goal aligned to the current controller target.
+                from src.swarm.cbba.task_types import SwarmTask, TaskType
+                self._flock_coordinator.upsert_tasks(
+                    [
+                        SwarmTask(
+                            task_id=f"nav_target_{self.drone_id}",
+                            task_type=TaskType.SECTOR_COVERAGE,
+                            position=target,
+                            radius=3.0,
+                            priority=10.0,
+                            assigned_to=self.drone_id,
+                        )
+                    ]
+                )
+                swarm_velocity = self._flock_coordinator.tick(
+                    my_state=my_state,
+                    peer_states={},
+                    obstacles=[],
+                )
+                velocity = (velocity + swarm_velocity) * 0.5
+            except Exception as exc:
+                logger.debug("Swarm velocity modifier skipped: %s", exc)
         
         # Send velocity command
         await self._interface.set_velocity_ned(
@@ -728,6 +805,10 @@ class FlightController:
             self._avoidance_manager.feed_lidar_points(
                 points, drone_position=self.position
             )
+
+    def attach_flock_coordinator(self, flock_coordinator):
+        """Attach optional FlockCoordinator used for boids/cbba modifiers."""
+        self._flock_coordinator = flock_coordinator
     
     # ==================== STATE EXPORT ====================
     

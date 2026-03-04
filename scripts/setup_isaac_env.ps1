@@ -6,7 +6,7 @@
 #   .\scripts\setup_isaac_env.ps1
 #
 # Then launch Isaac Sim:
-#   isaacsim --enable omni.isaac.ros2_bridge
+#   isaacsim --enable isaacsim.ros2.bridge
 #
 # This script sets ALL variables Isaac Sim's bridge needs to initialise.
 # =============================================================================
@@ -71,5 +71,5 @@ Write-Host "  Humble DLLs on PATH:           $HumbleLib"
 Write-Host "  rclpy on PYTHONPATH:           $HumbleRcl"
 Write-Host ""
 Write-Host "Now launch Isaac Sim:" -ForegroundColor Green
-Write-Host "  isaacsim --enable omni.isaac.ros2_bridge" -ForegroundColor Cyan
+Write-Host "  isaacsim --enable isaacsim.ros2.bridge" -ForegroundColor Cyan
 Write-Host ""

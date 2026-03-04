@@ -1,5 +1,5 @@
 """
-Project Sanjay Mk2 - Isaac Sim ↔ ROS 2 Bridge
+Project Sanjay Mk2 - Isaac Sim <-> ROS 2 Bridge
 ===============================================
 Subscribes to Isaac Sim sensor topics (published via Isaac Sim's
 built-in ROS 2 Bridge) and feeds the data into the existing
@@ -40,9 +40,14 @@ from src.core.types.drone_types import (
     TelemetryData,
     Vector3,
 )
-from src.surveillance.sensor_fusion import SensorFusionPipeline
 
 logger = logging.getLogger(__name__)
+
+try:
+    from src.surveillance.sensor_fusion import SensorFusionPipeline
+except Exception as e:
+    SensorFusionPipeline = None  # type: ignore[assignment]
+    logger.warning("SensorFusionPipeline unavailable, using no-op fusion: %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -62,6 +67,7 @@ class DroneTopicConfig:
     topic_depth: str = ""
     topic_odom: str = ""
     topic_imu: str = ""
+    topic_lidar_3d: str = ""
     topic_cmd_vel: str = ""
 
 
@@ -102,6 +108,7 @@ class BridgeConfig:
                     topic_depth=topics.get("depth", f"/{name}/depth/image_raw"),
                     topic_odom=topics.get("odom", f"/{name}/odom"),
                     topic_imu=topics.get("imu", f"/{name}/imu"),
+                    topic_lidar_3d=topics.get("lidar_3d", ""),
                     topic_cmd_vel=topics.get("cmd_vel", f"/{name}/cmd_vel"),
                 )
             )
@@ -315,7 +322,7 @@ def is_ros2_available() -> bool:
 if _ROS2_AVAILABLE:
     from geometry_msgs.msg import Twist
     from nav_msgs.msg import Odometry
-    from sensor_msgs.msg import Image, Imu
+    from sensor_msgs.msg import Image, Imu, PointCloud2
 
     class IsaacSimBridgeNode(Node):  # type: ignore[misc]
         """
@@ -351,9 +358,12 @@ if _ROS2_AVAILABLE:
             self._cmd_publishers: Dict[str, Any] = {}
 
             # Shared fusion pipeline
-            self._fusion = SensorFusionPipeline(
-                match_radius=config.match_radius
-            )
+            if SensorFusionPipeline is not None:
+                self._fusion = SensorFusionPipeline(
+                    match_radius=config.match_radius
+                )
+            else:
+                self._fusion = None
 
             # Set up subscriptions for each drone
             for idx, drone_cfg in enumerate(config.drones):
@@ -370,6 +380,7 @@ if _ROS2_AVAILABLE:
                     ),
                     "depth_adapter": DepthToObservation(drone_id=idx),
                     "odom_adapter": OdometryAdapter(),
+                    "lidar_point_count": 0,
                 }
 
                 # RGB subscriber
@@ -404,6 +415,15 @@ if _ROS2_AVAILABLE:
                     sensor_qos,
                 )
 
+                # LiDAR subscriber (optional, ALPHA drones)
+                if drone_cfg.topic_lidar_3d:
+                    self.create_subscription(
+                        PointCloud2,
+                        drone_cfg.topic_lidar_3d,
+                        lambda msg, n=name: self._on_lidar(n, msg),
+                        sensor_qos,
+                    )
+
                 # Velocity command publisher
                 self._cmd_publishers[name] = self.create_publisher(
                     Twist, drone_cfg.topic_cmd_vel, 10
@@ -436,7 +456,8 @@ if _ROS2_AVAILABLE:
                     drone_position=state["position"],
                     altitude=state["altitude"],
                 )
-                self._fusion.add_observation(obs)
+                if self._fusion is not None:
+                    self._fusion.add_observation(obs)
             except Exception as e:
                 self.get_logger().warn(
                     f"RGB callback error for {drone_name}: {e}"
@@ -452,7 +473,8 @@ if _ROS2_AVAILABLE:
                     drone_position=state["position"],
                     altitude=state["altitude"],
                 )
-                self._fusion.add_observation(obs)
+                if self._fusion is not None:
+                    self._fusion.add_observation(obs)
             except Exception as e:
                 self.get_logger().warn(
                     f"Depth callback error for {drone_name}: {e}"
@@ -481,10 +503,29 @@ if _ROS2_AVAILABLE:
             # so this is a placeholder for higher-fidelity fusion.
             pass
 
+        def _on_lidar(self, drone_name: str, msg: PointCloud2):
+            """Handle incoming PointCloud2 from Isaac Sim LiDAR."""
+            state = self._drone_state[drone_name]
+            try:
+                n_points = int(msg.width) * int(msg.height)
+                if n_points <= 0:
+                    state["lidar_point_count"] = 0
+                    return
+                # Parse XYZ32F from PointCloud2 payload (supports extra channels).
+                floats_per_point = max(3, int(msg.point_step) // 4)
+                points = np.frombuffer(msg.data, dtype=np.float32).reshape(n_points, floats_per_point)[:, :3]
+                state["lidar_point_count"] = int(points.shape[0])
+            except Exception as e:
+                self.get_logger().warn(
+                    f"LiDAR callback error for {drone_name}: {e}"
+                )
+
         # ── Fusion Loop ───────────────────────────────────────────
 
         def _fusion_tick(self):
             """Periodic fusion callback — fuse buffered observations."""
+            if self._fusion is None:
+                return
             fused = self._fusion.fuse()
             if fused is None:
                 return
@@ -570,7 +611,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Isaac Sim ↔ Sanjay MK2 ROS 2 Bridge"
+        description="Isaac Sim <-> Sanjay MK2 ROS 2 Bridge"
     )
     parser.add_argument(
         "--config",

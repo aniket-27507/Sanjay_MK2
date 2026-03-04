@@ -37,6 +37,7 @@ class FlightMode(Enum):
     TAKING_OFF = auto()     # Ascending to target altitude
     HOVERING = auto()       # Maintaining position
     NAVIGATING = auto()     # Moving to waypoint
+    MANUAL = auto()         # Manual operator control (assisted)
     LANDING = auto()        # Descending for landing
     LANDED = auto()         # On ground after flight
     EMERGENCY = auto()      # Emergency state (auto-land)

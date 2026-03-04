@@ -40,8 +40,8 @@ isaacsim
 ### Option B: NGC Container (Linux/WSL2)
 
 ```bash
-docker pull nvcr.io/nvidia/isaac-sim:4.5.0
-docker run --gpus all -it nvcr.io/nvidia/isaac-sim:4.5.0
+docker pull nvcr.io/nvidia/isaac-sim:5.1.0
+docker run --gpus all -it nvcr.io/nvidia/isaac-sim:5.1.0
 ```
 
 ### Option C: Direct Download
@@ -56,7 +56,7 @@ docker run --gpus all -it nvcr.io/nvidia/isaac-sim:4.5.0
 
 1. Open Isaac Sim
 2. **Window → Extensions**
-3. Search `omni.isaac.ros2_bridge` → **Enable**
+3. Search `isaacsim.ros2.bridge` → **Enable**
 4. Set environment variables:
 
 ```powershell
@@ -66,6 +66,8 @@ docker run --gpus all -it nvcr.io/nvidia/isaac-sim:4.5.0
 This sets `ROS_DOMAIN_ID=10`, `RMW_IMPLEMENTATION=rmw_fastrtps_cpp`, and the Fast DDS profile — matching the Docker containers.
 
 5. **Restart Isaac Sim** after enabling the bridge.
+
+Note: If you still see legacy `omni.isaac` names in older scripts, Isaac Sim 5.1.0 may run them through the deprecation manager, but migrate to `isaacsim.*` names to avoid future breakage.
 
 ---
 

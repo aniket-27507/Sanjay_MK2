@@ -1,0 +1,11 @@
+[wsl2]
+memory=16GB
+processors=8
+networkingMode=mirrored
+hostAddressLoopback=true
+dnsTunneling=true
+firewall=true
+
+[experimental]
+sparseVhd=true
+autoMemoryReclaim=gradual

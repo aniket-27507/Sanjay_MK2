@@ -148,9 +148,12 @@ services:
       # RViz config
       - ./rviz:/root/.rviz2
     network_mode: host
-    depends_on:
-      ros2-base:
-        condition: service_healthy
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        sleep 5 &&
+        rviz2
+      "
 
   # =======================================================================
   # Isaac Sim Bridge - Autonomy Pipeline
@@ -187,6 +190,13 @@ services:
       # Scripts
       - ./scripts:/workspace/scripts
     network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
     command: >
       bash -c "
@@ -194,3 +204,89 @@ services:
         echo 'Starting Isaac Sim bridge...' &&
         python3 -m src.integration.isaac_sim_bridge --config config/isaac_sim.yaml
       "
+
+  # =======================================================================
+  # Swarm Controller - Decentralized Flocking + Avoidance
+  # =======================================================================
+  swarm-controller:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.autonomy
+    container_name: swarm-controller
+    hostname: swarm-controller
+    profiles:
+      - swarm
+    environment:
+      - ROS_DOMAIN_ID=10
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/opt/config/fastdds_profiles.xml
+      - ROS_LOCALHOST_ONLY=0
+      - 'RCUTILS_CONSOLE_OUTPUT_FORMAT=[{name}]: {message}'
+      - PYTHONPATH=/workspace
+    volumes:
+      - ./network/fastdds_profiles.xml:/opt/config/fastdds_profiles.xml:ro
+      - ./src:/workspace/src
+      - ./config:/workspace/config
+      - ./scripts:/workspace/scripts
+      - ./simulation:/workspace/simulation
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        echo 'Starting decentralized swarm controller (headless)...' &&
+        python3 scripts/isaac_sim/run_mission.py --headless --timeout 86400
+      "
+
+  # =======================================================================
+  # Mission Runner - Live Isaac Sim Mission Execution
+  # =======================================================================
+  mission-runner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.autonomy
+    container_name: mission-runner
+    hostname: mission-runner
+    profiles:
+      - mission
+    environment:
+      - ROS_DOMAIN_ID=10
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/opt/config/fastdds_profiles.xml
+      - ROS_LOCALHOST_ONLY=0
+      - 'RCUTILS_CONSOLE_OUTPUT_FORMAT=[{name}]: {message}'
+      - PYTHONPATH=/workspace
+    volumes:
+      - ./network/fastdds_profiles.xml:/opt/config/fastdds_profiles.xml:ro
+      - ./src:/workspace/src
+      - ./config:/workspace/config
+      - ./scripts:/workspace/scripts
+      - ./simulation:/workspace/simulation
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        echo 'Starting Isaac mission runner...' &&
+        python3 scripts/isaac_sim/run_mission.py --isaac --timeout 300
+      "
+
+  # =======================================================================
+  # Note about waypoint GUI
+  # =======================================================================
+  # waypoint_gui.py depends on Isaac Sim's omni.ui runtime and must be run
+  # inside Isaac Sim (Script Editor / Kit Python), not a plain ROS 2 container.

@@ -51,6 +51,8 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src.core.types.drone_types import DroneConfig, DroneState, DroneType, FlightMode, Vector3, Waypoint
+from src.single_drone.flight_control.flight_controller import FlightController
+from src.single_drone.flight_control.waypoint_controller import WaypointController
 from src.swarm.coordination import AlphaRegimentCoordinator, RegimentConfig
 
 logging.basicConfig(
@@ -141,6 +143,11 @@ def _load_obstacle_database() -> List[Dict]:
     for ax, ay, ah, aw in [(700, 200, 80, 2.0), (720, 280, 70, 1.5), (680, 350, 85, 2.5)]:
         obstacles.append({"x": ax, "y": ay, "z": ah / 2, "w": aw, "d": aw, "h": ah, "zone": "antenna"})
 
+    # Convert obstacle centers from Isaac/ENU-style altitude (+Z up) to
+    # the project's NED convention (negative Z is up) used by the runner.
+    for obs in obstacles:
+        obs["z"] = -float(obs["z"])
+
     return obstacles
 
 
@@ -230,7 +237,8 @@ class SyntheticLidar:
         x_max: float, y_max: float, z_max: float,
     ) -> Optional[float]:
         """Ray–AABB intersection test (slab method)."""
-        inv_dir = np.where(np.abs(direction) > 1e-10, 1.0 / direction, 1e10)
+        eps = 1e-10
+        inv_dir = np.divide(1.0, direction, out=np.full_like(direction, 1e10), where=np.abs(direction) > eps)
 
         t1 = (x_min - origin[0]) * inv_dir[0]
         t2 = (x_max - origin[0]) * inv_dir[0]
@@ -323,8 +331,9 @@ class MissionRunner:
         - Debug log dump on mission failure
     """
 
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, use_waypoint_controller: bool = False):
         self._headless = headless
+        self._use_waypoint_controller = use_waypoint_controller
         self._dt = 1.0 / 30.0  # 30 Hz control rate
 
         # Load obstacle database
@@ -370,10 +379,20 @@ class MissionRunner:
 
         # Mission overlay (Isaac Sim mode)
         self._overlay = None
+        # Stage sync subscription (Isaac Sim mode) - runs on main Kit thread
+        self._sync_sub = None
+
+        # Optional controller-backed execution path.
+        self._flight_controller: Optional[FlightController] = None
+        self._waypoint_controller: Optional[WaypointController] = None
 
     async def run(self):
         """Execute the complete mission."""
         logger.info("=" * 65)
+
+        if self._use_waypoint_controller:
+            await self._run_waypoint_controller_path()
+            return
         logger.info("  PROJECT SANJAY MK2 — Mission Runner")
         logger.info(f"  Mode: {'Headless' if self._headless else 'Isaac Sim'}")
         logger.info(f"  Drones: {len(self._drones)}")
@@ -385,9 +404,10 @@ class MissionRunner:
         self._init_avoidance()
         await self._init_coordinators()
 
-        # Connect to Isaac Sim overlay if available
+        # Connect to Isaac Sim overlay and stage sync if available
         if not self._headless:
             self._init_overlay()
+            self._register_stage_sync()
 
         self._start_time = time.time()
         self._log_event("SYSTEM", "Mission started")
@@ -402,7 +422,7 @@ class MissionRunner:
 
                 # ── Timeout check ──
                 if elapsed > self._max_mission_time:
-                    self._log_event("SYSTEM", "⏱️  Mission TIMEOUT", "CRITICAL")
+                    self._log_event("SYSTEM", "Mission TIMEOUT", "CRITICAL")
                     mission_result = "TIMEOUT"
                     break
 
@@ -460,11 +480,15 @@ class MissionRunner:
 
                     drone.step(velocity, self._dt)
 
+                for drone_id, drone in self._drones.items():
+                    if not drone.is_active:
+                        continue
+                    mgr = self._avoidance_managers.get(drone_id)
                     if mgr and mgr.closest_obstacle_distance < 0.5:
                         self._collision_count += 1
                         self._log_event(
                             f"Alpha_{drone_id}",
-                            f"💥 COLLISION — obstacle at {mgr.closest_obstacle_distance:.2f}m "
+                                f"COLLISION — obstacle at {mgr.closest_obstacle_distance:.2f}m "
                             f"(total: {self._collision_count})",
                             "CRITICAL",
                         )
@@ -483,7 +507,7 @@ class MissionRunner:
                 if min_distance < 20.0:
                     self._log_event(
                         "SWARM",
-                        f"❌ Unsafe inter-drone spacing detected ({min_distance:.1f}m)",
+                        f"Unsafe inter-drone spacing detected ({min_distance:.1f}m)",
                         "CRITICAL",
                     )
                     mission_result = "FAILED_SEPARATION"
@@ -523,6 +547,33 @@ class MissionRunner:
 
         # ── Finalize ──
         self._finalize(mission_result)
+
+    async def _run_waypoint_controller_path(self):
+        """
+        Optional execution path that uses FlightController + WaypointController.
+        This is useful for validating autonomous waypoint orchestration and
+        manual-overrides against the isaac_sim backend.
+        """
+        self._start_time = time.time()
+        self._flight_controller = FlightController(drone_id=0, backend="isaac_sim")
+        self._waypoint_controller = WaypointController(self._flight_controller)
+
+        for wp in self._mission_waypoints:
+            self._waypoint_controller.add_waypoint(
+                position=wp.position,
+                speed=wp.speed,
+                acceptance_radius=wp.acceptance_radius,
+                hold_time=wp.hold_time,
+            )
+
+        ok = await self._waypoint_controller.execute_mission(
+            auto_arm_takeoff=True,
+            takeoff_altitude_m=ALPHA_ALTITUDE,
+            enable_avoidance=True,
+        )
+        result = "SUCCESS" if ok else "FAILED_WAYPOINT_CONTROLLER"
+        await self._flight_controller.shutdown()
+        self._finalize(result)
 
     def _init_avoidance(self):
         """Initialize an AvoidanceManager per drone."""
@@ -580,6 +631,53 @@ class MissionRunner:
         except Exception:
             self._overlay = None
 
+    def _register_stage_sync(self):
+        """Register per-frame stage sync on main Kit thread so drones move visibly."""
+        try:
+            import omni.kit.app
+            app = omni.kit.app.get_app()
+            if app:
+                self._sync_sub = (
+                    app.get_update_event_stream()
+                    .create_subscription_to_pop(self._sync_drones_to_stage)
+                )
+                logger.info("Stage sync registered (drones will move in viewport)")
+        except Exception as e:
+            logger.debug(f"Stage sync registration skipped: {e}")
+
+    def _sync_drones_to_stage(self, event=None):
+        """Write SimDrone positions to the Isaac Sim stage so drones move visibly."""
+        try:
+            import omni.usd
+            from pxr import UsdGeom, Gf
+
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+
+            for drone_id, drone in self._drones.items():
+                if not drone.is_active:
+                    continue
+                prim_path = f"/World/Drones/Alpha_{drone_id}"
+                prim = stage.GetPrimAtPath(prim_path)
+                if not prim.IsValid():
+                    continue
+                # NED: (x, y, z) with z negative = altitude -> Isaac (x, y, -z)
+                pos = Gf.Vec3d(drone.position.x, drone.position.y, -drone.position.z)
+
+                # Use Xformable directly (robust for VisualCuboid and Robot prims)
+                xform = UsdGeom.Xformable(prim)
+                translate_op = None
+                for op in xform.GetOrderedXformOps():
+                    if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                        translate_op = op
+                        break
+                if translate_op is None:
+                    translate_op = xform.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble)
+                translate_op.Set(pos)
+        except Exception as e:
+            logger.debug(f"Stage sync skipped: {e}")
+
     # ── Logging ───────────────────────────────────────────────────
 
     def _log_event(self, source: str, message: str, level: str = "INFO"):
@@ -605,14 +703,22 @@ class MissionRunner:
 
     def _finalize(self, result: str):
         """Print final results and dump debug log on failure."""
+        # Unregister stage sync subscription
+        if self._sync_sub is not None:
+            try:
+                self._sync_sub.unsubscribe()
+            except Exception:
+                pass
+            self._sync_sub = None
+
         elapsed = time.time() - self._start_time
 
         print()
         print("=" * 65)
         if result == "SUCCESS":
-            print("  🎯 MISSION COMPLETE")
+            print("  MISSION COMPLETE")
         else:
-            print(f"  ❌ MISSION RESULT: {result}")
+            print(f"  MISSION RESULT: {result}")
         print("=" * 65)
 
         print(f"\n  Duration          : {elapsed:.1f}s")
@@ -621,7 +727,7 @@ class MissionRunner:
         print(f"  Collisions        : {self._collision_count}")
 
         # Per-drone final state
-        print(f"\n  ── Drone Final Positions ──")
+        print("\n  -- Drone Final Positions --")
         for did, drone in sorted(self._drones.items()):
             mgr = self._avoidance_managers.get(did)
             state = mgr.state.name if mgr else "N/A"
@@ -639,7 +745,7 @@ class MissionRunner:
 
     def _dump_debug_log(self, result: str, elapsed: float):
         """Dump full debug log to console on failure."""
-        print(f"\n  ── DEBUG LOG ({len(self._event_log)} events) ──")
+        print(f"\n  -- DEBUG LOG ({len(self._event_log)} events) --")
         for ev in self._event_log:
             ts = ev["elapsed"]
             lvl = ev["level"]
@@ -649,7 +755,7 @@ class MissionRunner:
             print(f"    {marker} [{ts:>7.1f}s] [{lvl:<8s}] [{src:<12s}] {msg}")
 
         # Avoidance telemetry snapshots
-        print(f"\n  ── Avoidance Telemetry at Failure ──")
+        print("\n  -- Avoidance Telemetry at Failure --")
         for did, mgr in self._avoidance_managers.items():
             telem = mgr.get_telemetry()
             print(f"    Alpha_{did}:")
@@ -686,9 +792,9 @@ class MissionRunner:
         try:
             with open(log_path, "w") as f:
                 json.dump(log_data, f, indent=2, default=str)
-            print(f"\n  📄 Log saved: {log_path}")
+            print(f"\n  Log saved: {log_path}")
         except Exception as e:
-            print(f"\n  ⚠️  Log save failed: {e}")
+            print(f"\n  Log save failed: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -704,10 +810,15 @@ def main():
                         help="Run inside Isaac Sim (requires scene to be loaded)")
     parser.add_argument("--timeout", type=float, default=600.0,
                         help="Mission timeout in seconds (default: 600)")
+    parser.add_argument(
+        "--controller-path",
+        action="store_true",
+        help="Run mission via FlightController + WaypointController path",
+    )
     args = parser.parse_args()
 
     headless = not args.isaac
-    runner = MissionRunner(headless=headless)
+    runner = MissionRunner(headless=headless, use_waypoint_controller=args.controller_path)
     runner._max_mission_time = args.timeout
 
     asyncio.run(runner.run())
