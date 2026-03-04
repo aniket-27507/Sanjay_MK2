@@ -60,6 +60,35 @@ class TrainingConfig:
 
 
 @dataclass(slots=True)
+class FixLoopConfig:
+    enabled: bool = False
+    max_retries: int = 5
+    simulation_timeout_s: float = 60.0
+    script_timeout_s: float = 30.0
+
+
+@dataclass(slots=True)
+class ExperimentConfig:
+    enabled: bool = False
+    db_path: str = "data/isaac_experiments.db"
+    max_concurrent_runs: int = 1
+
+
+@dataclass(slots=True)
+class ScenarioLabConfig:
+    enabled: bool = False
+    db_path: str = "data/isaac_experiments.db"
+    default_scenario_count: int = 100
+
+
+@dataclass(slots=True)
+class MemoryConfig:
+    enabled: bool = True
+    knowledge_base_path: str = "data/knowledge_base.json"
+    failure_patterns_path: str = "data/failure_patterns.json"
+
+
+@dataclass(slots=True)
 class InstanceConfig:
     label: str = "Isaac Sim"
     simulation: SimulationConfig = field(default_factory=SimulationConfig)
@@ -67,6 +96,9 @@ class InstanceConfig:
     logs: LogConfig = field(default_factory=LogConfig)
     ros2: Ros2Config = field(default_factory=Ros2Config)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    fix_loop: FixLoopConfig = field(default_factory=FixLoopConfig)
+    experiments: ExperimentConfig = field(default_factory=ExperimentConfig)
+    scenario_lab: ScenarioLabConfig = field(default_factory=ScenarioLabConfig)
 
 
 @dataclass(slots=True)
@@ -116,6 +148,7 @@ class ServerConfig:
     security: SecurityConfig = field(default_factory=SecurityConfig)
     instances: dict[str, InstanceConfig] = field(default_factory=lambda: {"primary": InstanceConfig()})
     plugins: PluginConfig = field(default_factory=PluginConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 
 def load_config(config_path: str | Path = "config/mcp_server.yaml") -> ServerConfig:
@@ -142,6 +175,7 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
     security_raw = server.get("security", {}) or {}
     instances_raw = raw.get("instances", {}) or {}
     plugins_raw = raw.get("plugins", {}) or {}
+    memory_raw = raw.get("memory", {}) or {}
 
     instances: dict[str, InstanceConfig] = {}
     for instance_name, instance_raw_any in instances_raw.items():
@@ -152,6 +186,9 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
         ssh_raw = logs_raw.get("ssh", {}) or {}
         ros2_raw = instance_raw.get("ros2", {}) or {}
         training_raw = instance_raw.get("training", {}) or {}
+        fix_loop_raw = instance_raw.get("fix_loop", {}) or {}
+        experiments_raw = instance_raw.get("experiments", {}) or {}
+        scenario_lab_raw = instance_raw.get("scenario_lab", {}) or {}
 
         topics = [
             Ros2TopicConfig(name=str(topic.get("name", "")), type=str(topic.get("type", "")))
@@ -191,6 +228,22 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
                 enabled=bool(training_raw.get("enabled", False)),
                 log_dir=str(training_raw.get("log_dir", "~/isaac_rl_logs/")),
             ),
+            fix_loop=FixLoopConfig(
+                enabled=bool(fix_loop_raw.get("enabled", False)),
+                max_retries=int(fix_loop_raw.get("max_retries", 5)),
+                simulation_timeout_s=float(fix_loop_raw.get("simulation_timeout_s", 60.0)),
+                script_timeout_s=float(fix_loop_raw.get("script_timeout_s", 30.0)),
+            ),
+            experiments=ExperimentConfig(
+                enabled=bool(experiments_raw.get("enabled", False)),
+                db_path=str(experiments_raw.get("db_path", "data/isaac_experiments.db")),
+                max_concurrent_runs=int(experiments_raw.get("max_concurrent_runs", 1)),
+            ),
+            scenario_lab=ScenarioLabConfig(
+                enabled=bool(scenario_lab_raw.get("enabled", False)),
+                db_path=str(scenario_lab_raw.get("db_path", "data/isaac_experiments.db")),
+                default_scenario_count=int(scenario_lab_raw.get("default_scenario_count", 100)),
+            ),
         )
 
     if not instances:
@@ -229,6 +282,11 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
             auto_discover=bool(plugins_raw.get("auto_discover", True)),
             plugin_dir=str(plugins_raw.get("plugin_dir", "isaac_mcp/plugins")),
             disabled=list(plugins_raw.get("disabled", []) or []),
+        ),
+        memory=MemoryConfig(
+            enabled=bool(memory_raw.get("enabled", True)),
+            knowledge_base_path=str(memory_raw.get("knowledge_base_path", "data/knowledge_base.json")),
+            failure_patterns_path=str(memory_raw.get("failure_patterns_path", "data/failure_patterns.json")),
         ),
     )
 
@@ -290,6 +348,22 @@ def _apply_env_overrides(config: ServerConfig) -> None:
 
     if enable_mutations := os.environ.get("ISAAC_MCP_ENABLE_MUTATIONS"):
         config.security.enable_mutations = _parse_bool(enable_mutations)
+
+    if primary is not None:
+        if fix_loop_enabled := os.environ.get("ISAAC_MCP_FIX_LOOP_ENABLED"):
+            primary.fix_loop.enabled = _parse_bool(fix_loop_enabled)
+
+        if experiments_enabled := os.environ.get("ISAAC_MCP_EXPERIMENTS_ENABLED"):
+            primary.experiments.enabled = _parse_bool(experiments_enabled)
+
+        if experiments_db := os.environ.get("ISAAC_MCP_EXPERIMENTS_DB_PATH"):
+            primary.experiments.db_path = experiments_db
+
+        if scenario_lab_enabled := os.environ.get("ISAAC_MCP_SCENARIO_LAB_ENABLED"):
+            primary.scenario_lab.enabled = _parse_bool(scenario_lab_enabled)
+
+    if memory_enabled := os.environ.get("ISAAC_MCP_MEMORY_ENABLED"):
+        config.memory.enabled = _parse_bool(memory_enabled)
 
 
 def _parse_str_list(value: Any, default: list[str]) -> list[str]:

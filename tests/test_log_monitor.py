@@ -92,3 +92,24 @@ async def test_logs_search_validation() -> None:
 
     assert result["status"] == "error"
     assert result["error"]["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_logs_errors_enriched_output() -> None:
+    mcp = FakeMCP()
+    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(FakeSSH())))
+    register(host)
+
+    result = json.loads(await mcp.tools["logs_errors"]())
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert "severity_counts" in data
+    assert "remediation" in data
+    assert isinstance(data["remediation"], list)
+    if data["count"] > 0:
+        entry = data["remediation"][0]
+        assert "category" in entry
+        assert "severity" in entry
+        assert "fix" in entry
+        assert "occurrences" in entry

@@ -48,10 +48,27 @@ class FakeWS:
         return dict(self.cache)
 
 
+class FakeKit:
+    def __init__(self):
+        self.requests = []
+
+    async def get(self, endpoint, params=None):
+        self.requests.append(("GET", endpoint, params))
+        if endpoint == "/scene/physics":
+            return {"gravity": -9.81, "time_step": 0.016}
+        return {"result": "ok"}
+
+    async def post(self, endpoint, data=None):
+        self.requests.append(("POST", endpoint, data))
+        if endpoint == "/scene/hierarchy":
+            return {"prims": ["/World/Robot", "/World/Ground"]}
+        return {"result": "ok"}
+
+
 class FakeInstance:
-    def __init__(self, ws: FakeWS):
+    def __init__(self, ws: FakeWS, kit=None):
         self.ws_client = ws
-        self.kit_client = None
+        self.kit_client = kit
         self.ssh_client = None
         self.ros2_client = None
 
@@ -108,3 +125,38 @@ async def test_sim_get_drone_and_messages() -> None:
     assert drone_result["data"]["drone"]["id"] == 1
     assert msg_result["status"] == "ok"
     assert msg_result["data"]["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_simulation_telemetry_with_kit() -> None:
+    mcp = FakeMCP()
+    ws = FakeWS()
+    kit = FakeKit()
+    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(ws, kit)))
+    register(host)
+
+    result = json.loads(await mcp.tools["get_simulation_telemetry"]())
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert len(data["robots"]) == 3
+    assert data["robots"][0]["battery"] == 90
+    assert data["physics"]["gravity"] == -9.81
+    assert "hierarchy_depth_2" in data["scene_summary"]
+    assert data["performance"]["message_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_simulation_telemetry_without_kit() -> None:
+    mcp = FakeMCP()
+    ws = FakeWS()
+    host = PluginHost(mcp, FakeInstanceManager(FakeInstance(ws)))
+    register(host)
+
+    result = json.loads(await mcp.tools["get_simulation_telemetry"]())
+
+    assert result["status"] == "ok"
+    data = result["data"]
+    assert len(data["robots"]) == 3
+    assert data["physics"]["available"] is False
+    assert data["scene_summary"]["available"] is False

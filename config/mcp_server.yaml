@@ -51,8 +51,26 @@ instances:
     training:
       enabled: true
       log_dir: "~/isaac_rl_logs/"
+    fix_loop:
+      enabled: false
+      max_retries: 5
+      simulation_timeout_s: 60.0
+      script_timeout_s: 30.0
+    experiments:
+      enabled: false
+      db_path: "data/isaac_experiments.db"
+      max_concurrent_runs: 1
+    scenario_lab:
+      enabled: false
+      db_path: "data/isaac_experiments.db"
+      default_scenario_count: 100
 
 plugins:
   auto_discover: true
   plugin_dir: "isaac_mcp/plugins"
   disabled: []
+
+memory:
+  enabled: true
+  knowledge_base_path: "data/knowledge_base.json"
+  failure_patterns_path: "data/failure_patterns.json"

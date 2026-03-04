@@ -27,3 +27,8 @@ dist/
 # Local env/config
 .env
 .env.*
+
+# Data (runtime-generated)
+data/*.db
+data/*.json
+!data/.gitkeep

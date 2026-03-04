@@ -213,6 +213,72 @@ def register(host: PluginHost) -> None:
         except Exception as exc:
             return error(tool, instance, "upstream_error", "Failed to list scenarios", exception_details(exc))
 
+    @host.tool(annotations=_READONLY_ANNOTATION)
+    async def get_simulation_telemetry(instance: str = "primary") -> str:
+        """Aggregate simulation state, scene physics, and performance into one structured response."""
+        tool = "get_simulation_telemetry"
+        try:
+            state = host.get_state_cache(instance)
+
+            # Extract robot/drone data from state cache
+            drones = state.get("drones", [])
+            robots: list[dict[str, Any]] = []
+            if isinstance(drones, list):
+                for i, drone in enumerate(drones):
+                    if isinstance(drone, dict):
+                        robots.append({
+                            "index": i,
+                            "name": drone.get("name", f"drone_{i}"),
+                            "position": drone.get("position"),
+                            "rotation": drone.get("rotation"),
+                            "velocity": drone.get("velocity"),
+                            "battery": drone.get("battery"),
+                            "status": drone.get("status"),
+                            "joint_positions": drone.get("joint_positions"),
+                            "joint_velocities": drone.get("joint_velocities"),
+                        })
+
+            # Attempt to get physics and scene data from Kit API
+            physics_data: dict[str, Any] = {}
+            scene_summary: dict[str, Any] = {}
+            try:
+                kit = host.get_connection("kit_api", instance)
+            except ValueError:
+                kit = None
+            if kit is not None:
+                try:
+                    physics_data = await kit.get("/scene/physics")
+                except Exception:
+                    physics_data = {"available": False, "reason": "kit_api_error"}
+                try:
+                    hierarchy = await kit.post("/scene/hierarchy", {"path": "/World", "max_depth": 2})
+                    scene_summary = {"hierarchy_depth_2": hierarchy}
+                except Exception:
+                    scene_summary = {"available": False, "reason": "kit_api_error"}
+            else:
+                physics_data = {"available": False, "reason": "kit_api_not_configured"}
+                scene_summary = {"available": False, "reason": "kit_api_not_configured"}
+
+            # Performance from state cache
+            performance: dict[str, Any] = {
+                "message_count": len(state.get("messages", [])),
+            }
+            if "fps" in state:
+                performance["fps"] = state["fps"]
+            if "physics_step_ms" in state:
+                performance["physics_step_ms"] = state["physics_step_ms"]
+
+            return success(tool, instance, {
+                "robots": robots,
+                "physics": physics_data,
+                "scene_summary": scene_summary,
+                "performance": performance,
+                "active_faults": state.get("faults", []),
+                "scenario": state.get("scenario"),
+            })
+        except Exception as exc:
+            return error(tool, instance, "upstream_error", "Failed to collect simulation telemetry", exception_details(exc))
+
     @host.resource("isaac://sim/state")
     async def sim_state_resource() -> str:
         state = host.get_state_cache("primary")

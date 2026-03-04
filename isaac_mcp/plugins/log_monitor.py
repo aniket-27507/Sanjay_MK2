@@ -147,10 +147,31 @@ def register(host: PluginHost) -> None:
             matched = match_error_patterns(entries)
 
             categories: dict[str, int] = {}
+            severity_counts: dict[str, int] = {}
+            remediation: list[dict[str, Any]] = []
+            seen_descriptions: set[str] = set()
+
             for item in matched:
                 pattern = item.matched_pattern or {}
                 category = str(pattern.get("category", "unknown"))
+                severity = str(pattern.get("severity", "unknown"))
                 categories[category] = categories.get(category, 0) + 1
+                severity_counts[severity] = severity_counts.get(severity, 0) + 1
+
+                description = pattern.get("description", "")
+                if description and description not in seen_descriptions:
+                    seen_descriptions.add(description)
+                    remediation.append({
+                        "category": category,
+                        "severity": severity,
+                        "description": description,
+                        "fix": pattern.get("fix", "No guidance available"),
+                        "last_seen": item.timestamp or "unknown",
+                        "occurrences": sum(
+                            1 for m in matched
+                            if (m.matched_pattern or {}).get("description") == description
+                        ),
+                    })
 
             return success(
                 tool,
@@ -158,6 +179,8 @@ def register(host: PluginHost) -> None:
                 {
                     "summary": summarize_errors(entries),
                     "category_counts": categories,
+                    "severity_counts": severity_counts,
+                    "remediation": remediation,
                     "matched": [_entry_to_dict(entry) for entry in matched],
                     "count": len(matched),
                 },

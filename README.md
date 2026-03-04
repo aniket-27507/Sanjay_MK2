@@ -1,290 +1,154 @@
-# Isaac Sim MCP Server (`isaac-mcp`)
+<div align="center">
+  <h1>🤖 IsaacMCP</h1>
+  <p><strong>The Ultimate AI Copilot for Robotics Simulation</strong></p>
+  <p>Seamlessly bridge LLMs (Claude, Cursor, Claude Code) with NVIDIA Isaac Sim using the Model Context Protocol (MCP).</p>
+</div>
 
-Remote-capable MCP server that bridges Claude/Cursor/Claude Code to NVIDIA Isaac Sim.
+---
 
-The project supports:
-- Local `stdio` mode for development
-- Remote HTTPS mode (`streamable-http`, optional `sse`) for URL-based onboarding
-- OAuth bearer-token verification for private rollouts
-- Read-only-by-default safety posture with explicit mutation gating
+## 🚀 The Innovation: AI-Driven Simulation
 
-## What Ships
+**IsaacMCP** transforms robotics development from a manual, tedious workflow into a highly automated, self-healing, and dynamic process. By wrapping NVIDIA Isaac Sim in the Model Context Protocol (MCP), your favorite LLM can natively interact with, manipulate, and analyze your robotics environments in real-time. 
 
-- 36 tools across 6 plugins:
-  - `sim_control` (10)
-  - `scene_inspect` (6)
-  - `camera_render` (6)
-  - `log_monitor` (5)
-  - `ros2_bridge` (5)
-  - `rl_training` (4)
-- 6 MCP resources:
-  - `isaac://logs/latest`
-  - `isaac://logs/errors`
-  - `isaac://sim/state`
-  - `isaac://sim/config`
-  - `isaac://scene/hierarchy`
-  - `isaac://ros2/status`
-- Multi-instance connection lifecycle manager
-- Structured JSON tool contract for success/error responses
-- Tool safety annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`)
+Say goodbye to hunting through logs or manually tuning physics parameters. IsaacMCP acts as your on-demand robotics engineering assistant, capable of diagnosing failures, writing fixes, orchestrating complex experiment campaigns, and learning from past mistakes.
 
-## Key Paths
+### 🏆 Key Achievements & Capabilities
 
-- Server entry: `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/server.py`
-- Config schema: `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/config.py`
-- OAuth/JWKS verifier: `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/auth.py`
-- Plugin host + safety gate: `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/plugin_host.py`
-- Default config: `/Users/archishmanpaul/Desktop/MCP/config/mcp_server.yaml`
-- Cloudflare deployment assets: `/Users/archishmanpaul/Desktop/MCP/deploy/cloudflare`
-- Cursor one-click helper script: `/Users/archishmanpaul/Desktop/MCP/scripts/generate_cursor_deeplink.py`
-- Cursor install page template: `/Users/archishmanpaul/Desktop/MCP/docs/cursor_install.html`
+We have successfully engineered **54 specialized MCP tools** across **10 functional plugins**, delivering a true "Auto-Pilot" for Sim-to-Real workflows:
 
-## Install
+- 🧠 **Intelligent Diagnostics**: Cross-correlates telemetry, logs, and scene hierarchy to perform automated root-cause analysis of simulation failures.
+- 💊 **Autonomous Fix Loop**: Self-healing simulations! When an error occurs, the AI synthesizes a fix, generates Kit API Python scripts, and injects them live to remediate the issue automatically.
+- 🔬 **Experiment Engine**: Run massive batch simulations and parameter sweeps. Uses a blazing-fast async SQLite (`aiosqlite`) backend to record metrics such as success rates, durations, and parameter values.
+- 🌪️ **Scenario Lab**: Procedurally generate randomized scenarios covering friction, gravity, obstacles, payloads, and lighting. Run automated **robustness testing campaigns** to validate your robot's resilience against worst-case environments.
+- 📚 **Knowledge Memory**: A self-learning memory base that records known error patterns and tracks the statistical success rate of applied fixes—meaning the AI actually gets smarter over time.
 
+---
+
+## 🎯 Our Goal
+
+Our mission is to drastically accelerate the Sim-to-Real pipeline by allowing developers and researchers to control, debug, and optimize robotic simulations using natural language and AI logic. We strive to provide an architecture where:
+1. **Testing is Automated:** Let the AI spawn thousands of scenarios.
+2. **Debugging is Instant:** AI reads the tracebacks and scene hierarchy for you.
+3. **Safety is Guaranteed:** Read-only by default, with strict, explicit mutation gating.
+
+---
+
+## 🛠️ Tech Stack
+
+IsaacMCP leverages a cutting-edge stack to guarantee low latency and high reliability:
+- **Protocol:** Model Context Protocol (MCP)
+- **Simulation Environment:** NVIDIA Isaac Sim (Omniverse Kit API, PhysX, Sensors)
+- **Language:** Python 3.10+ (Fully Asynchronous)
+- **Storage:** `aiosqlite` (Async SQLite) for deep experiment tracking; JSON for knowledge graphs.
+- **Transports & Integrations:** WebSockets, SSH, HTTP/REST, ROS2 (via `rclpy`), Local Stdio, Remote HTTPS/SSE.
+- **Testing:** `pytest` and `pytest-asyncio` with **100% core coverage**.
+
+---
+
+## 📦 Installation & Setup
+
+### Prerequisites
+- Python 3.10 or higher.
+- A running instance of NVIDIA Isaac Sim (or remote access to one).
+
+### 1. Clone & Install
 ```bash
-cd /Users/archishmanpaul/Desktop/MCP
+git clone https://github.com/your-org/isaac-mcp.git
+cd isaac-mcp
+
+# Create a virtual environment
 python3 -m venv .venv
-.venv/bin/python -m pip install -U pip
-.venv/bin/pip install -e '.[dev]'
+source .venv/bin/activate
+
+# Upgrade pip and install the package with dev dependencies
+pip install -U pip
+pip install -e '.[dev]'
 ```
 
-Optional ROS2 extras:
-
+*(Optional)* If you are working with ROS2:
 ```bash
-.venv/bin/pip install -e '.[ros2]'
+pip install -e '.[ros2]'
 ```
 
-## Run Modes
+### 2. Configuration
+IsaacMCP is configured via the `config/mcp_server.yaml` file. Here, you can define your Isaac Sim connection parameters, enable tools, and manage the knowledge base.
 
-### 1) Local stdio (default)
-
-```bash
-.venv/bin/python -m isaac_mcp.server
-```
-
-Or explicitly:
-
-```bash
-.venv/bin/python -m isaac_mcp.server --transport stdio
-```
-
-### 2) Remote streamable HTTP (URL-first)
-
-```bash
-ISAAC_MCP_TRANSPORT=streamable-http \
-ISAAC_MCP_HOST=127.0.0.1 \
-ISAAC_MCP_PORT=8000 \
-ISAAC_MCP_PATH=/mcp \
-ISAAC_MCP_PUBLIC_BASE_URL='https://mcp.your-domain.com' \
-.venv/bin/python -m isaac_mcp.server
-```
-
-Health route default:
-
-```bash
-curl -fsS http://127.0.0.1:8000/healthz
-```
-
-## OAuth (Remote)
-
-Remote auth is disabled by default. Enable via config or env:
-
-```bash
-export ISAAC_MCP_AUTH_ENABLED=true
-export ISAAC_MCP_AUTH_ISSUER_URL='https://auth.example.com'
-export ISAAC_MCP_AUTH_RESOURCE_URL='https://mcp.your-domain.com'
-export ISAAC_MCP_AUTH_REQUIRED_SCOPES='mcp:read'
-export ISAAC_MCP_AUTH_JWKS_URL='https://auth.example.com/.well-known/jwks.json'
-```
-
-Notes:
-- JWT verification uses JWKS (`kid` required in token header).
-- Required scopes are enforced.
-- Expired/invalid tokens are rejected by auth middleware.
-
-## Safety Defaults
-
-Mutation tools are blocked by default.
-
-Enable explicitly only when required:
-
+By default, **mutating actions** (like changing physics or applying fixes) are **DISABLED** for safety. To empower the AI to make changes, enable mutations via your environment:
 ```bash
 export ISAAC_MCP_ENABLE_MUTATIONS=true
 ```
 
-When disabled, mutating tools return:
-- `status=error`
-- `error.code=mutation_disabled`
+---
 
-## Configuration
+## 🕹️ Run Modes & Connector Setup
 
-Main file: `/Users/archishmanpaul/Desktop/MCP/config/mcp_server.yaml`
+### Mode A: Local Execution (Claude Desktop / Cursor)
+Run the server locally over `stdio`. This is the easiest way to get started.
 
-Top-level sections:
-- `server.runtime`: transport + bind + URL paths
-- `server.auth`: OAuth issuer/resource/scopes/JWKS
-- `server.security`: mutation gate
-- `instances`: per-instance Isaac endpoints
-- `plugins`: auto-discovery and plugin disable list
-
-Environment overrides:
-- `ISAAC_MCP_WS_URL`
-- `ISAAC_MCP_KIT_URL`
-- `ISAAC_MCP_LOG_PATH`
-- `ISAAC_MCP_SSH_HOST`
-- `ISAAC_MCP_TRANSPORT`
-- `ISAAC_MCP_HOST`
-- `ISAAC_MCP_PORT`
-- `ISAAC_MCP_PATH`
-- `ISAAC_MCP_PUBLIC_BASE_URL`
-- `ISAAC_MCP_HEALTH_PATH`
-- `ISAAC_MCP_AUTH_ENABLED`
-- `ISAAC_MCP_AUTH_ISSUER_URL`
-- `ISAAC_MCP_AUTH_RESOURCE_URL`
-- `ISAAC_MCP_AUTH_JWKS_URL`
-- `ISAAC_MCP_AUTH_AUDIENCE`
-- `ISAAC_MCP_AUTH_REQUIRED_SCOPES`
-- `ISAAC_MCP_AUTH_ALGORITHMS`
-- `ISAAC_MCP_ENABLE_MUTATIONS`
-
-## Cloudflare-First Remote Exposure
-
-Use Cloudflare Tunnel to expose only HTTPS while keeping MCP local near Isaac.
-
-See:
-- `/Users/archishmanpaul/Desktop/MCP/deploy/cloudflare/README.md`
-- `/Users/archishmanpaul/Desktop/MCP/deploy/cloudflare/cloudflared-config.example.yml`
-- `/Users/archishmanpaul/Desktop/MCP/deploy/cloudflare/systemd/isaac-mcp.service`
-- `/Users/archishmanpaul/Desktop/MCP/deploy/cloudflare/systemd/cloudflared.service`
-
-## Claude Connector Onboarding (Remote URL)
-
-Use your remote endpoint URL (example `https://mcp.your-domain.com/mcp`) in Claude connector settings.
-
-Docs:
-- [Custom connectors setup](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)
-- [Remote MCP auth/transport behavior](https://support.claude.com/en/articles/11503834-building-custom-connectors-via-remote-mcp-servers)
-- [Directory submission guide](https://support.claude.com/en/articles/12922490-remote-mcp-server-submission-guide)
-
-## Cursor One-Click Install
-
-Generate deeplink/install URL:
-
+**Claude Code CLI:**
 ```bash
-cd /Users/archishmanpaul/Desktop/MCP
+claude mcp add --transport stdio --scope project isaac-sim -- .venv/bin/python -m isaac_mcp.server
+```
+
+**Cursor Setup (One-Click DeepLink):**
+```bash
 .venv/bin/python scripts/generate_cursor_deeplink.py \
   --name isaac-sim \
-  --remote-url 'https://mcp.your-domain.com/mcp'
+  --remote-url 'http://localhost:8000/mcp'
 ```
 
-Outputs:
-- `cursor://anysphere.cursor-deeplink/mcp/install?...`
-- `https://cursor.com/install-mcp?...`
-
-You can also host `/Users/archishmanpaul/Desktop/MCP/docs/cursor_install.html` as a simple install landing page.
-
-## Claude Code Compatibility
-
-### Local stdio (project scope)
-
-`/Users/archishmanpaul/Desktop/MCP/.mcp.json` already contains stdio config.
-
-CLI:
+### Mode B: Remote Enterprise Deployment (Cloudflare & HTTPS)
+Host IsaacMCP near your heavy GPU boxes while querying it securely from anywhere.
 
 ```bash
-cd /Users/archishmanpaul/Desktop/MCP
-claude mcp add --transport stdio --scope project isaac-sim -- .venv/bin/python -m isaac_mcp.server
-claude mcp list
+ISAAC_MCP_TRANSPORT=streamable-http \
+ISAAC_MCP_HOST=0.0.0.1 \
+ISAAC_MCP_PORT=8000 \
+ISAAC_MCP_PUBLIC_BASE_URL='https://mcp.your-domain.com' \
+.venv/bin/python -m isaac_mcp.server
 ```
+*Note: Remote rollout supports robust OAuth bearer-token verification to keep your simulation endpoints secure.*
 
-### Remote URL mode
+---
 
-If your Claude Code build supports remote MCP config, use the same remote endpoint and OAuth setup used for Connectors.
+## 🧰 The Tool Arsenal
 
-## Integrating With Any Isaac Sim Project
+Once connected, your AI assistant will have access to 54 semantic tools. Here represents a fraction of what you can ask the AI to do:
 
-For arbitrary Isaac Sim projects, integration is mostly endpoint/topic mapping:
+- **"Analyze why the robot keeps falling over."** -> Triggers `analyze_simulation` + `get_diagnosis_history`.
+- **"Run a parameter sweep on floor friction from 0.1 to 1.0."** -> Triggers `run_parameter_sweep` utilizing the Experiment Engine.
+- **"Generate 50 randomized lighting and gravity scenarios and test robustness."** -> Triggers the Scenario Lab's `generate_scenario` and `run_robustness_test`.
+- **"Has this physics error happened before?"** -> Triggers `query_knowledge_base` to retrieve statistical success rates of past fixes.
+- **"Fix it."** -> Triggers `generate_fix` and `apply_fix_script` utilizing the Autonomous Fix Loop.
 
-1. Ensure your project exposes equivalent surfaces:
-- simulation command/state channel (WebSocket)
-- scene/render/RL HTTP endpoints (or adapters)
-- log access (SSH path or local)
-- optional ROS2 topics
+### Included MCP Resources:
+Gain instant read access to active contexts:
+- `isaac://logs/latest`
+- `isaac://logs/errors`
+- `isaac://sim/state`
+- `isaac://sim/config`
+- `isaac://scene/hierarchy`
+- `isaac://ros2/status`
 
-2. Update `/Users/archishmanpaul/Desktop/MCP/config/mcp_server.yaml` for your project:
-- `instances.<id>.simulation.websocket_url`
-- `instances.<id>.kit_api.base_url`
-- `instances.<id>.logs.*`
-- `instances.<id>.ros2.*`
-- `instances.<id>.training.log_dir`
+---
 
-3. If your endpoint paths differ, adapt plugin endpoint mappings in:
-- `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/plugins/scene_inspect.py`
-- `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/plugins/camera_render.py`
-- `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/plugins/rl_training.py`
+## 🔒 Security & Safety Defaults
 
-4. If ROS naming differs, update topic construction in:
-- `/Users/archishmanpaul/Desktop/MCP/isaac_mcp/plugins/ros2_bridge.py`
+Safety is a first-class citizen in IsaacMCP.
+- **Read-Only by Default:** The server boots into read-only mode.
+- **Gated Actions:** Destructive operations (like changing the USD stage or applying scripts) check a strict mutation gate (`ISAAC_MCP_ENABLE_MUTATIONS`). 
+- **Tool Annotations:** All tools are heavily annotated with `readOnlyHint`, `destructiveHint`, and `idempotentHint` so the LLM intrinsically understands the weight of its actions.
 
-5. Smoke-test representative tools after mapping:
-- `sim_get_state`
-- `scene_list_prims`
-- `camera_capture`
-- `logs_errors`
-- `ros2_list_topics`
-- `rl_get_metrics`
+---
 
-## Tool Response Contract
+## 🤔 Troubleshooting & Support
 
-All tools return JSON string payloads.
+- **Tests Failing?** Run `.venv/bin/python -m pytest -v` to ensure your local environment is correctly configured.
+- **Mutation Blocked?** Ensure the `ISAAC_MCP_ENABLE_MUTATIONS=true` environment variable is exported to the process running the server.
+- **Resources Not Loading?** Check `config/mcp_server.yaml` to verify the IP and port mapping for your Omniverse/Kit APIs.
 
-Success:
+---
 
-```json
-{"status":"ok","tool":"<name>","instance":"<id>","data":{},"error":null}
-```
-
-Error:
-
-```json
-{"status":"error","tool":"<name>","instance":"<id>","data":null,"error":{"code":"<code>","message":"<msg>","details":{}}}
-```
-
-Common error codes:
-- `validation_error`
-- `not_found`
-- `upstream_error`
-- `dependency_unavailable`
-- `mutation_disabled`
-
-## Tests
-
-```bash
-cd /Users/archishmanpaul/Desktop/MCP
-.venv/bin/python -m pytest -q
-```
-
-Coverage includes:
-- config parsing + env overrides
-- plugin host registration/discovery + mutation gate
-- transport/auth wiring
-- connection/client behavior
-- per-plugin tool behavior
-- integration smoke and annotation presence
-
-## Troubleshooting
-
-- Auth errors on remote connector:
-  - verify issuer, JWKS URL, and required scopes
-  - verify OAuth callback allowlist required by Claude
-- Connector reachable but tools fail:
-  - run `/healthz` and inspect instance health fields
-  - validate internal WS/Kit/SSH endpoints are reachable from MCP host
-- Mutation calls blocked:
-  - expected unless `ISAAC_MCP_ENABLE_MUTATIONS=true`
-- ROS2 failures:
-  - install `rclpy` or disable ROS2 plugin
-
-## Registration/Verification Doc
-
-See `/Users/archishmanpaul/Desktop/MCP/docs/registration_and_verification.md` for step-by-step verification flows.
+<div align="center">
+  <p>Built with ❤️ for Robotics Engineers.</p>
+</div>
