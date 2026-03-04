@@ -1,0 +1,36 @@
+server:
+  name: "isaac-sim-mcp"
+  version: "0.1.0"
+
+instances:
+  primary:
+    label: "Primary Isaac Sim"
+    simulation:
+      websocket_url: "ws://localhost:8765"
+      reconnect_interval_s: 5.0
+      command_timeout_s: 10.0
+    kit_api:
+      enabled: true
+      base_url: "http://localhost:8211"
+    logs:
+      method: "ssh"
+      ssh:
+        host: "your-isaac-host"
+        user: "your-ssh-user"
+        key_path: "~/.ssh/id_rsa"
+      remote_path: "~/.local/share/ov/pkg/isaac-sim/kit/logs/"
+      local_path: ""
+      poll_interval_s: 2.0
+      history_lines: 1000
+    ros2:
+      enabled: true
+      domain_id: 10
+      topics: []
+    training:
+      enabled: true
+      log_dir: "~/isaac_rl_logs/"
+
+plugins:
+  auto_discover: true
+  plugin_dir: "isaac_mcp/plugins"
+  disabled: []
