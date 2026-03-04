@@ -11,7 +11,10 @@ Components:
 
 from .regiment_coordinator import AlphaRegimentCoordinator, RegimentConfig
 
+RegimentCoordinator = AlphaRegimentCoordinator
+
 __all__ = [
     "AlphaRegimentCoordinator",
+    "RegimentCoordinator",
     "RegimentConfig",
 ]

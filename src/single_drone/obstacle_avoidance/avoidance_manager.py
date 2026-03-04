@@ -105,6 +105,7 @@ class AvoidanceManager:
 
         # ── State ──
         self._goal: Optional[Vector3] = None
+        self._boids_velocity: Optional[Vector3] = None
         self._active_sub_waypoints: List[Waypoint] = []
         self._sub_waypoint_index: int = 0
         self._running = False
@@ -148,6 +149,14 @@ class AvoidanceManager:
         self._active_sub_waypoints.clear()
         self._sub_waypoint_index = 0
 
+    def set_boids_velocity(self, velocity: Optional[Vector3]):
+        """
+        Set boids desired velocity used as the strategic motion bias.
+
+        When present, APF output is blended with this desired velocity.
+        """
+        self._boids_velocity = velocity
+
     def feed_lidar_points(self, points: np.ndarray, drone_position: Optional[Vector3] = None):
         """Feed raw 3D LiDAR point cloud."""
         self._lidar.update_points(points, drone_position)
@@ -190,8 +199,13 @@ class AvoidanceManager:
         Returns:
             Safe velocity command (NED).
         """
+        synthetic_goal = False
         if self._goal is None:
-            return Vector3()
+            if self._boids_velocity is None or self._boids_velocity.magnitude() < 1e-3:
+                return Vector3()
+            lookahead = max(10.0, self._boids_velocity.magnitude() * 3.0)
+            self._goal = drone_position + self._boids_velocity.normalized() * lookahead
+            synthetic_goal = True
 
         # ── 1. Sensor Processing ────────────────────────────────
         obstacles = self._lidar.get_obstacles()
@@ -227,8 +241,18 @@ class AvoidanceManager:
         sector_ranges = self._lidar.get_sector_ranges()
         self._hpl.update_scan(sector_ranges)
 
+        desired_velocity = apf_velocity
+        if self._boids_velocity is not None:
+            if apf_state in (AvoidanceState.CLEAR, AvoidanceState.MONITORING):
+                k = 0.35
+            elif apf_state == AvoidanceState.AVOIDING:
+                k = 0.65
+            else:
+                k = 0.9
+            desired_velocity = self._boids_velocity * (1.0 - k) + apf_velocity * k
+
         safe_velocity, was_overridden = self._hpl.gate_command(
-            apf_velocity, drone_position
+            desired_velocity, drone_position
         )
         self._hpl_overriding = was_overridden
 
@@ -237,6 +261,10 @@ class AvoidanceManager:
             self._broadcast_threat(drone_position, obstacles)
 
         self._current_velocity = safe_velocity
+
+        if synthetic_goal:
+            self._goal = None
+
         return safe_velocity
 
     # ── Tactical Escalation ───────────────────────────────────────
@@ -370,6 +398,15 @@ class AvoidanceManager:
                 round(self._current_velocity.y, 3),
                 round(self._current_velocity.z, 3),
             ],
+            "boids_velocity": (
+                [
+                    round(self._boids_velocity.x, 3),
+                    round(self._boids_velocity.y, 3),
+                    round(self._boids_velocity.z, 3),
+                ]
+                if self._boids_velocity is not None
+                else None
+            ),
             "lidar": self._lidar.get_telemetry(),
             "apf": self._apf.get_telemetry(),
             "hpl": self._hpl.get_telemetry(),

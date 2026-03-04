@@ -1,7 +1,6 @@
-"""
-Project Sanjay Mk2 - Boids Submodule
-=====================================
-Flocking and obstacle avoidance via Boids algorithm.
+"""Boids flocking engine exports."""
 
-@author: Archishman Paul
-"""
+from .boids_config import BoidsConfig
+from .boids_engine import BoidsEngine
+
+__all__ = ["BoidsConfig", "BoidsEngine"]

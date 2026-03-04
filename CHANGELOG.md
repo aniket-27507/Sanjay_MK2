@@ -6,6 +6,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.8.0] - 2026-03-04
+
+### Added — Decentralized Boids + CBBA Swarm Autonomy
+
+Implemented a full decentralized Alpha-regiment control path where each drone
+locally decides task allocation (CBBA) and motion behavior (Boids), while
+preserving safety through the existing APF + HPL stack.
+
+#### New Source Files
+
+| File | Purpose |
+|------|---------|
+| `src/swarm/boids/boids_config.py` | Runtime tuning config for boids parameters and weights |
+| `src/swarm/boids/boids_engine.py` | Boids steering engine (separation/alignment/cohesion/goal/obstacle/formation/energy) |
+| `src/swarm/boids/dynamic_behaviors.py` | Dynamic split/merge/formation/spacing behavior helpers |
+| `src/swarm/cbba/task_types.py` | `TaskType` and `SwarmTask` model definitions |
+| `src/swarm/cbba/cbba_engine.py` | CBBA bundle + consensus engine with deterministic tie-breaks |
+| `src/swarm/cbba/task_generator.py` | Deterministic task generation for sectors, threats, RTL, perimeter, relay |
+| `src/swarm/flock_coordinator.py` | Integrator orchestrating CBBA + Boids + formation bias |
+| `tests/test_boids_engine.py` | Boids behavior and safety clamp tests |
+| `tests/test_cbba_engine.py` | CBBA feasibility/consensus/tie-break tests |
+| `tests/test_flock_coordinator.py` | Flock-level orchestration and reassignment tests |
+
+#### Modified Files
+
+| File | Changes |
+|------|---------|
+| `src/swarm/coordination/regiment_coordinator.py` | Added default-on `use_boids_flocking`, gossip payload APIs, desired velocity/goal outputs, flock tick integration |
+| `src/swarm/coordination/__init__.py` | Added `RegimentCoordinator` alias export (`RegimentCoordinator = AlphaRegimentCoordinator`) |
+| `src/swarm/formation/formation_controller.py` | Added `get_slot_for_drone(drone_id)` helper |
+| `src/single_drone/obstacle_avoidance/avoidance_manager.py` | Added boids desired-velocity injection and APF/Boids blending before HPL gate |
+| `src/swarm/boids/__init__.py` | Updated boids exports |
+| `src/swarm/cbba/__init__.py` | Updated cbba exports |
+| `scripts/isaac_sim/run_mission.py` | Reworked to full 6-drone decentralized mission loop with gossip exchange, per-drone coordinator orchestration, and mission metrics |
+
+#### Validation
+
+- Python 3.11 source-compile checks passed for real source files.
+- Full test suite passed: **116 passed**.
+- Headless decentralized mission runtime path executed successfully (timeout-limited run, no collision events in sample run).
+
+### Fixed — Python 3.11 Environment Bootstrap Resolver Conflict
+
+Resolved setup break in pinned dependencies:
+
+| File | Fix |
+|------|-----|
+| `requirements.txt` | Updated `numpy==1.26.0` → `numpy==1.26.4` to satisfy `scipy==1.17.1` requirement (`numpy>=1.26.4`) in Python 3.11 setup |
+
+---
+
 ## [0.7.1] - 2026-03-03
 
 ### Fixed — Code Review & Codebase Hygiene

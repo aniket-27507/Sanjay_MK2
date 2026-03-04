@@ -1,18 +1,18 @@
 """
-Project Sanjay Mk2 - Mission Runner (Obstacle Avoidance Test)
-=============================================================
-Drives the 6-drone Alpha Regiment through the clustered test
+Project Sanjay Mk2 - Mission Runner (Decentralized Swarm)
+==========================================================
+Runs a full 6-drone decentralized mission in the clustered test
 environment created by ``create_surveillance_scene.py``.
 
-This script is the simulation entry point that:
-    1. Initializes all 6 Alpha drones with AvoidanceManagers
-    2. Registers them into the Regiment Coordinator
-    3. Assigns sector-based sweep missions
-    4. Feeds simulated LiDAR data each tick
-    5. Updates the Mission Overlay with live telemetry
-    6. Detects collisions / stuck conditions → mission failure
-    7. On failure: dumps a complete debug log to console + JSON
-    8. On success: prints final mission statistics
+This script now:
+    1. Initializes 6 AvoidanceManagers + 6 AlphaRegimentCoordinators
+    2. Enables default-on Boids + CBBA flocking in each coordinator
+    3. Exchanges CBBA/state gossip over an in-process broadcast bus
+    4. Feeds synthetic LiDAR to each drone each tick
+    5. Blends boids desired velocity with APF/HPL safety outputs
+    6. Updates the Mission Overlay with live telemetry
+    7. Detects collisions / unsafe spacing and logs failures
+    8. Dumps mission telemetry to console + JSON on completion
 
 This can be run:
     A) Inside Isaac Sim (full 3D rendering + physics-driven LiDAR)
@@ -51,6 +51,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src.core.types.drone_types import DroneConfig, DroneState, DroneType, FlightMode, Vector3, Waypoint
+from src.swarm.coordination import AlphaRegimentCoordinator, RegimentConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -257,7 +258,7 @@ class SimDrone:
     drone_id: int
     position: Vector3 = field(default_factory=Vector3)
     velocity: Vector3 = field(default_factory=Vector3)
-    mode: FlightMode = FlightMode.HOVERING
+    mode: FlightMode = FlightMode.NAVIGATING
     battery: float = 100.0
     is_active: bool = True
 
@@ -312,11 +313,11 @@ from src.core.utils.geometry import hex_positions as _hex_positions
 
 class MissionRunner:
     """
-    Drives the 6-drone Alpha Regiment through the obstacle course.
+    Drives a decentralized 6-drone Alpha Regiment mission.
 
     Integrates:
         - AvoidanceManager per drone (APF + HPL + Tactical A*)
-        - AlphaRegimentCoordinator (sector assignment, C-SLAM, FANET)
+        - AlphaRegimentCoordinator per drone (Boids + CBBA + gossip)
         - SyntheticLidar for headless testing
         - Mission Overlay for live telemetry in Isaac Sim
         - Debug log dump on mission failure
@@ -344,6 +345,7 @@ class MissionRunner:
 
         # Avoidance managers (lazy import)
         self._avoidance_managers: Dict[int, object] = {}
+        self._coordinators: Dict[int, AlphaRegimentCoordinator] = {}
 
         # Mission state
         self._mission_waypoints = [
@@ -354,19 +356,17 @@ class MissionRunner:
             )
             for wp in MISSION_WAYPOINTS
         ]
-        self._current_wp_index = 0
-        self._lead_drone_id = 0  # Alpha_0 flies the obstacle course
+        self._mission_success_duration = 120.0
 
         # Mission timing
         self._start_time = 0.0
         self._max_mission_time = 600.0  # 10 minutes
-        self._stuck_timer = 0.0
-        self._stuck_threshold = 15.0  # seconds
 
         # Telemetry log
         self._event_log: List[Dict] = []
         self._collision_count = 0
         self._hpl_override_count = 0
+        self._min_inter_drone_distance = float("inf")
 
         # Mission overlay (Isaac Sim mode)
         self._overlay = None
@@ -378,11 +378,12 @@ class MissionRunner:
         logger.info(f"  Mode: {'Headless' if self._headless else 'Isaac Sim'}")
         logger.info(f"  Drones: {len(self._drones)}")
         logger.info(f"  Obstacles: {len(self._obstacles)}")
-        logger.info(f"  Waypoints: {len(self._mission_waypoints)}")
+        logger.info("  Mission: Full 6-drone decentralized autonomy")
         logger.info("=" * 65)
 
         # Initialize avoidance managers
         self._init_avoidance()
+        await self._init_coordinators()
 
         # Connect to Isaac Sim overlay if available
         if not self._headless:
@@ -410,78 +411,59 @@ class MissionRunner:
                     if not drone.is_active:
                         continue
 
-                    # Generate synthetic scan
-                    # Flip z for world frame (NED has negative z as altitude)
                     scan_pos = Vector3(x=drone.position.x, y=drone.position.y, z=drone.position.z)
                     points = self._lidar.scan(scan_pos)
 
-                    # Feed to avoidance manager
                     if drone_id in self._avoidance_managers:
                         mgr = self._avoidance_managers[drone_id]
                         mgr.feed_lidar_points(points, drone_position=drone.position)
 
-                # ── Drive lead drone through waypoints ──
-                lead = self._drones[self._lead_drone_id]
-                if self._current_wp_index < len(self._mission_waypoints):
-                    wp = self._mission_waypoints[self._current_wp_index]
-                    mgr = self._avoidance_managers.get(self._lead_drone_id)
+                # ── Local state update per decentralized coordinator ──
+                for drone_id, coordinator in self._coordinators.items():
+                    coordinator.update_member_state(drone_id, self._drones[drone_id].to_state())
+
+                # ── In-process gossip broadcast ──
+                gossip_payloads = {
+                    drone_id: coordinator.prepare_gossip_payload()
+                    for drone_id, coordinator in self._coordinators.items()
+                }
+                for receiver_id, coordinator in self._coordinators.items():
+                    for sender_id, payload in gossip_payloads.items():
+                        if sender_id == receiver_id or not payload:
+                            continue
+                        coordinator.ingest_gossip_payload(payload)
+
+                # ── One coordination tick per drone ──
+                for coordinator in self._coordinators.values():
+                    coordinator.coordination_step()
+
+                # ── Apply commands to all drones ──
+                for drone_id, drone in self._drones.items():
+                    if not drone.is_active:
+                        continue
+
+                    coordinator = self._coordinators.get(drone_id)
+                    mgr = self._avoidance_managers.get(drone_id)
+                    desired_velocity = coordinator.get_desired_velocity(drone_id) if coordinator else Vector3()
+                    goal = coordinator.get_desired_goal(drone_id) if coordinator else None
 
                     if mgr is not None:
-                        mgr.set_goal(wp.position)
+                        mgr.set_boids_velocity(desired_velocity)
+                        if goal is not None:
+                            mgr.set_goal(goal)
                         velocity = mgr.compute_avoidance(
-                            drone_position=lead.position,
-                            drone_velocity=lead.velocity,
+                            drone_position=drone.position,
+                            drone_velocity=drone.velocity,
                         )
                     else:
-                        # Fallback: direct P-control
-                        error = wp.position - lead.position
-                        velocity = error * 0.5
-                        speed = velocity.magnitude()
-                        if speed > 5.0:
-                            velocity = velocity * (5.0 / speed)
+                        velocity = desired_velocity
 
-                    # Step physics
-                    lead.step(velocity, self._dt)
+                    drone.step(velocity, self._dt)
 
-                    # Check waypoint arrival
-                    dist_to_wp = lead.position.distance_to(wp.position)
-                    if dist_to_wp < wp.acceptance_radius:
-                        wp_info = MISSION_WAYPOINTS[self._current_wp_index]
-                        self._log_event(
-                            f"Alpha_{self._lead_drone_id}",
-                            f"✅ Reached {wp_info['id']} ({wp_info['label']}) "
-                            f"[{self._current_wp_index + 1}/{len(self._mission_waypoints)}]",
-                            "SUCCESS",
-                        )
-                        self._current_wp_index += 1
-                        self._stuck_timer = 0.0
-
-                        if self._overlay:
-                            self._overlay.advance_waypoint(
-                                f"Alpha_{self._lead_drone_id}", wp_info["id"]
-                            )
-
-                    # Check stuck
-                    if velocity.magnitude() < 0.3:
-                        self._stuck_timer += self._dt
-                    else:
-                        self._stuck_timer = 0.0
-
-                    if self._stuck_timer > self._stuck_threshold:
-                        self._log_event(
-                            f"Alpha_{self._lead_drone_id}",
-                            f"❌ STUCK for {self._stuck_timer:.1f}s at "
-                            f"({lead.position.x:.1f}, {lead.position.y:.1f})",
-                            "CRITICAL",
-                        )
-                        mission_result = "FAILED_STUCK"
-                        break
-
-                    # Check collision
                     if mgr and mgr.closest_obstacle_distance < 0.5:
                         self._collision_count += 1
                         self._log_event(
-                            f"Alpha_{self._lead_drone_id}",
+                            f"Alpha_{drone_id}",
                             f"💥 COLLISION — obstacle at {mgr.closest_obstacle_distance:.2f}m "
                             f"(total: {self._collision_count})",
                             "CRITICAL",
@@ -490,12 +472,24 @@ class MissionRunner:
                             mission_result = "FAILED_COLLISION"
                             break
 
-                    # Track HPL overrides
                     if mgr and mgr.is_hpl_overriding:
                         self._hpl_override_count += 1
 
-                else:
-                    # All waypoints completed
+                if mission_result == "FAILED_COLLISION":
+                    break
+
+                min_distance = self._compute_min_inter_drone_distance()
+                self._min_inter_drone_distance = min(self._min_inter_drone_distance, min_distance)
+                if min_distance < 20.0:
+                    self._log_event(
+                        "SWARM",
+                        f"❌ Unsafe inter-drone spacing detected ({min_distance:.1f}m)",
+                        "CRITICAL",
+                    )
+                    mission_result = "FAILED_SEPARATION"
+                    break
+
+                if elapsed >= self._mission_success_duration:
                     mission_result = "SUCCESS"
                     break
 
@@ -510,15 +504,14 @@ class MissionRunner:
 
                 # ── Periodic console status ──
                 if tick % 300 == 0:  # Every ~10s
-                    mgr = self._avoidance_managers.get(self._lead_drone_id)
+                    mgr = self._avoidance_managers.get(0)
                     state_name = mgr.state.name if mgr else "N/A"
                     closest = mgr.closest_obstacle_distance if mgr else float("inf")
                     logger.info(
-                        f"[{elapsed:>6.1f}s] WP {self._current_wp_index + 1}/"
-                        f"{len(self._mission_waypoints)} | "
+                        f"[{elapsed:>6.1f}s] Decentralized swarm active | "
                         f"State: {state_name} | "
                         f"Closest: {closest:.1f}m | "
-                        f"Pos: ({lead.position.x:.0f}, {lead.position.y:.0f}) | "
+                        f"MinSep: {self._min_inter_drone_distance:.1f}m | "
                         f"HPL: {self._hpl_override_count}"
                     )
 
@@ -549,6 +542,35 @@ class MissionRunner:
         except ImportError as e:
             logger.warning(f"Could not import AvoidanceManager: {e}")
             logger.warning("Running without obstacle avoidance (direct P-control)")
+
+    async def _init_coordinators(self):
+        """Initialize one decentralized regiment coordinator per drone."""
+        for drone_id in self._drones:
+            cfg = RegimentConfig(
+                formation_spacing=FORMATION_SPACING,
+                formation_altitude=ALPHA_ALTITUDE,
+                total_coverage_area=1000.0,
+                use_boids_flocking=True,
+            )
+            coordinator = AlphaRegimentCoordinator(my_drone_id=drone_id, config=cfg)
+            await coordinator.initialize()
+            for peer_id in self._drones:
+                coordinator.register_drone(peer_id)
+            self._coordinators[drone_id] = coordinator
+
+    def _compute_min_inter_drone_distance(self) -> float:
+        """Compute nearest pairwise spacing among active drones."""
+        active = [d for d in self._drones.values() if d.is_active]
+        if len(active) < 2:
+            return float("inf")
+
+        min_dist = float("inf")
+        for i in range(len(active)):
+            for j in range(i + 1, len(active)):
+                dist = active[i].position.distance_to(active[j].position)
+                if dist < min_dist:
+                    min_dist = dist
+        return min_dist
 
     def _init_overlay(self):
         """Connect to MissionOverlay if in Isaac Sim."""
@@ -594,7 +616,7 @@ class MissionRunner:
         print("=" * 65)
 
         print(f"\n  Duration          : {elapsed:.1f}s")
-        print(f"  Waypoints         : {self._current_wp_index}/{len(self._mission_waypoints)}")
+        print(f"  Min Separation    : {self._min_inter_drone_distance:.1f}m")
         print(f"  HPL Overrides     : {self._hpl_override_count}")
         print(f"  Collisions        : {self._collision_count}")
 
@@ -648,8 +670,7 @@ class MissionRunner:
         log_data = {
             "result": result,
             "duration_s": elapsed,
-            "waypoints_completed": self._current_wp_index,
-            "total_waypoints": len(self._mission_waypoints),
+            "min_inter_drone_distance_m": self._min_inter_drone_distance,
             "hpl_overrides": self._hpl_override_count,
             "collisions": self._collision_count,
             "drone_finals": {
@@ -695,6 +716,12 @@ def main():
 if __name__ == "__main__":
     main()
 else:
-    # When loaded via Isaac Sim Script Editor
-    runner = MissionRunner(headless=False)
-    asyncio.ensure_future(runner.run())
+    # When loaded via Isaac Sim Script Editor with an active event loop.
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None:
+        runner = MissionRunner(headless=False)
+        loop.create_task(runner.run())

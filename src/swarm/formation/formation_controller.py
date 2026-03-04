@@ -166,6 +166,13 @@ class FormationController:
         """Get world positions of all formation slots."""
         return [self._slot_world_position(s) for s in self._slots]
 
+    def get_slot_for_drone(self, drone_id: int) -> Optional[Vector3]:
+        """Get world slot position for a specific drone, if assigned."""
+        for slot in self._slots:
+            if slot.assigned_drone_id == drone_id:
+                return self._slot_world_position(slot)
+        return None
+
     # ── Formation Generation ──────────────────────────────────────
 
     def _generate_slots(self):

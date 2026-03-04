@@ -51,6 +51,8 @@ from src.core.types.drone_types import (
     Vector3,
     Waypoint,
 )
+from src.swarm.flock_coordinator import FlockCoordinator, FlockCoordinatorConfig
+from src.swarm.formation import FormationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +128,9 @@ class RegimentConfig:
     # ── Safety ──
     min_inter_drone_distance: float = MIN_INTER_DRONE_DISTANCE
     max_altitude_variance: float = 5.0      # m — altitude band
+
+    # ── Decentralized Flocking ──
+    use_boids_flocking: bool = True
 
 
 @dataclass
@@ -209,12 +214,31 @@ class AlphaRegimentCoordinator:
         self._on_threat_received: Optional[Callable] = None
         self._network_send: Optional[Callable] = None
 
+        # ── Decentralized Flocking State ──
+        self._flock_coordinator: Optional[FlockCoordinator] = None
+        self._desired_velocities: Dict[int, Vector3] = {}
+        self._desired_goals: Dict[int, Vector3] = {}
+        self._last_gossip_timestamps: Dict[int, float] = {}
+
     # ── Initialization ────────────────────────────────────────────
 
     async def initialize(self):
         """Initialize the regiment coordinator."""
         self._initialized = True
         self.register_drone(self.my_drone_id)
+        if self.config.use_boids_flocking and self._flock_coordinator is None:
+            flock_cfg = FlockCoordinatorConfig(
+                formation=FormationConfig(
+                    spacing=self.config.formation_spacing,
+                    altitude=self.config.formation_altitude,
+                    min_separation=self.config.min_inter_drone_distance,
+                )
+            )
+            self._flock_coordinator = FlockCoordinator(
+                drone_id=self.my_drone_id,
+                config=flock_cfg,
+                num_drones=REGIMENT_SIZE,
+            )
         logger.info(
             f"RegimentCoordinator initialized (drone {self.my_drone_id})"
         )
@@ -241,6 +265,9 @@ class AlphaRegimentCoordinator:
             f"(regiment size: {len(self._members)}/{REGIMENT_SIZE})"
         )
 
+        if self.config.use_boids_flocking and self._flock_coordinator is not None:
+            self._flock_coordinator.update_membership(self._members.keys())
+
         # Auto-assign sectors when regiment is full
         if len(self._members) == REGIMENT_SIZE:
             self._assign_sectors()
@@ -249,7 +276,11 @@ class AlphaRegimentCoordinator:
         """Remove a drone from the regiment."""
         if drone_id in self._members:
             del self._members[drone_id]
+            self._desired_velocities.pop(drone_id, None)
+            self._desired_goals.pop(drone_id, None)
             logger.warning(f"Alpha_{drone_id} removed from regiment")
+            if self.config.use_boids_flocking and self._flock_coordinator is not None:
+                self._flock_coordinator.update_membership(self._members.keys())
             # Redistribute sectors
             if self._members:
                 self._assign_sectors()
@@ -274,13 +305,19 @@ class AlphaRegimentCoordinator:
     async def _coordination_loop(self):
         """Main coordination tick at 2 Hz."""
         while self._running:
-            try:
-                self._check_member_health()
-                self._update_coverage()
-                self._process_threat_queue()
-            except Exception as e:
-                logger.error(f"Coordination error: {e}")
+            self.coordination_step()
             await asyncio.sleep(0.5)
+
+    def coordination_step(self):
+        """Run one synchronous coordination step (used by scripts and loop)."""
+        try:
+            self._check_member_health()
+            if self.config.use_boids_flocking:
+                self._run_flocking_step()
+            self._update_coverage()
+            self._process_threat_queue()
+        except Exception as e:
+            logger.error(f"Coordination error: {e}")
 
     # ── Sector Assignment ─────────────────────────────────────────
 
@@ -560,6 +597,52 @@ class AlphaRegimentCoordinator:
             except Exception as e:
                 logger.error(f"Threat relay failed: {e}")
 
+    def _run_flocking_step(self):
+        """Compute decentralized boids velocity for this coordinator's drone."""
+        if self._flock_coordinator is None:
+            flock_cfg = FlockCoordinatorConfig(
+                formation=FormationConfig(
+                    spacing=self.config.formation_spacing,
+                    altitude=self.config.formation_altitude,
+                    min_separation=self.config.min_inter_drone_distance,
+                )
+            )
+            self._flock_coordinator = FlockCoordinator(
+                drone_id=self.my_drone_id,
+                config=flock_cfg,
+                num_drones=REGIMENT_SIZE,
+            )
+
+        my_member = self._members.get(self.my_drone_id)
+        if my_member is None or not my_member.is_active:
+            return
+
+        active_ids = [m.drone_id for m in self._members.values() if m.is_active]
+        self._flock_coordinator.update_membership(active_ids)
+
+        peer_states = {
+            m.drone_id: m.state
+            for m in self._members.values()
+            if m.drone_id != self.my_drone_id and m.is_active
+        }
+        sectors = [m.sector for m in self._members.values() if m.sector is not None]
+        home = Vector3(
+            x=self.config.total_coverage_area / 2.0,
+            y=self.config.total_coverage_area / 2.0,
+            z=-self.config.formation_altitude,
+        )
+
+        desired = self._flock_coordinator.tick(
+            my_state=my_member.state,
+            peer_states=peer_states,
+            obstacles=self._global_obstacle_map,
+            sector_assignments=sectors,
+            home_position=home,
+        )
+        self._desired_velocities[self.my_drone_id] = desired
+        if self._flock_coordinator.current_goal is not None:
+            self._desired_goals[self.my_drone_id] = self._flock_coordinator.current_goal
+
     # ── Dynamic Leader Election ───────────────────────────────────
 
     async def _leader_election_loop(self):
@@ -713,6 +796,65 @@ class AlphaRegimentCoordinator:
         """Register callback for incoming threat data."""
         self._on_threat_received = callback
 
+    # ── Gossip Payloads ──────────────────────────────────────────
+
+    def prepare_gossip_payload(self) -> Dict:
+        """Build a compact state + CBBA gossip payload."""
+        member = self._members.get(self.my_drone_id)
+        if member is None:
+            return {}
+
+        cbba_payload = {}
+        if self.config.use_boids_flocking and self._flock_coordinator is not None:
+            cbba_payload = self._flock_coordinator.prepare_gossip_payload(member.state)
+
+        return {
+            "type": "swarm_gossip_v1",
+            "drone_id": self.my_drone_id,
+            "drone_state": member.state.to_dict(),
+            "cbba": cbba_payload,
+            "timestamp": time.time(),
+        }
+
+    def ingest_gossip_payload(self, payload: Dict):
+        """Ingest state + CBBA gossip from a peer drone."""
+        if payload.get("type") != "swarm_gossip_v1":
+            return
+
+        sender_id = int(payload.get("drone_id", -1))
+        if sender_id < 0 or sender_id == self.my_drone_id:
+            return
+
+        ts = float(payload.get("timestamp", 0.0))
+        if ts <= self._last_gossip_timestamps.get(sender_id, 0.0):
+            return
+        self._last_gossip_timestamps[sender_id] = ts
+
+        state_payload = payload.get("drone_state")
+        if state_payload:
+            try:
+                self.update_member_state(sender_id, DroneState.from_dict(state_payload))
+            except Exception as e:
+                logger.warning(f"Failed to ingest sender state from drone {sender_id}: {e}")
+
+        cbba_payload = payload.get("cbba", {})
+        if (
+            self.config.use_boids_flocking
+            and self._flock_coordinator is not None
+            and cbba_payload
+        ):
+            self._flock_coordinator.ingest_gossip_payload(sender_id, cbba_payload)
+
+    def get_desired_velocity(self, drone_id: Optional[int] = None) -> Vector3:
+        """Get most recent flocking velocity command for a drone."""
+        query_id = self.my_drone_id if drone_id is None else drone_id
+        return self._desired_velocities.get(query_id, Vector3())
+
+    def get_desired_goal(self, drone_id: Optional[int] = None) -> Optional[Vector3]:
+        """Get most recent flocking task/slot goal for a drone."""
+        query_id = self.my_drone_id if drone_id is None else drone_id
+        return self._desired_goals.get(query_id)
+
     # ── Telemetry ─────────────────────────────────────────────────
 
     def get_regiment_status(self) -> Dict:
@@ -742,6 +884,7 @@ class AlphaRegimentCoordinator:
             "active_count": sum(1 for m in self._members.values() if m.is_active),
             "leader_id": self._current_leader_id,
             "formation": self.config.formation.name,
+            "use_boids_flocking": self.config.use_boids_flocking,
             "global_obstacles": len(self._global_obstacle_map),
             "members": members,
             "timestamp": time.time(),

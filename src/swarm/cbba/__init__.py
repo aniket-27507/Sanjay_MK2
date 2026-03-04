@@ -1,7 +1,14 @@
-"""
-Project Sanjay Mk2 - CBBA Submodule
-====================================
-Consensus-Based Bundle Algorithm for task allocation.
+"""CBBA task-allocation engine exports."""
 
-@author: Archishman Paul
-"""
+from .cbba_engine import CBBAConfig, CBBAEngine
+from .task_generator import TaskGenerator, TaskGeneratorConfig
+from .task_types import SwarmTask, TaskType
+
+__all__ = [
+    "CBBAConfig",
+    "CBBAEngine",
+    "TaskGenerator",
+    "TaskGeneratorConfig",
+    "SwarmTask",
+    "TaskType",
+]
