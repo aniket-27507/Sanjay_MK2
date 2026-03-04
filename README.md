@@ -144,6 +144,91 @@ Add to `~/.cursor/mcp.json`:
 }
 ```
 
+## Integrating Into Any Isaac Sim Project
+
+This MCP server is designed to be project-agnostic. You can connect it to an arbitrary Isaac Sim project by mapping your project's endpoints, topics, and workflows to this server's config and tools.
+
+### 1) Confirm your Isaac Sim project exposes required surfaces
+
+At minimum, ensure your project provides:
+- A simulation command/state channel over WebSocket (compatible with `start/pause/reset/...` command pattern)
+- Kit API endpoints for scene/render/RL operations (or equivalent endpoints you can map)
+- Access to Kit logs (SSH path or local mount)
+- Optional: ROS 2 topics for sensor data
+
+If your project uses different endpoint paths, adapt plugin endpoint calls accordingly.
+
+### 2) Point MCP config to your project
+
+Edit `config/mcp_server.yaml` (or use env overrides) so `instances.primary` targets your running project.
+
+Map these fields:
+- `simulation.websocket_url` -> your simulation WebSocket host:port
+- `kit_api.base_url` -> your Kit/HTTP control API
+- `logs.ssh.host/user/key_path/remote_path` -> your log host + path
+- `ros2.domain_id/topics` -> your actual ROS domain and topics
+- `training.log_dir` -> your RL outputs (if used)
+
+### 3) Align topic and naming conventions
+
+If your drones/entities are not named like `alpha_0`, update usage expectations:
+- `ros2_get_odom`, `ros2_get_image`, `ros2_get_imu` construct topic names from `drone_name`
+- Ensure callers use your project's entity names, or adapt topic construction in `isaac_mcp/plugins/ros2_bridge.py`
+
+### 4) Validate endpoint compatibility
+
+Plugins expect these logical API groups:
+- `scene_inspect`: `/scene/*`
+- `camera_render`: `/camera/*`, `/render/*`
+- `rl_training`: `/rl/*`
+
+If your project differs:
+- Add a translation layer in the plugin, or
+- Expose compatibility endpoints in your Isaac Sim project
+
+### 5) Register MCP in your assistant context
+
+For each project repo where you want assistant access, register:
+- Claude Code: project `.mcp.json` or `claude mcp add --scope project`
+- Cursor: `~/.cursor/mcp.json`
+
+Use the Python executable where `isaac-mcp` is installed (typically this repo's `.venv/bin/python`).
+
+### 6) Smoke-test against your project
+
+After wiring config:
+1. Start your Isaac Sim project services.
+2. Start MCP server:
+   ```bash
+   .venv/bin/python -m isaac_mcp.server
+   ```
+3. Run representative prompts/tools:
+   - `sim_get_state`
+   - `scene_list_prims`
+   - `camera_capture`
+   - `logs_errors`
+   - `ros2_list_topics` (if enabled)
+   - `rl_get_metrics` (if enabled)
+
+### 7) Common adaptation points
+
+Most arbitrary-project integrations only need edits in:
+- `config/mcp_server.yaml` (host/ports/paths/topics)
+- `isaac_mcp/plugins/scene_inspect.py` (custom scene endpoint mapping)
+- `isaac_mcp/plugins/camera_render.py` (capture/render endpoint mapping)
+- `isaac_mcp/plugins/rl_training.py` (training launch/metric endpoint mapping)
+- `isaac_mcp/plugins/ros2_bridge.py` (topic naming conventions)
+
+### 8) Recommended integration workflow for teams
+
+1. Keep one shared `config/mcp_server.yaml` with safe placeholders.
+2. Use environment variables for machine-specific values.
+3. Add a project `docs/mcp_integration.md` that records:
+   - service URLs
+   - ROS topic map
+   - known endpoint deviations from defaults
+4. Add CI smoke tests calling `.venv/bin/python -m pytest -q` to prevent regressions in plugin contracts.
+
 ## Tool Response Contract
 
 All tools return a JSON string.
