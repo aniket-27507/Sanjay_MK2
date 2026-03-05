@@ -1,0 +1,33 @@
+FROM osrf/ros:humble-desktop
+
+LABEL maintainer="IsaacMCP" \
+      description="MCP server with full ROS 2 support for NVIDIA Isaac Sim"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip python3-venv && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/isaac-mcp
+
+COPY pyproject.toml README.md ./
+COPY isaac_mcp/ ./isaac_mcp/
+COPY config/ ./config/
+COPY data/ ./data/
+
+RUN pip3 install --no-cache-dir -e '.'
+
+EXPOSE 8000
+
+ENV ISAAC_MCP_TRANSPORT=streamable-http \
+    ISAAC_MCP_HOST=0.0.0.0 \
+    ISAAC_MCP_PORT=8000 \
+    ISAAC_MCP_ENABLE_MUTATIONS=false \
+    ISAAC_MCP_ROS2_ENABLED=true
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD python3 -c "import httpx; r=httpx.get('http://localhost:8000/healthz',timeout=3); exit(0 if r.status_code==200 else 1)" || exit 1
+
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && python3 -m isaac_mcp.server"]
+CMD []

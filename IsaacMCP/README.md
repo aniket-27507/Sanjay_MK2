@@ -1,0 +1,913 @@
+<div align="center">
+
+<img src="https://img.shields.io/badge/NVIDIA-Isaac_Sim-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="NVIDIA Isaac Sim"/>
+<img src="https://img.shields.io/badge/MCP-Model_Context_Protocol-6366F1?style=for-the-badge" alt="MCP"/>
+<img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
+<img src="https://img.shields.io/badge/Tests-382_Passing-22C55E?style=for-the-badge&logo=pytest&logoColor=white" alt="Tests"/>
+<img src="https://img.shields.io/badge/Tools-73_MCP_Tools-F59E0B?style=for-the-badge" alt="Tools"/>
+<img src="https://img.shields.io/badge/License-MIT-94A3B8?style=for-the-badge" alt="License"/>
+
+<br/><br/>
+
+<h1>IsaacMCP</h1>
+
+<p><strong>The world's first autonomous AI copilot for robotics simulation.<br/>
+Diagnose. Fix. Learn. Ship. Repeat — without human intervention.</strong></p>
+
+<p>
+  <a href="#-quickstart">Quickstart</a> ·
+  <a href="#-architecture">Architecture</a> ·
+  <a href="#-capabilities">Capabilities</a> ·
+  <a href="#-tool-reference">Tool Reference</a> ·
+  <a href="#-deployment">Deployment</a> ·
+  <a href="#-roadmap">Roadmap</a>
+</p>
+
+<br/>
+
+```
+"Fix the drone swarm. It keeps colliding at waypoint 3."
+
+→ IsaacMCP diagnoses the failure using cross-correlated telemetry, logs, and scene state
+→ Queries its knowledge graph for historical fixes to similar collision patterns
+→ Generates a Kit API script that adjusts collision margins and waypoint spacing
+→ Applies the fix live to the running simulation
+→ Re-runs the scenario 10 times to validate — all without you touching a single file
+```
+
+</div>
+
+---
+
+## What Is IsaacMCP?
+
+IsaacMCP wraps **NVIDIA Isaac Sim** in the [Model Context Protocol](https://modelcontextprotocol.io), giving AI assistants — Claude, Cursor, Copilot, or any MCP-compatible client — **73 structured tools** to observe, control, debug, and iteratively improve your robotic simulations.
+
+But IsaacMCP is not a thin API wrapper. It is a **full-stack autonomous copilot** built on a decade of hard lessons from production robotics:
+
+- Simulations fail in unexpected ways. The copilot reads every signal — telemetry, physics state, logs, ROS2 topics — and cross-correlates them to find root causes.
+- The same five physics bugs cause 80% of crashes. The knowledge graph remembers every fix ever applied and its success rate.
+- Manual parameter tuning wastes engineering time. The experiment engine runs thousands of scenarios and sweeps while you sleep.
+- Sim-to-real gaps are discovered late. Adversarial testing actively seeks failure modes before deployment.
+
+**IsaacMCP turns your AI assistant into a robotics engineer who never sleeps.**
+
+---
+
+## Table of Contents
+
+- [Architecture](#-architecture)
+- [Capabilities](#-capabilities)
+- [Quickstart](#-quickstart)
+- [Installation](#-installation)
+- [Configuration](#-configuration)
+- [Run Modes](#-run-modes)
+- [Tool Reference](#-tool-reference)
+- [Plugin System](#-plugin-system)
+- [Security](#-security)
+- [Deployment](#-deployment)
+- [Roadmap](#-roadmap)
+- [Contributing](#-contributing)
+
+---
+
+## Architecture
+
+IsaacMCP is built in three concentric layers, each feeding the one above it.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     MCP CLIENT LAYER                            │
+│         Claude / Cursor / Copilot / Any MCP Client             │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │  73 MCP Tools  ·  6 Resources
+┌─────────────────────────▼───────────────────────────────────────┐
+│                    COPILOT INTELLIGENCE                         │
+│                                                                 │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────┐  │
+│  │  Knowledge Graph │  │ Autonomous Loop  │  │  Fix Engine  │  │
+│  │  + Pattern Learner│  │ (Multi-Iteration)│  │ 20+ Templates│  │
+│  └──────────────────┘  └──────────────────┘  │ + LLM Fallback│  │
+│                                              └──────────────┘  │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────┐  │
+│  │ Adversarial Test │  │  Dataset Engine  │  │  RL Monitor  │  │
+│  │  + Fault Inject  │  │  COCO / PCD/CSV  │  │  + HP Search │  │
+│  └──────────────────┘  └──────────────────┘  └──────────────┘  │
+├─────────────────────────────────────────────────────────────────┤
+│                    ENTERPRISE FOUNDATION                        │
+│                                                                 │
+│   RBAC · Approval Workflows · Prometheus Metrics · Audit Log   │
+│   CI/CD Pipeline Runner · JUnit XML · State Cache · Job Queue  │
+│   Orchestrator · Worker Pool · Scheduler · Experiment Inspector│
+├─────────────────────────────────────────────────────────────────┤
+│                    SIMULATION BACKENDS                          │
+│                                                                 │
+│  ┌───────────────┐ ┌─────────────┐ ┌──────┐ ┌───────────────┐  │
+│  │  Kit API HTTP │ │  WebSocket  │ │ SSH  │ │ ROS2 (rclpy)  │  │
+│  └───────────────┘ └─────────────┘ └──────┘ └───────────────┘  │
+│                          NVIDIA Isaac Sim                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Core Design Principles
+
+| Principle | Implementation |
+|-----------|----------------|
+| **Read-only by default** | All 73 tools annotated with `readOnlyHint`, `destructiveHint`, `idempotentHint`. Mutations require explicit opt-in. |
+| **Decoupled from Isaac Sim** | Every module mocks the simulation backend — the full test suite passes without Isaac Sim installed. |
+| **Plugin-first** | All capabilities are delivered via auto-discovered plugins. Add a Python file to `plugins/`, it appears as MCP tools. |
+| **Learns over time** | The knowledge graph records every fix outcome. Next time the same error appears, historical success rates guide the strategy. |
+| **Multi-instance** | All 73 tools accept an `instance` parameter, enabling a single server to control a fleet of simulations. |
+
+---
+
+## Capabilities
+
+### Copilot Intelligence
+
+#### Knowledge Graph + Pattern Learner
+The copilot's long-term memory. Rather than a flat key-value store, IsaacMCP maintains a **graph of relationships** between errors, symptoms, root causes, and fixes. The pattern learner continuously mines diagnosis history to discover co-occurrence patterns and build new edges automatically.
+
+- Graph nodes: `ErrorPattern`, `Fix`, `Symptom`, `RootCause`
+- Graph edges: `CAUSES`, `FIXES`, `CO_OCCURS`, `PRECEDED_BY`
+- Temporal decay: older fixes weighted lower than recent successes
+- Query: *"What fixes historically work for errors that co-occur with physics_lag?"*
+
+#### Multi-Iteration Autonomous Loop
+This is the copilot's core engine. A single call to `run_autonomous_debug_session` initiates a fully autonomous cycle:
+
+```
+Run Scenario → Diagnose Failure → Consult Knowledge Graph →
+Generate Fix → Apply Fix → Validate → Record Outcome → Repeat
+```
+
+Configurable strategies: `stop-on-success`, `stop-on-no-new-proposals`, `stop-on-max-iterations`. A human-in-the-loop approval gate is available between iterations for safety-critical environments.
+
+#### Hybrid Fix Generation (20+ Templates + LLM Fallback)
+Coverage across all 21 Isaac Sim error categories:
+
+| Category | Example |
+|----------|---------|
+| Physics | `collision_overlap`, `articulation_joint_error`, `physics_lag` |
+| USD Stage | `usd_prim_not_found`, `usd_reference_error` |
+| Rendering | `rtx_render_error`, `vulkan_error`, `shader_failure` |
+| Extensions | `extension_load_error`, `missing_module`, `isaac_import_error` |
+| ROS2 | `ros2_bridge_error`, `ros2_dds_failure`, `ros2_topic_timeout` |
+| Performance | `performance_degradation`, `python_traceback` |
+
+When no template matches, the **LLM Fix Generator** constructs a structured prompt with diagnosis, telemetry, logs, and knowledge graph context — and proposes a Kit API Python script. All LLM-generated scripts are size-capped, syntax-validated, and marked `risk_level: "high"` before proposal.
+
+#### Adversarial Scenario Testing
+IsaacMCP goes far beyond mild parameter variations. The adversarial generator actively seeks failure modes:
+
+- **Extreme parameter ranges**: slopes 30–45°, gravity 0.3–2.0×, 0–50 dynamic obstacles
+- **Sensor degradation**: camera occlusion %, LiDAR noise scale, IMU drift rate
+- **Actuator failures**: motor torque reduction %, joint locking probability
+- **Environmental extremes**: wind force, fog density, dynamic lighting
+- **Physics stress**: high-speed collisions, mid-simulation mass changes
+- **Correlated faults**: time-sequenced fault chains (e.g., reduce motor torque *then* add sensor noise at t=10s)
+
+#### Dataset Generation for AI Training
+Isaac Sim's primary value proposition is synthetic training data. IsaacMCP makes batch collection first-class:
+
+- RGB, depth, and segmentation capture at configurable frame rates
+- LiDAR point clouds to PCD, IMU/odometry to CSV
+- COCO-format bounding box annotations from simulation ground truth
+- Dataset versioning, metadata sidecars, full lifecycle management
+
+---
+
+### Enterprise Foundation
+
+#### Role-Based Access Control (RBAC)
+Three-tier role hierarchy (`viewer < operator < admin`) mapped to tool categories. Per-tool and per-category overrides. Disabled by default — fully backward-compatible.
+
+```yaml
+server:
+  rbac:
+    enabled: true
+    default_role: viewer
+    category_roles:
+      sim_control: operator
+      admin: admin
+    user_roles:
+      ci_bot: operator
+      john: admin
+```
+
+#### Approval Workflows
+Async approval gate for destructive operations. Any tool can require human approval before execution, with configurable TTL expiration. Integrates with the audit trail for compliance.
+
+#### Observability
+- **Prometheus metrics** exposed at `/metrics`: invocation counts, error rates, latency histograms, connection state
+- **Structured audit log**: append-only JSON event trail with actor, tool, instance, duration, and outcome
+- Zero external dependencies — in-process collectors, text exposition format
+
+#### Robotics CI/CD Pipeline
+Run named regression suites against your simulation backend from any CI system:
+
+```bash
+# Create a suite
+isaac-mcp suite create "nightly_regression" \
+  --test "hover:hover_test:run_count=10:min_success_rate=0.9" \
+  --test "land:land_test:run_count=5:min_success_rate=1.0"
+
+# Run it — outputs JUnit XML
+isaac-mcp suite run "nightly_regression" --junit-out results.xml
+```
+
+Supports `stop_on_first_failure`, per-test timeouts, and expected failure type filtering.
+
+#### Job Orchestration
+Priority queue with heap-based scheduling across multiple Isaac Sim instances:
+
+- Job priorities: `urgent > high > normal > low`
+- Configurable retry logic with exponential-backoff semantics
+- Worker pool with health checking, drain/recover lifecycle, round-robin assignment
+- Automatic timeout detection and graceful cancellation
+
+---
+
+## Quickstart
+
+### Prerequisites
+
+- Python 3.10 or higher
+- An MCP-compatible client (Claude Desktop, Cursor, VS Code with MCP extension, or Claude Code CLI)
+- NVIDIA Isaac Sim running and accessible (or use mock mode for development)
+
+### 60-Second Setup
+
+```bash
+# 1. Clone
+git clone https://github.com/your-org/isaac-mcp.git
+cd isaac-mcp
+
+# 2. Install
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e '.[dev]'
+
+# 3. Verify — should print 382 passed
+python3 -m pytest
+
+# 4. Wire into Claude Code
+claude mcp add --transport stdio --scope project isaac-sim \
+  -- .venv/bin/python -m isaac_mcp.server
+
+# 5. Ask Claude to analyze your simulation
+# "Analyze the current simulation state and tell me what's wrong."
+```
+
+---
+
+## Installation
+
+### Standard Install
+
+```bash
+git clone https://github.com/your-org/isaac-mcp.git
+cd isaac-mcp
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -e '.[dev]'
+```
+
+### Optional Extras
+
+```bash
+# ROS2 support (requires rclpy in your ROS environment)
+pip install -e '.[ros2]'
+
+# PostgreSQL data lake backend
+pip install asyncpg
+
+# Parquet export for data lake integration
+pip install pyarrow
+
+# All extras
+pip install -e '.[all]' asyncpg pyarrow
+```
+
+### Docker
+
+```bash
+# Standard image
+docker build -f deploy/docker/Dockerfile -t isaac-mcp .
+
+# With ROS2
+docker build -f deploy/docker/Dockerfile.ros2 -t isaac-mcp:ros2 .
+
+# Run with docker-compose
+docker-compose -f deploy/docker/docker-compose.fragment.yml up
+```
+
+---
+
+## Configuration
+
+All configuration lives in `config/mcp_server.yaml`. Every value has a sane default — the server runs out of the box with no config file.
+
+### Minimal Configuration
+
+```yaml
+server:
+  name: "isaac-sim-mcp"
+
+instances:
+  primary:
+    label: "My Isaac Sim"
+    simulation:
+      websocket_url: "ws://localhost:8765"
+    kit_api:
+      enabled: true
+      base_url: "http://localhost:8211"
+```
+
+### Full Configuration Reference
+
+```yaml
+server:
+  name: "isaac-sim-mcp"
+  version: "0.2.0"
+
+  runtime:
+    transport_mode: streamable-http  # stdio | streamable-http | sse
+    host: "0.0.0.0"
+    port: 8000
+
+  security:
+    enable_mutations: false          # Explicit opt-in for all write operations
+
+  observability:
+    metrics_enabled: true
+    metrics_path: "/metrics"
+    audit_log_path: "data/audit.jsonl"
+
+  rbac:
+    enabled: false
+    default_role: viewer             # viewer | operator | admin
+    category_roles:
+      sim_control: operator
+    user_roles:
+      deploy_bot: operator
+
+  cicd:
+    enabled: true
+    suites_dir: "data/suites"
+    test_timeout_s: 300.0
+
+instances:
+  primary:
+    label: "Primary Isaac Sim"
+    simulation:
+      websocket_url: "ws://localhost:8765"
+      command_timeout_s: 10.0
+    kit_api:
+      enabled: true
+      base_url: "http://localhost:8211"
+    logs:
+      method: ssh
+      ssh:
+        host: "192.168.1.100"
+        user: "ubuntu"
+        key_path: "~/.ssh/id_rsa"
+    ros2:
+      enabled: true
+      domain_id: 10
+      coordinate_frame: enu
+      auto_subscribe:
+        - name: /odom
+          type: nav_msgs/msg/Odometry
+    fix_loop:
+      enabled: true
+      max_retries: 5
+    experiments:
+      enabled: true
+      db_path: "data/experiments.db"
+
+memory:
+  enabled: true
+  knowledge_base_path: "data/knowledge_base.json"
+
+plugins:
+  auto_discover: true
+  disabled: []
+
+packs:
+  enabled:
+    - drone_swarm
+```
+
+### Environment Overrides
+
+Every critical setting has an environment variable override for CI/CD and secret management:
+
+| Variable | Purpose |
+|----------|---------|
+| `ISAAC_MCP_WS_URL` | WebSocket URL for primary instance |
+| `ISAAC_MCP_KIT_URL` | Kit API base URL |
+| `ISAAC_MCP_ENABLE_MUTATIONS` | Enable write/destructive tools (`true`/`false`) |
+| `ISAAC_MCP_TRANSPORT` | Transport mode override |
+| `ISAAC_MCP_HOST` / `ISAAC_MCP_PORT` | Bind address override |
+| `ISAAC_MCP_AUTH_ENABLED` | Enable JWT bearer auth |
+| `ISAAC_MCP_AUTH_JWKS_URL` | JWKS endpoint for token verification |
+| `ISAAC_MCP_RBAC_ENABLED` | Enable role-based access control |
+| `ISAAC_MCP_RBAC_DEFAULT_ROLE` | Default role for unauthenticated clients |
+| `ISAAC_MCP_METRICS_ENABLED` | Enable Prometheus metrics endpoint |
+
+---
+
+## Run Modes
+
+### Local Mode (Claude Desktop / Cursor)
+
+The simplest way to get started. The server runs as a subprocess of your MCP client over stdio.
+
+**Claude Code CLI:**
+```bash
+claude mcp add --transport stdio --scope project isaac-sim \
+  -- .venv/bin/python -m isaac_mcp.server
+```
+
+**Cursor / VS Code** (generate a one-click deeplink):
+```bash
+.venv/bin/python scripts/generate_cursor_deeplink.py \
+  --name isaac-sim \
+  --remote-url 'http://localhost:8000/mcp'
+```
+
+### Remote HTTP Mode
+
+Run IsaacMCP on the same machine as your GPU simulation cluster, query it securely from anywhere.
+
+```bash
+ISAAC_MCP_TRANSPORT=streamable-http \
+ISAAC_MCP_HOST=0.0.0.0 \
+ISAAC_MCP_PORT=8000 \
+ISAAC_MCP_ENABLE_MUTATIONS=true \
+.venv/bin/python -m isaac_mcp.server
+```
+
+Then connect from your client:
+```bash
+claude mcp add --transport http --scope user isaac-sim \
+  http://your-server:8000/mcp
+```
+
+### Cloudflare Tunnel (Zero-Trust Remote)
+
+Expose IsaacMCP securely without opening firewall ports:
+
+```bash
+# Install cloudflared, then:
+cloudflared tunnel run --config deploy/cloudflare/cloudflared-config.example.yml
+
+# Your server is now accessible at your configured tunnel hostname
+claude mcp add --transport http --scope user isaac-sim \
+  https://mcp.your-domain.com/mcp
+```
+
+### Systemd Service (Production)
+
+```bash
+# Copy and edit the unit file
+sudo cp deploy/cloudflare/systemd/isaac-mcp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now isaac-mcp
+sudo journalctl -u isaac-mcp -f
+```
+
+### Docker (GPU Workstation / Cloud)
+
+```bash
+docker run -d \
+  --name isaac-mcp \
+  -p 8000:8000 \
+  -e ISAAC_MCP_TRANSPORT=streamable-http \
+  -e ISAAC_MCP_KIT_URL=http://host.docker.internal:8211 \
+  -e ISAAC_MCP_WS_URL=ws://host.docker.internal:8765 \
+  -e ISAAC_MCP_ENABLE_MUTATIONS=true \
+  -v $(pwd)/data:/app/data \
+  isaac-mcp
+```
+
+---
+
+## Tool Reference
+
+IsaacMCP ships **73 MCP tools** across 14 plugins. Every tool is annotated with intent hints so your AI client understands what it's doing before it does it.
+
+### Simulation Control (`sim_control`)
+| Tool | Description |
+|------|-------------|
+| `sim_start` | Start the simulation |
+| `sim_pause` | Pause the simulation |
+| `sim_reset` | Reset to initial state |
+| `sim_get_state` | Full simulation state snapshot |
+| `sim_get_drone` | Per-drone telemetry |
+| `sim_get_messages` | Recent simulation messages |
+| `sim_inject_fault` | Inject a fault into a drone (for testing) |
+| `sim_clear_faults` | Clear all active faults |
+| `sim_load_scenario` | Load a named scenario |
+| `sim_list_scenarios` | List available scenarios |
+| `get_simulation_telemetry` | Aggregate telemetry + physics snapshot |
+
+### Scene Inspection (`scene_inspect`)
+| Tool | Description |
+|------|-------------|
+| `scene_list_prims` | List USD primitives in the scene |
+| `scene_get_prim` | Inspect a specific USD prim |
+| `scene_find_prims` | Search prims by pattern or type |
+| `scene_get_materials` | Inspect materials |
+| `scene_get_physics` | Physics world settings |
+| `scene_get_hierarchy` | Full USD scene hierarchy |
+
+### Diagnostics (`diagnostics`)
+| Tool | Description |
+|------|-------------|
+| `analyze_simulation` | Cross-correlate telemetry + logs + scene → diagnosis |
+| `get_diagnosis_history` | Retrieve past diagnoses |
+| `generate_fix` | Generate Kit API fix scripts from a diagnosis |
+| `apply_fix_script` | Apply a fix script to the live simulation |
+| `query_knowledge_base` | Query historical fixes by error type |
+| `record_fix_outcome` | Record whether a fix succeeded |
+| `get_knowledge_stats` | Knowledge base success rate statistics |
+
+### Autonomous Loop (`autonomous_loop`)
+| Tool | Description |
+|------|-------------|
+| `run_fix_loop` | One iteration: simulate → diagnose → propose fix |
+| `run_monitored_simulation` | Run with full monitoring and telemetry collection |
+| `run_autonomous_debug_session` | Multi-iteration autonomous debug campaign |
+
+### Scenario Lab (`scenario_lab`)
+| Tool | Description |
+|------|-------------|
+| `generate_scenario` | Randomized scenario with parameter variations |
+| `run_robustness_test` | N-scenario robustness campaign |
+| `get_robustness_report` | Retrieve robustness test results |
+| `list_robustness_tests` | List recent robustness campaigns |
+
+### Adversarial Testing (`adversarial`)
+| Tool | Description |
+|------|-------------|
+| `generate_adversarial_scenario` | Generate extreme/fault-injection scenario |
+| `run_adversarial_campaign` | Run adversarial robustness campaign |
+| `get_adversarial_report` | Retrieve adversarial test results |
+
+### Experiments (`experiments`)
+| Tool | Description |
+|------|-------------|
+| `run_experiment` | Batch experiment: run scenario N times |
+| `get_experiment_results` | Retrieve experiment results |
+| `list_experiments` | List recent experiments |
+| `run_parameter_sweep` | Sweep a parameter across a range |
+
+### Camera & Rendering (`camera_render`)
+| Tool | Description |
+|------|-------------|
+| `camera_capture` | Capture a camera frame |
+| `camera_set_viewpoint` | Set the active camera viewpoint |
+| `camera_list` | List available cameras |
+| `render_set_mode` | Set rendering mode (RTX / path-traced / real-time) |
+| `render_get_settings` | Get current render settings |
+| `render_set_settings` | Adjust a render setting |
+
+### Dataset Generation (`dataset`)
+| Tool | Description |
+|------|-------------|
+| `start_data_collection` | Begin batch frame + sensor capture |
+| `stop_data_collection` | Stop capture and finalize dataset |
+| `export_dataset` | Package dataset with metadata |
+| `list_datasets` | List available datasets |
+| `get_dataset_info` | Dataset metadata and statistics |
+
+### ROS2 Bridge (`ros2_bridge`)
+| Tool | Description |
+|------|-------------|
+| `ros2_discover_topics` | Discover all active topics |
+| `ros2_list_topics` | List subscribed topics with stats |
+| `ros2_subscribe_topic` | Subscribe to a topic |
+| `ros2_unsubscribe_topic` | Unsubscribe from a topic |
+| `ros2_publish` | Publish a message to a topic |
+| `ros2_get_odom` | Drone odometry (with NED conversion) |
+| `ros2_get_image` | Camera image metadata |
+| `ros2_get_imu` | IMU data for a drone |
+| `ros2_get_lidar_stats` | LiDAR point cloud summary |
+| `ros2_subscribe` | Rate statistics for a topic |
+
+### RL Training (`rl_training`)
+| Tool | Description |
+|------|-------------|
+| `rl_start_training` | Start a training run |
+| `rl_get_metrics` | Get live training metrics |
+| `rl_stop_training` | Stop a training run |
+| `rl_adjust_reward` | Adjust a reward component weight |
+
+### Logs (`log_monitor`)
+| Tool | Description |
+|------|-------------|
+| `logs_read` | Read recent log entries |
+| `logs_tail` | Stream the latest log entries |
+| `logs_search` | Regex search over logs |
+| `logs_errors` | Extract error-severity entries |
+| `logs_set_path` | Configure log file path |
+
+### CI/CD (`cicd`)
+| Tool | Description |
+|------|-------------|
+| `create_regression_suite` | Create a named regression suite |
+| `list_regression_suites` | List all suites |
+| `get_regression_suite` | Get suite details |
+| `run_regression_suite` | Execute a suite and get results |
+| `get_pipeline_result` | Retrieve a pipeline run result |
+| `list_pipeline_results` | List recent pipeline runs |
+
+### MCP Resources
+
+Available as read-only context in any MCP-compatible client:
+
+```
+isaac://logs/latest        — Most recent log lines
+isaac://logs/errors        — Error-only log lines
+isaac://sim/state          — Current simulation state JSON
+isaac://sim/config         — Server configuration summary
+isaac://scene/hierarchy    — USD scene hierarchy
+isaac://ros2/status        — Active ROS2 topics and rates
+knowledge://graph/summary  — Knowledge graph summary
+```
+
+---
+
+## Plugin System
+
+IsaacMCP uses auto-discovery: drop a Python file into `isaac_mcp/plugins/` and it's automatically registered as a set of MCP tools on next startup.
+
+```python
+# isaac_mcp/plugins/my_plugin.py
+
+from isaac_mcp.plugin_host import PluginHost
+from mcp.types import ToolAnnotations
+
+def register(host: PluginHost) -> None:
+
+    @host.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def my_custom_tool(param: str, instance: str = "primary") -> str:
+        inst = host.get_instance(instance)
+        result = await inst.ws_client.send_command("custom_cmd", param=param)
+        return success("my_custom_tool", instance, {"result": result})
+```
+
+All tools automatically receive:
+- **Metrics instrumentation** — invocation count, duration, error rate tracked in Prometheus
+- **Audit logging** — every call recorded in the structured audit trail
+- **RBAC enforcement** — role checks applied before execution if RBAC is enabled
+- **Mutation gating** — `mutating=True` tools blocked unless `ISAAC_MCP_ENABLE_MUTATIONS=true`
+
+### Plugin Packs
+
+Packs are domain-specific bundles of plugins, tools, and supporting logic. Enable them in config:
+
+```yaml
+packs:
+  enabled:
+    - drone_swarm
+```
+
+**Drone Swarm Pack** (built-in):
+- Fleet management with multi-drone coordination
+- Mission planning and execution
+- Threat detection and avoidance
+- Performance telemetry and tuning
+
+Build your own pack by creating `isaac_mcp/packs/my_pack/` with an `__init__.py` that calls `register(host)`.
+
+---
+
+## Security
+
+### Mutation Gating
+
+IsaacMCP boots in **read-only mode**. All 73 tools are available for inspection and analysis. Write operations (`sim_start`, `apply_fix_script`, `rl_start_training`, etc.) are blocked until you explicitly enable mutations:
+
+```bash
+export ISAAC_MCP_ENABLE_MUTATIONS=true
+```
+
+This is intentional: you can safely give IsaacMCP read access to a production simulation without risk of accidental state changes.
+
+### JWT / OAuth Bearer Auth
+
+Enable standard OAuth 2.0 bearer token verification for remote deployments:
+
+```yaml
+server:
+  auth:
+    enabled: true
+    jwks_url: "https://your-idp.com/.well-known/jwks.json"
+    audience: "isaac-mcp"
+    required_scopes: ["mcp:read", "mcp:write"]
+```
+
+### RBAC
+
+Map users and clients to roles, then assign minimum roles to tool categories:
+
+```yaml
+server:
+  rbac:
+    enabled: true
+    user_roles:
+      ci_pipeline: operator
+      read_dashboard: viewer
+    category_roles:
+      sim_control: operator      # Operators can start/stop sims
+      admin: admin               # Only admins can change config
+```
+
+### Approval Workflows
+
+For safety-critical environments, require human approval before destructive actions execute. Approvals have configurable TTL — if not approved within the window, they expire automatically.
+
+---
+
+## Deployment
+
+### Recommended Architecture (Production)
+
+```
+┌─────────────────────┐        ┌────────────────────────────┐
+│   Developer Machine  │  HTTPS  │      GPU Cluster           │
+│                     │◄───────►│                            │
+│  Claude / Cursor    │         │  isaac-mcp (systemd)       │
+│  MCP Client         │         │  + NVIDIA Isaac Sim        │
+└─────────────────────┘         │  + Cloudflare Tunnel       │
+                                └────────────────────────────┘
+```
+
+### Scaling to Multiple Instances
+
+IsaacMCP supports a fleet of Isaac Sim instances from a single server:
+
+```yaml
+instances:
+  sim_1:
+    label: "Physics Testing"
+    simulation:
+      websocket_url: "ws://192.168.1.101:8765"
+  sim_2:
+    label: "RL Training"
+    simulation:
+      websocket_url: "ws://192.168.1.102:8765"
+  sim_3:
+    label: "Adversarial Testing"
+    simulation:
+      websocket_url: "ws://192.168.1.103:8765"
+```
+
+Your AI can then direct specific work to specific instances:
+```
+"Run the adversarial campaign on sim_3 while sim_1 runs the nightly regression suite."
+```
+
+### Performance Notes
+
+- The LRU state cache (`cache/state_cache.py`) keeps recent simulation snapshots in memory, cutting repeated read-tool latency to sub-millisecond
+- Batched SQLite writes buffer frequent experiment writes and flush periodically, preventing I/O bottlenecks during large parameter sweeps
+- The worker pool scheduler handles concurrent jobs across instances without threading overhead (pure asyncio)
+
+---
+
+## Roadmap
+
+IsaacMCP is under active development. Below is the committed timeline for upcoming releases.
+
+### v0.2.0 — Multi-Instance Orchestration Dashboard *(Q2 2025)*
+- Web UI for visualizing job queue, worker health, and running experiments
+- REST API for CI/CD pipeline integration without MCP client
+- Prometheus + Grafana dashboard template for fleet monitoring
+- Kubernetes Helm chart for cloud deployment
+
+### v0.3.0 — Advanced RL Pipeline *(Q3 2025)*
+- Full hyperparameter search plugin with grid, random, and Bayesian strategies
+- Training convergence visualization and early stopping
+- Model checkpoint management via Kit API
+- Multi-agent training coordination across instance fleet
+- Isaac Lab integration (next-gen RL training framework)
+
+### v0.4.0 — Dataset Intelligence *(Q3 2025)*
+- Active learning integration: sample scenarios where model confidence is low
+- Domain randomization campaigns with automatic coverage tracking
+- COCO, KITTI, and nuScenes export formats
+- Dataset quality scoring and duplicate detection
+- Integration with HuggingFace Hub for dataset publishing
+
+### v0.5.0 — Federated Learning & Edge Deployment *(Q4 2025)*
+- Federated fix-learning across multiple independent IsaacMCP deployments
+- Cross-organization knowledge graph sharing (privacy-preserving)
+- Edge inference for real-time anomaly detection on robot hardware
+- Direct Jetson / ROS2 robot integration (beyond simulation)
+
+### v1.0.0 — Production-Ready Enterprise Release *(Q1 2026)*
+- Full PostgreSQL backend with migration tooling
+- SSO / enterprise SAML authentication
+- Multi-tenant isolation
+- SLA monitoring and alerting
+- Certified NVIDIA Isaac Sim compatibility matrix
+- Commercial support tier
+
+### Future Research Directions
+- **Predictive failure modeling**: train a neural network on collected simulation data to predict failures before they occur
+- **Sim-to-real gap quantification**: automatically measure and report the gap between simulation and real deployment
+- **Natural language scenario authoring**: describe a scenario in plain English, IsaacMCP generates the full USD stage
+
+---
+
+## By the Numbers
+
+| Metric | Value |
+|--------|-------|
+| Python source files | 95 |
+| Lines of code | ~14,800 |
+| MCP tools | 73 |
+| Plugins | 14 |
+| Fix templates | 20+ |
+| Error categories covered | 21 |
+| Test cases | 382 |
+| Test pass rate | 100% |
+| Supported transport modes | 3 (stdio, HTTP, SSE) |
+| Supported Isaac Sim connections | 4 (WebSocket, Kit API, SSH, ROS2) |
+
+---
+
+## Contributing
+
+IsaacMCP welcomes contributions. The codebase is structured to make contributions straightforward.
+
+### Development Setup
+
+```bash
+git clone https://github.com/your-org/isaac-mcp.git
+cd isaac-mcp
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e '.[dev]'
+
+# Verify everything passes
+python3 -m pytest
+```
+
+### Contribution Areas
+
+| Area | How to Contribute |
+|------|------------------|
+| **New fix templates** | Add entries to `autonomous_loop/fix_generator.py` — each template maps an error category to a Kit API script |
+| **New plugins** | Create `isaac_mcp/plugins/your_plugin.py` with a `register(host)` function |
+| **New packs** | Create `isaac_mcp/packs/your_pack/` and list it in `packs.enabled` in config |
+| **ROS2 message types** | Extend `connections/ros2_client.py` to support additional message types |
+| **Storage backends** | Implement the `ExperimentStore` interface in `storage/` |
+| **Tests** | Add test files to `tests/`. All tests run against mocked backends — no Isaac Sim required. |
+
+### Standards
+
+- All public functions must have docstrings
+- Every new module must have a corresponding test file
+- No hard Isaac Sim dependencies in unit-testable code — use the mock pattern established in `autonomous_loop/simulation_runner.py`
+- All tools must accept `instance: str = "primary"` and return `success()` / `error()` from `tool_contract.py`
+
+### Running Tests
+
+```bash
+# Full suite (no Isaac Sim required)
+python3 -m pytest
+
+# With coverage
+python3 -m pytest --cov=isaac_mcp --cov-report=html
+
+# Specific module
+python3 -m pytest tests/test_orchestrator.py -v
+```
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+<div align="center">
+
+**Built for robotics engineers who are tired of babysitting simulations.**
+
+<br/>
+
+*If IsaacMCP saves you debugging time, give it a star. If it saves you a week, tell your team.*
+
+<br/>
+
+<img src="https://img.shields.io/badge/Made_with-Python_3.10+-3776AB?style=flat-square&logo=python" alt="Python"/>
+<img src="https://img.shields.io/badge/Powered_by-NVIDIA_Isaac_Sim-76B900?style=flat-square&logo=nvidia" alt="NVIDIA"/>
+<img src="https://img.shields.io/badge/Protocol-MCP-6366F1?style=flat-square" alt="MCP"/>
+
+</div>

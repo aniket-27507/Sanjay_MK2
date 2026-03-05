@@ -1,0 +1,83 @@
+server:
+  name: "isaac-sim-mcp"
+  version: "0.1.0"
+  runtime:
+    transport_mode: "stdio"
+    host: "127.0.0.1"
+    port: 8000
+    mount_path: "/"
+    streamable_http_path: "/mcp"
+    sse_path: "/sse"
+    public_base_url: "https://mcp.example.com"
+    health_path: "/healthz"
+  auth:
+    enabled: false
+    issuer_url: "https://auth.example.com"
+    resource_server_url: "https://mcp.example.com"
+    service_documentation_url: "https://github.com/yanitedhacker/IsaacMCP"
+    required_scopes: ["mcp:read"]
+    jwks_url: "https://auth.example.com/.well-known/jwks.json"
+    audience: "isaac-mcp"
+    algorithms: ["RS256"]
+    client_id_claim: "client_id"
+    scopes_claim: "scope"
+  security:
+    enable_mutations: false
+
+instances:
+  primary:
+    label: "Primary Isaac Sim"
+    simulation:
+      websocket_url: "ws://localhost:8765"
+      reconnect_interval_s: 5.0
+      command_timeout_s: 10.0
+    kit_api:
+      enabled: true
+      base_url: "http://localhost:8211"
+    logs:
+      method: "ssh"
+      ssh:
+        host: "your-isaac-host"
+        user: "your-ssh-user"
+        key_path: "~/.ssh/id_rsa"
+      remote_path: "~/.local/share/ov/pkg/isaac-sim/kit/logs/"
+      local_path: ""
+      poll_interval_s: 2.0
+      history_lines: 1000
+    ros2:
+      enabled: true
+      domain_id: 10
+      qos_depth: 10
+      reliability: "best_effort"
+      coordinate_frame: "enu"
+      topics: []
+      auto_subscribe: []
+    training:
+      enabled: true
+      log_dir: "~/isaac_rl_logs/"
+    fix_loop:
+      enabled: false
+      max_retries: 5
+      simulation_timeout_s: 60.0
+      script_timeout_s: 30.0
+    experiments:
+      enabled: false
+      db_path: "data/isaac_experiments.db"
+      max_concurrent_runs: 1
+    scenario_lab:
+      enabled: false
+      db_path: "data/isaac_experiments.db"
+      default_scenario_count: 100
+
+plugins:
+  auto_discover: true
+  plugin_dir: "isaac_mcp/plugins"
+  disabled: []
+
+packs:
+  enabled: []
+
+memory:
+  enabled: true
+  knowledge_base_path: "data/knowledge_base.json"
+  failure_patterns_path: "data/failure_patterns.json"

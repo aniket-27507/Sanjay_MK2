@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Install Isaac MCP in Cursor</title>
+  <style>
+    :root {
+      --bg: #0d141c;
+      --panel: #162233;
+      --text: #e6eef8;
+      --muted: #9fb3ca;
+      --accent: #4fb0ff;
+      --border: #2a3d52;
+    }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 0% 0%, #1a2c3f 0%, var(--bg) 55%);
+      color: var(--text);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(760px, 100%);
+      background: linear-gradient(180deg, #1a2a3f 0%, var(--panel) 100%);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 24px;
+      box-shadow: 0 14px 44px rgba(0, 0, 0, 0.32);
+    }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    p { margin: 8px 0; color: var(--muted); }
+    label { display: block; margin-top: 14px; font-size: 13px; color: var(--muted); }
+    input {
+      width: 100%;
+      margin-top: 6px;
+      border: 1px solid var(--border);
+      background: #0e1823;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+    button {
+      border: 1px solid #2388d7;
+      background: linear-gradient(180deg, #3ca8ff 0%, #2379c5 100%);
+      color: #06121f;
+      border-radius: 8px;
+      font-weight: 700;
+      padding: 10px 14px;
+      cursor: pointer;
+    }
+    .secondary { background: #0f1a28; color: var(--text); border-color: var(--border); }
+    pre {
+      margin-top: 12px;
+      background: #0b1118;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      overflow-x: auto;
+      color: #b8c7d8;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Add Isaac MCP to Cursor</h1>
+    <p>Use this page for one-click installation via Add-to-Cursor deeplink.</p>
+
+    <label for="name">Server Name</label>
+    <input id="name" value="isaac-sim" />
+
+    <label for="url">Remote MCP URL (streamable HTTP)</label>
+    <input id="url" value="https://mcp.example.com/mcp" />
+
+    <div class="row">
+      <button id="install">Add to Cursor</button>
+      <button id="copy" class="secondary">Copy Config JSON</button>
+      <button id="copy-link" class="secondary">Copy Deeplink</button>
+    </div>
+
+    <pre id="preview"></pre>
+  </main>
+
+  <script>
+    const nameEl = document.getElementById("name");
+    const urlEl = document.getElementById("url");
+    const previewEl = document.getElementById("preview");
+
+    function buildConfig() {
+      return {
+        mcpServers: {
+          [nameEl.value.trim() || "isaac-sim"]: {
+            transport: "streamable-http",
+            url: urlEl.value.trim()
+          }
+        }
+      };
+    }
+
+    function buildDeeplink() {
+      const name = encodeURIComponent(nameEl.value.trim() || "isaac-sim");
+      const cfg = encodeURIComponent(JSON.stringify(buildConfig()));
+      return `cursor://anysphere.cursor-deeplink/mcp/install?name=${name}&config=${cfg}`;
+    }
+
+    function renderPreview() {
+      previewEl.textContent = JSON.stringify(buildConfig(), null, 2);
+    }
+
+    async function copy(text) {
+      await navigator.clipboard.writeText(text);
+    }
+
+    document.getElementById("install").addEventListener("click", () => {
+      window.location.href = buildDeeplink();
+    });
+
+    document.getElementById("copy").addEventListener("click", async () => {
+      await copy(JSON.stringify(buildConfig(), null, 2));
+    });
+
+    document.getElementById("copy-link").addEventListener("click", async () => {
+      await copy(buildDeeplink());
+    });
+
+    nameEl.addEventListener("input", renderPreview);
+    urlEl.addEventListener("input", renderPreview);
+
+    const qp = new URLSearchParams(window.location.search);
+    if (qp.get("name")) nameEl.value = qp.get("name");
+    if (qp.get("url")) urlEl.value = qp.get("url");
+    renderPreview();
+  </script>
+</body>
+</html>

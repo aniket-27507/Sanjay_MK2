@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "isaac-sim": {
+      "type": "stdio",
+      "command": ".venv/bin/python",
+      "args": [
+        "-m",
+        "isaac_mcp.server"
+      ],
+      "env": {
+        "PYTHONPATH": "/Users/archishmanpaul/Desktop/MCP"
+      }
+    }
+  }
+}
