@@ -214,15 +214,16 @@ class FormationController:
             ))
 
     def _hex_offsets(self, n: int, spacing: float) -> List[Vector3]:
-        offsets = [Vector3(0, 0, 0)]
-        for i in range(min(n - 1, 6)):
-            angle = i * (2 * math.pi / 6)
+        offsets: List[Vector3] = []
+        for i in range(min(n, 6)):
+            # Start at top vertex (90 deg) to align with Alpha_0 slot.
+            angle = (math.pi / 2) + i * (2 * math.pi / 6)
             offsets.append(Vector3(
                 x=spacing * math.cos(angle),
                 y=spacing * math.sin(angle),
                 z=0,
             ))
-        return offsets[:n]
+        return offsets
 
     def _linear_offsets(self, n: int, spacing: float) -> List[Vector3]:
         total = (n - 1) * spacing

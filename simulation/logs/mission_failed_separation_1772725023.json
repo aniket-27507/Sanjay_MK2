@@ -1,0 +1,88 @@
+{
+  "result": "FAILED_SEPARATION",
+  "duration_s": 17.384080171585083,
+  "min_inter_drone_distance_m": 19.985919726032332,
+  "hpl_overrides": 0,
+  "collisions": 0,
+  "drone_finals": {
+    "alpha_0": {
+      "position": [
+        527.1009383112184,
+        454.8334161447446,
+        -51.63623125852821
+      ],
+      "battery": 99.74833333332498
+    },
+    "alpha_1": {
+      "position": [
+        512.6768838487665,
+        504.96035384564203,
+        -60.9845163954399
+      ],
+      "battery": 99.74833333332498
+    },
+    "alpha_2": {
+      "position": [
+        463.2762789194635,
+        481.24691745707014,
+        -62.01710712306397
+      ],
+      "battery": 99.74833333332498
+    },
+    "alpha_3": {
+      "position": [
+        516.5084722817427,
+        467.9115426608675,
+        -62.41580720278936
+      ],
+      "battery": 99.74833333332498
+    },
+    "alpha_4": {
+      "position": [
+        528.0015891414364,
+        564.8388470757504,
+        -63.060466841102986
+      ],
+      "battery": 99.74833333332498
+    },
+    "alpha_5": {
+      "position": [
+        535.388365812626,
+        529.4737360729313,
+        -61.900728699947855
+      ],
+      "battery": 99.74833333332498
+    },
+    "beta_0": {
+      "position": [
+        464.3052429986716,
+        367.714790527349,
+        -20.601522122020185
+      ],
+      "battery": 99.74833333332498
+    }
+  },
+  "events": [
+    {
+      "timestamp": 1772724739.4750082,
+      "elapsed": 0.0,
+      "source": "SYSTEM",
+      "level": "INFO",
+      "message": "Mission started"
+    },
+    {
+      "timestamp": 1772725006.2146204,
+      "elapsed": 0.0,
+      "source": "SYSTEM",
+      "level": "INFO",
+      "message": "GUI mission started with 5 waypoints"
+    },
+    {
+      "timestamp": 1772725023.5977004,
+      "elapsed": 17.383080005645752,
+      "source": "SWARM",
+      "level": "CRITICAL",
+      "message": "Unsafe inter-drone spacing detected (20.0m)"
+    }
+  ]
+}

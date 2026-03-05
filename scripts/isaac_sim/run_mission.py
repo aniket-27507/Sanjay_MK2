@@ -42,6 +42,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -55,6 +56,7 @@ from src.core.types.drone_types import DroneConfig, DroneState, DroneType, Fligh
 from src.single_drone.flight_control.flight_controller import FlightController
 from src.single_drone.flight_control.waypoint_controller import WaypointController
 from src.swarm.coordination import AlphaRegimentCoordinator, RegimentConfig
+from scripts.isaac_sim.waypoint_session import get_waypoint_session
 
 logging.basicConfig(
     level=logging.INFO,
@@ -260,6 +262,7 @@ class SyntheticLidar:
 class SimDrone:
     """Lightweight simulated drone for headless testing."""
     drone_id: int
+    drone_type: DroneType = DroneType.ALPHA
     position: Vector3 = field(default_factory=Vector3)
     velocity: Vector3 = field(default_factory=Vector3)
     mode: FlightMode = FlightMode.NAVIGATING
@@ -280,7 +283,7 @@ class SimDrone:
     def to_state(self) -> DroneState:
         return DroneState(
             drone_id=self.drone_id,
-            drone_type=DroneType.ALPHA,
+            drone_type=self.drone_type,
             position=self.position,
             velocity=self.velocity,
             mode=self.mode,
@@ -296,6 +299,14 @@ class SimDrone:
 FORMATION_CENTER = (400, 350)
 FORMATION_SPACING = 80.0
 ALPHA_ALTITUDE = 65.0
+BETA_ALTITUDE = 25.0
+BETA_DRONE_ID = 6
+
+OBSTACLE_ENGAGE_DIST = 30.0
+OBSTACLE_FULL_DIST = 10.0
+REJOIN_TOLERANCE = 5.0
+REJOIN_SPEED = 7.0
+REJOIN_P_GAIN = 1.5
 
 MISSION_WAYPOINTS = [
     {"id": "WP_01", "pos": (200, 200, 65), "label": "Downtown Entry"},
@@ -312,7 +323,14 @@ MISSION_WAYPOINTS = [
 ]
 
 
+from src.core.utils.geometry import hex_center as _hex_center
 from src.core.utils.geometry import hex_positions as _hex_positions
+
+
+class FormationState(Enum):
+    NORMAL = auto()
+    AVOIDING = auto()
+    REJOINING = auto()
 
 
 class MissionRunner:
@@ -327,9 +345,15 @@ class MissionRunner:
         - Debug log dump on mission failure
     """
 
-    def __init__(self, headless: bool = True, use_waypoint_controller: bool = False):
+    def __init__(
+        self,
+        headless: bool = True,
+        use_waypoint_controller: bool = False,
+        use_gui_waypoints: bool = False,
+    ):
         self._headless = headless
         self._use_waypoint_controller = use_waypoint_controller
+        self._use_gui_waypoints = use_gui_waypoints and (not headless)
         self._dt = 1.0 / 30.0  # 30 Hz control rate
 
         # Load obstacle database
@@ -341,12 +365,21 @@ class MissionRunner:
 
         # Spawn drones
         self._drones: Dict[int, SimDrone] = {}
-        hex_pos = _hex_positions(*FORMATION_CENTER, FORMATION_SPACING)
-        for i, (x, y) in enumerate(hex_pos):
+        alpha_positions = _hex_positions(*FORMATION_CENTER, FORMATION_SPACING, n=6)
+        for i, (x, y) in enumerate(alpha_positions):
             self._drones[i] = SimDrone(
                 drone_id=i,
+                drone_type=DroneType.ALPHA,
                 position=Vector3(x=x, y=y, z=-ALPHA_ALTITUDE),  # NED
             )
+        beta_cx, beta_cy = _hex_center(*FORMATION_CENTER)
+        self._drones[BETA_DRONE_ID] = SimDrone(
+            drone_id=BETA_DRONE_ID,
+            drone_type=DroneType.BETA,
+            position=Vector3(x=beta_cx, y=beta_cy, z=-BETA_ALTITUDE),
+        )
+        self._alpha_ids = [did for did, d in self._drones.items() if d.drone_type == DroneType.ALPHA]
+        self._beta_ids = [did for did, d in self._drones.items() if d.drone_type == DroneType.BETA]
 
         # Avoidance managers (lazy import)
         self._avoidance_managers: Dict[int, object] = {}
@@ -372,6 +405,7 @@ class MissionRunner:
         self._collision_count = 0
         self._hpl_override_count = 0
         self._min_inter_drone_distance = float("inf")
+        self._last_beta_proximity_warning_ts = 0.0
 
         # Mission overlay (Isaac Sim mode)
         self._overlay = None
@@ -383,6 +417,19 @@ class MissionRunner:
         # Optional controller-backed execution path.
         self._flight_controller: Optional[FlightController] = None
         self._waypoint_controller: Optional[WaypointController] = None
+        self._session = get_waypoint_session() if self._use_gui_waypoints else None
+        self._formation_offsets: Dict[int, Vector3] = {}
+        self._formation_states: Dict[int, FormationState] = {
+            drone_id: FormationState.NORMAL for drone_id in self._drones
+        }
+        if 0 in self._drones:
+            center_ref = Vector3(x=beta_cx, y=beta_cy, z=-ALPHA_ALTITUDE)
+            for drone_id, drone in self._drones.items():
+                self._formation_offsets[drone_id] = Vector3(
+                    x=drone.position.x - center_ref.x,
+                    y=drone.position.y - center_ref.y,
+                    z=drone.position.z - center_ref.z,
+                )
 
     async def run(self):
         """Execute the complete mission."""
@@ -393,7 +440,7 @@ class MissionRunner:
             return
         logger.info("  PROJECT SANJAY MK2 — Mission Runner")
         logger.info(f"  Mode: {'Headless' if self._headless else 'Isaac Sim'}")
-        logger.info(f"  Drones: {len(self._drones)}")
+        logger.info(f"  Drones: {len(self._drones)} ({len(self._alpha_ids)} Alpha, {len(self._beta_ids)} Beta)")
         logger.info(f"  Obstacles: {len(self._obstacles)}")
         logger.info("  Mission: Full 6-drone decentralized autonomy")
         logger.info("=" * 65)
@@ -410,6 +457,11 @@ class MissionRunner:
 
         self._start_time = time.time()
         self._log_event("SYSTEM", "Mission started")
+
+        if self._use_gui_waypoints:
+            mission_result = await self._run_gui_waypoint_swarm()
+            self._finalize(mission_result)
+            return
 
         tick = 0
         mission_result = "UNKNOWN"
@@ -440,6 +492,10 @@ class MissionRunner:
                 # ── Local state update per decentralized coordinator ──
                 for drone_id, coordinator in self._coordinators.items():
                     coordinator.update_member_state(drone_id, self._drones[drone_id].to_state())
+                    for beta_id in self._beta_ids:
+                        beta_drone = self._drones.get(beta_id)
+                        if beta_drone is not None and beta_drone.is_active:
+                            coordinator.update_member_state(beta_id, beta_drone.to_state())
 
                 # ── In-process gossip broadcast ──
                 gossip_payloads = {
@@ -487,7 +543,7 @@ class MissionRunner:
                     if mgr and mgr.closest_obstacle_distance < 0.5:
                         self._collision_count += 1
                         self._log_event(
-                            f"Alpha_{drone_id}",
+                            self._drone_label(drone_id),
                                 f"COLLISION — obstacle at {mgr.closest_obstacle_distance:.2f}m "
                             f"(total: {self._collision_count})",
                             "CRITICAL",
@@ -507,11 +563,18 @@ class MissionRunner:
                 if min_distance < 20.0:
                     self._log_event(
                         "SWARM",
-                        f"Unsafe inter-drone spacing detected ({min_distance:.1f}m)",
+                        f"Inter-drone spacing low ({min_distance:.1f}m)",
+                        "WARNING",
+                    )
+                if min_distance < 10.0:
+                    self._log_event(
+                        "SWARM",
+                        f"Critical inter-drone spacing ({min_distance:.1f}m)",
                         "CRITICAL",
                     )
                     mission_result = "FAILED_SEPARATION"
                     break
+                self._warn_beta_alpha_proximity()
 
                 if elapsed >= self._mission_success_duration:
                     mission_result = "SUCCESS"
@@ -523,7 +586,7 @@ class MissionRunner:
                         mgr = self._avoidance_managers.get(did)
                         if mgr:
                             self._overlay.update_drone_state(
-                                f"Alpha_{did}", mgr.get_telemetry()
+                                self._drone_label(did), mgr.get_telemetry()
                             )
 
                 # ── Periodic console status ──
@@ -547,6 +610,341 @@ class MissionRunner:
 
         # ── Finalize ──
         self._finalize(mission_result)
+
+    async def _run_gui_waypoint_swarm(self) -> str:
+        """
+        GUI waypoint mode:
+        - Alpha_0 follows panel-defined waypoints (leader path).
+        - Alpha_1..5 retain boids/formation behavior with leader-offset bias.
+        """
+        if self._session is None:
+            return "FAILED_GUI_SESSION"
+
+        tick = 0
+        mission_active = False
+        mission_paused = False
+        leader_wp_index = 0
+        self._session.set_runner_state("idle", "Waiting for GUI start")
+
+        while True:
+            tick += 1
+            elapsed = time.time() - self._start_time
+
+            # Timeout is only enforced while a mission is actively running.
+            if mission_active and elapsed > self._max_mission_time:
+                self._log_event("SYSTEM", "GUI mission TIMEOUT", "CRITICAL")
+                self._session.set_runner_state("timeout", "Mission timed out")
+                return "TIMEOUT"
+
+            # Session commands from the panel.
+            command = self._session.consume_command()
+            if command == "start":
+                gui_wps = self._session.get_waypoints()
+                if not gui_wps:
+                    self._session.set_runner_state("idle", "No GUI waypoints available")
+                else:
+                    mission_active = True
+                    mission_paused = False
+                    leader_wp_index = 0
+                    self._session.set_current_waypoint_index(0)
+                    self._start_time = time.time()
+                    self._session.set_runner_state("running", "Following GUI waypoints")
+                    self._log_event("SYSTEM", f"GUI mission started with {len(gui_wps)} waypoints")
+            elif command == "pause":
+                mission_paused = True
+                self._session.set_runner_state("paused", "Mission paused from GUI")
+            elif command == "resume":
+                if mission_active:
+                    mission_paused = False
+                    self._session.set_runner_state("running", "Mission resumed from GUI")
+            elif command == "stop":
+                self._session.set_runner_state("stopped", "Mission stopped from GUI")
+                return "STOPPED_BY_GUI"
+
+            toggles = self._session.get_toggles()
+            self._apply_gui_toggles(toggles)
+            if self._session.is_manual_override_enabled() and mission_active:
+                mission_paused = True
+                self._session.set_runner_state("manual_override", "Leader manual overtake active")
+
+            # Feed LiDAR to all drones.
+            for drone_id, drone in self._drones.items():
+                if not drone.is_active:
+                    continue
+                scan_pos = Vector3(x=drone.position.x, y=drone.position.y, z=drone.position.z)
+                points = self._lidar.scan(scan_pos)
+                mgr = self._avoidance_managers.get(drone_id)
+                if mgr is not None:
+                    mgr.feed_lidar_points(points, drone_position=drone.position)
+
+            # Decentralized state + gossip update.
+            for drone_id, coordinator in self._coordinators.items():
+                coordinator.update_member_state(drone_id, self._drones[drone_id].to_state())
+                for beta_id in self._beta_ids:
+                    beta_drone = self._drones.get(beta_id)
+                    if beta_drone is not None and beta_drone.is_active:
+                        coordinator.update_member_state(beta_id, beta_drone.to_state())
+
+            gossip_payloads = {
+                drone_id: coordinator.prepare_gossip_payload()
+                for drone_id, coordinator in self._coordinators.items()
+            }
+            for receiver_id, coordinator in self._coordinators.items():
+                for sender_id, payload in gossip_payloads.items():
+                    if sender_id == receiver_id or not payload:
+                        continue
+                    coordinator.ingest_gossip_payload(payload)
+
+            for coordinator in self._coordinators.values():
+                coordinator.coordination_step()
+
+            # Leader waypoint tracking
+            leader_goal = None
+            leader_override_velocity = Vector3()
+            if mission_active and not mission_paused:
+                gui_wps = self._session.get_waypoints()
+                if not gui_wps:
+                    self._session.set_runner_state("idle", "Waypoint list became empty")
+                    mission_active = False
+                elif leader_wp_index >= len(gui_wps):
+                    self._session.set_runner_state("complete", "All GUI waypoints completed")
+                    return "SUCCESS"
+                else:
+                    leader_goal = gui_wps[leader_wp_index].position
+                    leader = self._drones[0]
+                    leader_override_velocity, reached = self._compute_leader_waypoint_velocity(
+                        leader.position,
+                        gui_wps[leader_wp_index],
+                    )
+                    if reached:
+                        self._log_event(
+                            "LEADER",
+                            f"Reached GUI_WP_{leader_wp_index + 1}",
+                            "SUCCESS",
+                        )
+                        leader_wp_index += 1
+                        self._session.set_current_waypoint_index(leader_wp_index)
+                        if self._overlay is not None:
+                            try:
+                                self._overlay.advance_waypoint("Alpha_0", f"GUI_WP_{leader_wp_index}")
+                            except Exception:
+                                pass
+                        if leader_wp_index >= len(gui_wps):
+                            self._session.set_runner_state("complete", "All GUI waypoints completed")
+                            return "SUCCESS"
+
+            # Apply motion commands.
+            for drone_id, drone in self._drones.items():
+                if not drone.is_active:
+                    continue
+
+                coordinator = self._coordinators.get(drone_id)
+                mgr = self._avoidance_managers.get(drone_id)
+                desired_velocity = coordinator.get_desired_velocity(drone_id) if coordinator else Vector3()
+                goal = coordinator.get_desired_goal(drone_id) if coordinator else None
+
+                if mission_paused:
+                    desired_velocity = Vector3()
+                    goal = drone.position
+                elif mission_active and not mission_paused:
+                    if drone_id == 0:
+                        desired_velocity = leader_override_velocity
+                        goal = leader_goal
+                    else:
+                        desired_velocity, goal = self._blend_follower_with_leader_goal(
+                            drone_id=drone_id,
+                            boids_velocity=desired_velocity,
+                            avoidance_mgr=mgr,
+                        )
+
+                if mgr is not None:
+                    mgr.set_boids_velocity(desired_velocity)
+                    if goal is not None:
+                        mgr.set_goal(goal)
+                    if toggles.avoidance_enabled:
+                        velocity = mgr.compute_avoidance(
+                            drone_position=drone.position,
+                            drone_velocity=drone.velocity,
+                        )
+                    else:
+                        velocity = desired_velocity
+                else:
+                    velocity = desired_velocity
+
+                drone.step(velocity, self._dt)
+                self._publish_velocity(drone_id, velocity)
+
+            # Safety checks.
+            for drone_id, drone in self._drones.items():
+                if not drone.is_active:
+                    continue
+                mgr = self._avoidance_managers.get(drone_id)
+                if mgr and mgr.closest_obstacle_distance < 0.5:
+                    self._collision_count += 1
+                    self._log_event(
+                        self._drone_label(drone_id),
+                        f"COLLISION — obstacle at {mgr.closest_obstacle_distance:.2f}m "
+                        f"(total: {self._collision_count})",
+                        "CRITICAL",
+                    )
+                    if self._collision_count >= 3:
+                        self._session.set_runner_state("failed", "Collision threshold reached")
+                        return "FAILED_COLLISION"
+
+                if mgr and mgr.is_hpl_overriding:
+                    self._hpl_override_count += 1
+
+            min_distance = self._compute_min_inter_drone_distance()
+            self._min_inter_drone_distance = min(self._min_inter_drone_distance, min_distance)
+            if min_distance < 20.0:
+                self._log_event(
+                    "SWARM",
+                    f"Inter-drone spacing low ({min_distance:.1f}m)",
+                    "WARNING",
+                )
+            if min_distance < 10.0:
+                self._log_event(
+                    "SWARM",
+                    f"Critical inter-drone spacing ({min_distance:.1f}m)",
+                    "CRITICAL",
+                )
+                self._session.set_runner_state("failed", "Unsafe drone separation")
+                return "FAILED_SEPARATION"
+            self._warn_beta_alpha_proximity()
+
+            if self._overlay and tick % 10 == 0:
+                for did, _drone in self._drones.items():
+                    mgr = self._avoidance_managers.get(did)
+                    if mgr:
+                        self._overlay.update_drone_state(self._drone_label(did), mgr.get_telemetry())
+
+            if tick % 300 == 0:
+                logger.info(
+                    f"[{elapsed:>6.1f}s] GUI swarm | "
+                    f"active={mission_active} paused={mission_paused} "
+                    f"wp={leader_wp_index}/{len(self._session.get_waypoints())} "
+                    f"MinSep={self._min_inter_drone_distance:.1f}m"
+                )
+
+            await asyncio.sleep(self._dt)
+
+    def _compute_leader_waypoint_velocity(
+        self,
+        current_position: Vector3,
+        waypoint: Waypoint,
+    ) -> Tuple[Vector3, bool]:
+        """Compute leader velocity toward active GUI waypoint."""
+        delta = waypoint.position - current_position
+        distance = delta.magnitude()
+        if distance <= max(0.5, waypoint.acceptance_radius):
+            return Vector3(), True
+        max_speed = max(0.5, float(waypoint.speed))
+        desired_speed = min(max_speed, distance)
+        return delta.normalized() * desired_speed, False
+
+    def _blend_follower_with_leader_goal(
+        self,
+        drone_id: int,
+        boids_velocity: Vector3,
+        avoidance_mgr: Optional[object] = None,
+    ) -> Tuple[Vector3, Vector3]:
+        """
+        Adaptive formation/boids blending with explicit rejoin phase.
+        """
+        leader = self._drones[0]
+        drone = self._drones[drone_id]
+        center_offset = self._formation_offsets.get(0, Vector3())
+        formation_center = Vector3(
+            x=leader.position.x - center_offset.x,
+            y=leader.position.y - center_offset.y,
+            z=leader.position.z - center_offset.z,
+        )
+        offset = self._formation_offsets.get(drone_id, Vector3())
+        target = formation_center + offset
+        slot_delta = target - drone.position
+        slot_error = slot_delta.magnitude()
+        obstacle_dist = (
+            float(avoidance_mgr.closest_obstacle_distance)
+            if avoidance_mgr is not None
+            else float("inf")
+        )
+        state = self._update_formation_state(drone_id, obstacle_dist, slot_error)
+        follow_velocity = self._compute_seek_velocity(
+            drone.position, target, p_gain=1.0, max_speed=5.0
+        )
+        if state == FormationState.NORMAL:
+            return follow_velocity, target
+
+        if state == FormationState.REJOINING:
+            rejoin_velocity = self._compute_seek_velocity(
+                drone.position, target, p_gain=REJOIN_P_GAIN, max_speed=REJOIN_SPEED
+            )
+            return rejoin_velocity, target
+
+        if obstacle_dist >= OBSTACLE_ENGAGE_DIST:
+            obstacle_factor = 0.0
+        elif obstacle_dist <= OBSTACLE_FULL_DIST:
+            obstacle_factor = 1.0
+        else:
+            obstacle_factor = 1.0 - (
+                (obstacle_dist - OBSTACLE_FULL_DIST)
+                / (OBSTACLE_ENGAGE_DIST - OBSTACLE_FULL_DIST)
+            )
+
+        blended = Vector3(
+            x=(1.0 - obstacle_factor) * follow_velocity.x + obstacle_factor * boids_velocity.x,
+            y=(1.0 - obstacle_factor) * follow_velocity.y + obstacle_factor * boids_velocity.y,
+            z=(1.0 - obstacle_factor) * follow_velocity.z + obstacle_factor * boids_velocity.z,
+        )
+        return blended, target
+
+    def _update_formation_state(
+        self,
+        drone_id: int,
+        obstacle_dist: float,
+        slot_error: float,
+    ) -> FormationState:
+        """Transition per-drone formation states using obstacle and slot error."""
+        prev_state = self._formation_states.get(drone_id, FormationState.NORMAL)
+        next_state = prev_state
+        if prev_state == FormationState.NORMAL:
+            if obstacle_dist < OBSTACLE_ENGAGE_DIST:
+                next_state = FormationState.AVOIDING
+        elif prev_state == FormationState.AVOIDING:
+            if obstacle_dist > OBSTACLE_ENGAGE_DIST:
+                next_state = FormationState.REJOINING
+        elif prev_state == FormationState.REJOINING:
+            if obstacle_dist < OBSTACLE_ENGAGE_DIST:
+                next_state = FormationState.AVOIDING
+            elif slot_error < REJOIN_TOLERANCE:
+                next_state = FormationState.NORMAL
+        self._formation_states[drone_id] = next_state
+        if next_state != prev_state:
+            self._log_event(
+                self._drone_label(drone_id),
+                f"{prev_state.name} -> {next_state.name}",
+            )
+        return next_state
+
+    @staticmethod
+    def _compute_seek_velocity(
+        current: Vector3,
+        target: Vector3,
+        p_gain: float,
+        max_speed: float,
+    ) -> Vector3:
+        """Compute bounded proportional seek velocity."""
+        delta = target - current
+        distance = delta.magnitude()
+        if distance <= 1e-6:
+            return Vector3()
+        return delta.normalized() * min(max_speed, distance * p_gain)
+
+    def _apply_gui_toggles(self, toggles) -> None:
+        for coordinator in self._coordinators.values():
+            coordinator.set_boids_enabled(toggles.boids_enabled)
+            coordinator.set_cbba_enabled(toggles.cbba_enabled)
+            coordinator.set_formation_enabled(toggles.formation_enabled)
 
     async def _run_waypoint_controller_path(self):
         """
@@ -588,7 +986,7 @@ class MissionRunner:
                 config.control_rate_hz = 30.0
                 mgr = AvoidanceManager(drone_id=drone_id, config=config)
                 self._avoidance_managers[drone_id] = mgr
-                logger.info(f"  AvoidanceManager initialized for Alpha_{drone_id}")
+                logger.info(f"  AvoidanceManager initialized for {self._drone_label(drone_id)}")
 
         except ImportError as e:
             logger.warning(f"Could not import AvoidanceManager: {e}")
@@ -596,7 +994,7 @@ class MissionRunner:
 
     async def _init_coordinators(self):
         """Initialize one decentralized regiment coordinator per drone."""
-        for drone_id in self._drones:
+        for drone_id in self._alpha_ids:
             cfg = RegimentConfig(
                 formation_spacing=FORMATION_SPACING,
                 formation_altitude=ALPHA_ALTITUDE,
@@ -605,13 +1003,17 @@ class MissionRunner:
             )
             coordinator = AlphaRegimentCoordinator(my_drone_id=drone_id, config=cfg)
             await coordinator.initialize()
-            for peer_id in self._drones:
+            for peer_id in self._alpha_ids:
                 coordinator.register_drone(peer_id)
             self._coordinators[drone_id] = coordinator
 
     def _compute_min_inter_drone_distance(self) -> float:
-        """Compute nearest pairwise spacing among active drones."""
-        active = [d for d in self._drones.values() if d.is_active]
+        """Compute nearest pairwise spacing among active Alpha drones."""
+        active = [
+            d
+            for d in self._drones.values()
+            if d.is_active and d.drone_type == DroneType.ALPHA
+        ]
         if len(active) < 2:
             return float("inf")
 
@@ -622,6 +1024,36 @@ class MissionRunner:
                 if dist < min_dist:
                     min_dist = dist
         return min_dist
+
+    def _warn_beta_alpha_proximity(self, threshold_m: float = 15.0) -> None:
+        """Log non-fatal warning when Beta comes too close to an Alpha."""
+        now = time.time()
+        if now - self._last_beta_proximity_warning_ts < 1.0:
+            return
+
+        closest = float("inf")
+        closest_pair: Optional[Tuple[int, int]] = None
+        for beta_id in self._beta_ids:
+            beta = self._drones.get(beta_id)
+            if beta is None or not beta.is_active:
+                continue
+            for alpha_id in self._alpha_ids:
+                alpha = self._drones.get(alpha_id)
+                if alpha is None or not alpha.is_active:
+                    continue
+                dist = beta.position.distance_to(alpha.position)
+                if dist < closest:
+                    closest = dist
+                    closest_pair = (beta_id, alpha_id)
+
+        if closest_pair is not None and closest < threshold_m:
+            beta_id, alpha_id = closest_pair
+            self._last_beta_proximity_warning_ts = now
+            self._log_event(
+                self._drone_label(beta_id),
+                f"Close to {self._drone_label(alpha_id)}: {closest:.1f}m",
+                "WARNING",
+            )
 
     def _init_overlay(self):
         """Connect to MissionOverlay if in Isaac Sim."""
@@ -671,7 +1103,7 @@ class MissionRunner:
         """Publish velocity command to Isaac Sim via ROS 2 bridge."""
         if self._bridge is None:
             return
-        drone_name = f"alpha_{drone_id}"
+        drone_name = self._drone_topic_name(drone_id)
         self._bridge.send_velocity(
             drone_name, vx=velocity.x, vy=velocity.y, vz=velocity.z
         )
@@ -703,7 +1135,7 @@ class MissionRunner:
             for drone_id, drone in self._drones.items():
                 if not drone.is_active:
                     continue
-                prim_path = f"/World/Drones/Alpha_{drone_id}"
+                prim_path = self._drone_prim_path(drone_id)
                 prim = stage.GetPrimAtPath(prim_path)
                 if not prim.IsValid():
                     continue
@@ -776,7 +1208,7 @@ class MissionRunner:
         for did, drone in sorted(self._drones.items()):
             mgr = self._avoidance_managers.get(did)
             state = mgr.state.name if mgr else "N/A"
-            print(f"    Alpha_{did}: ({drone.position.x:>7.1f}, {drone.position.y:>7.1f}, "
+            print(f"    {self._drone_label(did)}: ({drone.position.x:>7.1f}, {drone.position.y:>7.1f}, "
                   f"{drone.position.z:>7.1f})  State={state}")
 
         # On failure: dump full debug log
@@ -803,13 +1235,31 @@ class MissionRunner:
         print("\n  -- Avoidance Telemetry at Failure --")
         for did, mgr in self._avoidance_managers.items():
             telem = mgr.get_telemetry()
-            print(f"    Alpha_{did}:")
+            print(f"    {self._drone_label(did)}:")
             print(f"      State          : {telem.get('avoidance_state', 'N/A')}")
             print(f"      HPL State      : {telem.get('hpl_state', 'N/A')}")
             print(f"      Closest Obs    : {telem.get('closest_obstacle_m', 'N/A')}m")
             print(f"      Sub-Waypoints  : {telem.get('active_sub_waypoints', 0)}")
             print(f"      LiDAR Points   : {telem.get('lidar', {}).get('filtered_points', 0)}")
             print(f"      Obstacles      : {telem.get('lidar', {}).get('obstacle_count', 0)}")
+
+    def _drone_label(self, drone_id: int) -> str:
+        """Human-readable drone label used for logs/overlay keys."""
+        if drone_id in self._beta_ids:
+            return f"Beta_{drone_id - BETA_DRONE_ID}"
+        return f"Alpha_{drone_id}"
+
+    def _drone_topic_name(self, drone_id: int) -> str:
+        """ROS topic drone key for bridge velocity publishing."""
+        if drone_id in self._beta_ids:
+            return f"beta_{drone_id - BETA_DRONE_ID}"
+        return f"alpha_{drone_id}"
+
+    def _drone_prim_path(self, drone_id: int) -> str:
+        """USD prim path for drone stage sync."""
+        if drone_id in self._beta_ids:
+            return f"/World/Drones/Beta_{drone_id - BETA_DRONE_ID}"
+        return f"/World/Drones/Alpha_{drone_id}"
 
     def _save_log(self, result: str, elapsed: float):
         """Save mission log to JSON."""
@@ -825,7 +1275,7 @@ class MissionRunner:
             "hpl_overrides": self._hpl_override_count,
             "collisions": self._collision_count,
             "drone_finals": {
-                f"alpha_{did}": {
+                self._drone_topic_name(did): {
                     "position": [d.position.x, d.position.y, d.position.z],
                     "battery": d.battery,
                 }
@@ -860,13 +1310,38 @@ def main():
         action="store_true",
         help="Run mission via FlightController + WaypointController path",
     )
+    parser.add_argument(
+        "--gui-waypoints",
+        action="store_true",
+        help="Use waypoint panel shared session (leader-followers in Isaac Sim)",
+    )
     args = parser.parse_args()
 
     headless = not args.isaac
-    runner = MissionRunner(headless=headless, use_waypoint_controller=args.controller_path)
+    runner = MissionRunner(
+        headless=headless,
+        use_waypoint_controller=args.controller_path,
+        use_gui_waypoints=args.gui_waypoints,
+    )
     runner._max_mission_time = args.timeout
 
     asyncio.run(runner.run())
+
+
+def launch_gui_waypoint_swarm_runner(timeout: float = 600.0) -> MissionRunner:
+    """
+    Start GUI-waypoint swarm runner on the active Isaac Sim event loop.
+
+    Intended for use from launch_waypoint_panel.py.
+    """
+    runner = MissionRunner(headless=False, use_gui_waypoints=True)
+    runner._max_mission_time = timeout
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError as exc:
+        raise RuntimeError("Isaac event loop is required for GUI waypoint mode") from exc
+    loop.create_task(runner.run())
+    return runner
 
 
 if __name__ == "__main__":
@@ -878,6 +1353,7 @@ else:
     except RuntimeError:
         loop = None
 
-    if loop is not None:
+    auto_import_run = os.getenv("SANJAY_AUTOSTART_ON_IMPORT", "1").strip().lower() not in ("0", "false", "no")
+    if loop is not None and auto_import_run:
         runner = MissionRunner(headless=False)
         loop.create_task(runner.run())

@@ -496,6 +496,46 @@ exec(open('scripts/isaac_sim/run_mission.py').read())
 
 (This uses the existing event loop automatically — no `asyncio.run()` needed.)
 
+#### GUI Waypoint Mission (Leader-Followers)
+
+Use this mode when you want to draw mission waypoints from Isaac Sim UI instead
+of relying on hard-coded waypoint lists.
+
+Behavior:
+- `Alpha_0` is the leader and follows GUI-entered waypoints.
+- `Alpha_1..Alpha_5` follow the leader with formation/boids behavior.
+
+In Isaac Sim Script Editor, run:
+
+```python
+exec(open('scripts/isaac_sim/launch_waypoint_panel.py').read())
+```
+
+This starts:
+- the waypoint panel (`scripts/isaac_sim/waypoint_gui.py`)
+- the GUI-session swarm runner (`scripts/isaac_sim/run_mission.py` in GUI mode)
+
+Operator flow:
+1. Build and play the scene first (`create_surveillance_scene.py` + toolbar **Play**).
+2. Open the waypoint panel and add waypoints:
+   - Numeric NED input (`X`,`Y`,`Z`)
+   - or **Add From Selected Prim** (captures selected prim world translation).
+3. Keep **Boids** and **Formation** toggles enabled for follower behavior.
+4. Press **Start**.
+5. Monitor status:
+   - panel status line (`runner state`, `waypoint index`)
+   - Isaac viewport movement (`Alpha_0` path + follower offsets)
+   - logs in `simulation/logs/`.
+
+Optional terminal path for GUI mission (outside Script Editor):
+
+```powershell
+python scripts\isaac_sim\run_mission.py --isaac --gui-waypoints --timeout 900
+```
+
+> In that terminal mode, the mission waits for waypoints/commands from the GUI
+> panel session running in the same Isaac process.
+
 ---
 
 ### Mode C — WebSocket Live Visualization
@@ -884,6 +924,9 @@ The `run_mission.py` script auto-detects based on `--headless` / `--isaac` flags
 | `create_surveillance_scene.py` throws `RuntimeError: This script must be run inside NVIDIA Isaac Sim` | Script must be run via the Isaac Sim Script Editor, not standalone PowerShell |
 | `ros2 topic list` empty in WSL2 | Check `ROS_DOMAIN_ID=10` in both WSL2 and the Isaac Sim env script; check WSL2 network mode is "mirrored" |
 | Topics visible but no data flowing | Confirm Isaac Sim simulation is in **Play** state (not Paused); check bridge container: `docker logs sanjay-isaac-bridge` |
+| GUI waypoint panel shows "Add at least one waypoint before starting" | Add at least one waypoint in the panel (`Add Waypoint` or `Add From Selected Prim`) before pressing **Start** |
+| GUI panel opens but drones do not move | Ensure `launch_waypoint_panel.py` was run after scene creation and Isaac is in **Play**; verify `/World/Drones/Alpha_0..Alpha_5` prims exist |
+| Leader moves but followers drift too far | Re-enable **Boids** and **Formation** in the waypoint panel, then click **Apply** for each toggle |
 | `No running loop` crash | This is fixed in the current `main` branch. Ensure you are on the latest local commit (`git log --oneline -1`) |
 
 ### Test Failures

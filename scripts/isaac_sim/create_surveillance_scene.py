@@ -295,8 +295,34 @@ MISSION_WAYPOINTS = [
 #  Scene Builder
 # ═══════════════════════════════════════════════════════════════════
 
+def _clear_existing_scene():
+    """Remove previously generated scene content so re-runs are idempotent."""
+    try:
+        import omni.usd
+
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            return
+
+        for root in (
+            "/World/Zones",
+            "/World/Drones",
+            "/World/Terrain",
+            "/World/Dynamic",
+            "/World/Mission",
+        ):
+            prim = stage.GetPrimAtPath(root)
+            if prim.IsValid():
+                stage.RemovePrim(root)
+    except Exception:
+        # Best-effort cleanup; scene creation still proceeds.
+        pass
+
+
 def create_scene():
     """Build the complete clustered surveillance scene."""
+
+    _clear_existing_scene()
 
     world = World(stage_units_in_meters=1.0)
     world.scene.add_default_ground_plane()
@@ -1333,7 +1359,4 @@ def print_scene_statistics():
 if __name__ == "__main__":
     create_scene()
     print_scene_statistics()
-else:
-    # When loaded via Isaac Sim Script Editor exec()
-    create_scene()
-    print_scene_statistics()
+

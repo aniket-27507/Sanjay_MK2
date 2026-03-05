@@ -857,6 +857,21 @@ class AlphaRegimentCoordinator:
         query_id = self.my_drone_id if drone_id is None else drone_id
         return self._desired_goals.get(query_id)
 
+    def set_boids_enabled(self, enabled: bool) -> None:
+        """Toggle boids behavior for this coordinator's flock engine."""
+        if self._flock_coordinator is not None:
+            self._flock_coordinator.enable_boids(enabled)
+
+    def set_cbba_enabled(self, enabled: bool) -> None:
+        """Toggle CBBA tasking for this coordinator's flock engine."""
+        if self._flock_coordinator is not None:
+            self._flock_coordinator.enable_cbba(enabled)
+
+    def set_formation_enabled(self, enabled: bool) -> None:
+        """Toggle formation slot usage for this coordinator's flock engine."""
+        if self._flock_coordinator is not None:
+            self._flock_coordinator.enable_formation(enabled)
+
     # ── Telemetry ─────────────────────────────────────────────────
 
     def get_regiment_status(self) -> Dict:

@@ -19,11 +19,11 @@ class BoidsConfig:
 
     # Steering weights
     w_separation: float = 2.5
-    w_alignment: float = 1.0
-    w_cohesion: float = 0.8
+    w_alignment: float = 0.5
+    w_cohesion: float = 0.3
     w_goal_seeking: float = 1.5
     w_obstacle_avoidance: float = 3.0
-    w_formation_bias: float = 0.6
+    w_formation_bias: float = 2.0
     w_energy_saving: float = 0.4
 
     # Velocity limits

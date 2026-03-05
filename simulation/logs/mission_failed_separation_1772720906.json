@@ -1,0 +1,115 @@
+{
+  "result": "FAILED_SEPARATION",
+  "duration_s": 300.07758140563965,
+  "min_inter_drone_distance_m": 19.970831393543342,
+  "hpl_overrides": 0,
+  "collisions": 0,
+  "drone_finals": {
+    "alpha_0": {
+      "position": [
+        227.47164028031025,
+        523.165503402953,
+        -65.00000001458396
+      ],
+      "battery": 99.49359999998319
+    },
+    "alpha_1": {
+      "position": [
+        364.26668070783205,
+        512.5284349936531,
+        -64.99999865290317
+      ],
+      "battery": 99.49359999998319
+    },
+    "alpha_2": {
+      "position": [
+        330.919236907311,
+        549.769298822902,
+        -65.00002343338143
+      ],
+      "battery": 99.49359999998319
+    },
+    "alpha_3": {
+      "position": [
+        281.10504501526174,
+        553.9489695757017,
+        -64.99996230145236
+      ],
+      "battery": 99.49359999998319
+    },
+    "alpha_4": {
+      "position": [
+        246.67840036463014,
+        517.6942628112174,
+        -64.99999245403326
+      ],
+      "battery": 99.49359999998319
+    },
+    "alpha_5": {
+      "position": [
+        238.0207395711209,
+        468.4527403210097,
+        -65.00002585054477
+      ],
+      "battery": 99.49359999998319
+    }
+  },
+  "events": [
+    {
+      "timestamp": 1772720339.1195889,
+      "elapsed": 0.0,
+      "source": "SYSTEM",
+      "level": "INFO",
+      "message": "Mission started"
+    },
+    {
+      "timestamp": 1772720553.7807646,
+      "elapsed": 0.0,
+      "source": "SYSTEM",
+      "level": "INFO",
+      "message": "GUI mission started with 5 waypoints"
+    },
+    {
+      "timestamp": 1772720606.3774295,
+      "elapsed": 0.0,
+      "source": "SYSTEM",
+      "level": "INFO",
+      "message": "GUI mission started with 5 waypoints"
+    },
+    {
+      "timestamp": 1772720670.936868,
+      "elapsed": 64.55943846702576,
+      "source": "LEADER",
+      "level": "SUCCESS",
+      "message": "Reached GUI_WP_1"
+    },
+    {
+      "timestamp": 1772720741.724281,
+      "elapsed": 135.34685158729553,
+      "source": "LEADER",
+      "level": "SUCCESS",
+      "message": "Reached GUI_WP_2"
+    },
+    {
+      "timestamp": 1772720819.4986758,
+      "elapsed": 213.12124633789062,
+      "source": "LEADER",
+      "level": "SUCCESS",
+      "message": "Reached GUI_WP_3"
+    },
+    {
+      "timestamp": 1772720880.6833084,
+      "elapsed": 274.30587887763977,
+      "source": "LEADER",
+      "level": "SUCCESS",
+      "message": "Reached GUI_WP_4"
+    },
+    {
+      "timestamp": 1772720906.4545112,
+      "elapsed": 300.07708168029785,
+      "source": "SWARM",
+      "level": "CRITICAL",
+      "message": "Unsafe inter-drone spacing detected (20.0m)"
+    }
+  ]
+}

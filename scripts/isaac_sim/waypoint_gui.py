@@ -21,8 +21,8 @@ from src.core.types.drone_types import Vector3
 from src.single_drone.flight_control.flight_controller import FlightController
 from src.single_drone.flight_control.manual_controller import ManualController
 from src.single_drone.flight_control.mode_manager import ModeManager
-from src.single_drone.flight_control.waypoint_controller import WaypointController
 from src.swarm.flock_coordinator import FlockCoordinator
+from scripts.isaac_sim.waypoint_session import get_waypoint_session
 
 
 class WaypointGuiPanel:
@@ -32,10 +32,9 @@ class WaypointGuiPanel:
         import omni.ui as ui
 
         self.ui = ui
+        self.session = get_waypoint_session()
         self.flight_controller = flight_controller or FlightController(drone_id=0, backend=backend)
-        self.waypoint_controller = WaypointController(self.flight_controller)
         self.manual_controller = ManualController(self.flight_controller)
-        self.waypoint_controller.attach_manual_controller(self.manual_controller)
         self.flock_coordinator = FlockCoordinator(drone_id=0)
         self.flight_controller.attach_flock_coordinator(self.flock_coordinator)
         self.mode_manager = ModeManager(self.flight_controller, flock_coordinator=self.flock_coordinator)
@@ -45,7 +44,10 @@ class WaypointGuiPanel:
         self._x_model = ui.SimpleFloatModel(0.0)
         self._y_model = ui.SimpleFloatModel(0.0)
         self._z_model = ui.SimpleFloatModel(-65.0)
-        self._status_model = ui.SimpleStringModel(f"Ready (backend={backend})")
+        self._z_model.add_end_edit_fn(self._on_z_field_commit)
+        self._status_model = ui.SimpleStringModel(
+            f"Ready (backend={backend})\nRunner: {self.session.get_runner_state()}"
+        )
         self._waypoints_model = ui.SimpleStringModel("No waypoints")
         self._avoidance_model = ui.SimpleBoolModel(True)
         self._boids_model = ui.SimpleBoolModel(True)
@@ -58,11 +60,11 @@ class WaypointGuiPanel:
                 ui.Label("Waypoint Input (NED)", style={"font_size": 16})
                 with ui.HStack(height=26):
                     ui.Label("X", width=22)
-                    ui.FloatDrag(model=self._x_model)
+                    ui.FloatField(model=self._x_model)
                     ui.Label("Y", width=22)
-                    ui.FloatDrag(model=self._y_model)
+                    ui.FloatField(model=self._y_model)
                     ui.Label("Z", width=22)
-                    ui.FloatDrag(model=self._z_model)
+                    ui.FloatField(model=self._z_model)
 
                 with ui.HStack(height=28):
                     ui.Button("Add Waypoint", clicked_fn=self._add_waypoint_from_inputs)
@@ -105,11 +107,16 @@ class WaypointGuiPanel:
         self._register_keyboard_handlers()
 
     def _set_status(self, text: str):
-        self._status_model.set_value(text)
+        snapshot = self.session.get_status_snapshot()
+        self._status_model.set_value(
+            f"{text}\n"
+            f"Runner: {snapshot['runner_state']} | "
+            f"WP: {snapshot['current_waypoint_index']}/{snapshot['waypoint_count']}"
+        )
         self._refresh_waypoint_listing()
 
     def _refresh_waypoint_listing(self):
-        waypoints = self.waypoint_controller.waypoints
+        waypoints = self.session.get_waypoints()
         if not waypoints:
             self._waypoints_model.set_value("No waypoints")
             return
@@ -122,7 +129,7 @@ class WaypointGuiPanel:
         self._waypoints_model.set_value("\n".join(lines))
 
     def _add_waypoint_from_inputs(self):
-        self.waypoint_controller.add_waypoint(
+        self.session.add_waypoint(
             position=Vector3(
                 x=self._x_model.as_float,
                 y=self._y_model.as_float,
@@ -130,6 +137,13 @@ class WaypointGuiPanel:
             )
         )
         self._set_status("Waypoint added from numeric input")
+
+    def _on_z_field_commit(self, *_args):
+        """
+        Allow keyboard-driven waypoint entry:
+        finishing Z edit (typically Enter) adds the waypoint immediately.
+        """
+        self._add_waypoint_from_inputs()
 
     def _add_waypoint_from_selected_prim(self):
         """
@@ -153,50 +167,52 @@ class WaypointGuiPanel:
             translate = local_transform.ExtractTranslation()
             # Stage is +Z up; convert to NED z.
             pos = Vector3(x=float(translate[0]), y=float(translate[1]), z=-float(translate[2]))
-            self.waypoint_controller.add_waypoint(position=pos)
+            self.session.add_waypoint(position=pos)
             self._set_status(f"Waypoint added from selected prim: {selected[0]}")
         except Exception as e:
             self._set_status(f"Failed to read selected prim: {e}")
 
     def _clear_waypoints(self):
-        self.waypoint_controller.clear_waypoints()
+        self.session.clear_waypoints()
         self._set_status("Waypoint list cleared")
 
     def _start_mission(self):
-        if self._execution_task and not self._execution_task.done():
-            self._set_status("Mission already running")
+        if not self.session.get_waypoints():
+            self._set_status("Add at least one waypoint before starting")
             return
-        self._execution_task = self.waypoint_controller.execute_mission_background(
-            enable_avoidance=self.mode_manager.status.avoidance_enabled
-        )
-        self._set_status("Mission started")
+        self.session.request_start()
+        self._set_status("Mission start requested (GUI session)")
 
     def _pause_mission(self):
-        self.waypoint_controller.pause()
-        self._set_status("Mission paused")
+        self.session.request_pause()
+        self._set_status("Mission pause requested")
 
     def _resume_mission(self):
-        self.waypoint_controller.resume()
-        self._set_status("Mission resumed")
+        self.session.request_resume()
+        self._set_status("Mission resume requested")
 
     def _stop_mission(self):
-        self.waypoint_controller.stop()
+        self.session.request_stop()
         self._set_status("Mission stop requested")
 
     def _apply_avoidance(self):
         self.mode_manager.set_avoidance(self._avoidance_model.as_bool)
+        self.session.set_toggles(avoidance_enabled=self._avoidance_model.as_bool)
         self._set_status(f"Avoidance set to {self._avoidance_model.as_bool}")
 
     def _apply_boids(self):
         self.mode_manager.set_boids(self._boids_model.as_bool)
+        self.session.set_toggles(boids_enabled=self._boids_model.as_bool)
         self._set_status(f"Boids set to {self._boids_model.as_bool}")
 
     def _apply_cbba(self):
         self.mode_manager.set_cbba(self._cbba_model.as_bool)
+        self.session.set_toggles(cbba_enabled=self._cbba_model.as_bool)
         self._set_status(f"CBBA set to {self._cbba_model.as_bool}")
 
     def _apply_formation(self):
         self.mode_manager.set_formation(self._formation_model.as_bool)
+        self.session.set_toggles(formation_enabled=self._formation_model.as_bool)
         self._set_status(f"Formation set to {self._formation_model.as_bool}")
 
     def _manual_on(self):
@@ -214,8 +230,9 @@ class WaypointGuiPanel:
             pass
 
     async def _manual_on_async(self):
-        ok = await self.waypoint_controller.enable_manual_overtake()
+        ok = await self.manual_controller.enable()
         self.mode_manager.set_manual_override(ok)
+        self.session.set_manual_override(ok)
         try:
             from scripts.isaac_sim.create_surveillance_scene import get_mission_overlay
             get_mission_overlay().set_manual_override(ok)
@@ -225,8 +242,9 @@ class WaypointGuiPanel:
         self._set_status("Manual overtake enabled" if ok else "Manual overtake failed")
 
     async def _manual_off_async(self):
-        ok = await self.waypoint_controller.disable_manual_overtake()
+        ok = await self.manual_controller.disable()
         self.mode_manager.set_manual_override(not ok)
+        self.session.set_manual_override(not ok)
         try:
             from scripts.isaac_sim.create_surveillance_scene import get_mission_overlay
             get_mission_overlay().set_manual_override(not ok)
