@@ -3,10 +3,28 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <button
+      onClick={() => {
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+      className="btn-bevel absolute right-3 top-3"
+      style={{ fontSize: "0.6rem", padding: "0.35rem 0.75rem" }}
+    >
+      {copied ? "COPIED" : "COPY"}
+    </button>
+  );
+}
+
 const tabs = [
   {
     id: "quick",
-    label: "Quick Start",
+    label: "QUICK START",
     content: `# Install IsaacMCP
 pip install isaac-mcp
 
@@ -22,7 +40,7 @@ isaac-mcp start`,
   },
   {
     id: "local",
-    label: "From Source",
+    label: "FROM SOURCE",
     content: `# Clone & install
 git clone https://github.com/yanitedhacker/IsaacMCP.git
 cd IsaacMCP
@@ -42,7 +60,7 @@ isaac-mcp register --cursor  # or --claude`,
   },
   {
     id: "docker",
-    label: "Docker",
+    label: "DOCKER",
     content: `# Initialize with Docker support
 cd /path/to/your-project
 isaac-mcp init --docker
@@ -57,64 +75,63 @@ docker compose \\
   },
 ];
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <button
-      onClick={() => {
-        navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      }}
-      className="absolute right-3 top-3 rounded-md border border-border bg-panel px-2.5 py-1 text-xs text-muted transition-colors hover:text-foreground"
-    >
-      {copied ? "Copied!" : "Copy"}
-    </button>
-  );
-}
-
 export default function Install() {
   const [active, setActive] = useState("local");
   const tab = tabs.find((t) => t.id === active)!;
 
   return (
-    <section id="install" className="relative py-28">
+    <section id="install" className="section-technical relative py-28">
+      <div className="divider-check mb-20" />
+
       <div className="mx-auto max-w-4xl px-6">
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 16 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, amount: 0.3 }}
-          transition={{ duration: 0.6 }}
+          transition={{ duration: 0.5 }}
           className="text-center"
         >
-          <h2 className="text-4xl font-bold tracking-tight sm:text-5xl">
+          <span
+            style={{
+              fontFamily: "var(--font-jetbrains), monospace",
+              fontSize: "0.65rem",
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "var(--color-accent)",
+            }}
+          >
+            CHAPTER 06 — INSTALLATION
+          </span>
+          <h2 className="mt-3 font-display text-4xl tracking-tight sm:text-5xl">
             Get <span className="text-accent">Started</span>
           </h2>
-          <p className="mx-auto mt-4 max-w-2xl text-lg text-muted">
-            Up and running in minutes. Requires Python 3.10+ and NVIDIA Isaac
-            Sim.
+          <p className="mx-auto mt-5 max-w-2xl text-lg text-muted">
+            Up and running in minutes. Requires Python 3.10+ and NVIDIA Isaac Sim.
           </p>
         </motion.div>
 
         <motion.div
-          initial={{ opacity: 0, y: 24 }}
+          initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          transition={{ duration: 0.5, delay: 0.15 }}
+          transition={{ duration: 0.45, delay: 0.1 }}
           className="mt-12"
         >
           {/* Tabs */}
-          <div className="flex gap-1 rounded-xl border border-border bg-surface p-1">
+          <div className="flex border border-border">
             {tabs.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setActive(t.id)}
-                className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors ${
-                  active === t.id
-                    ? "bg-accent/15 text-accent"
-                    : "text-muted hover:text-foreground"
-                }`}
+                className={`flex-1 px-4 py-3 transition-colors ${active === t.id
+                    ? "bg-cobalt-light text-accent border-b-2 border-accent"
+                    : "bg-surface text-muted hover:text-foreground"
+                  }`}
+                style={{
+                  fontFamily: "var(--font-jetbrains), monospace",
+                  fontSize: "0.65rem",
+                  letterSpacing: "0.1em",
+                }}
               >
                 {t.label}
               </button>
@@ -122,9 +139,9 @@ export default function Install() {
           </div>
 
           {/* Code block */}
-          <div className="relative mt-4 overflow-hidden rounded-xl border border-border bg-surface">
+          <div className="code-block relative mt-0 p-6">
             <CopyButton text={tab.content} />
-            <pre className="overflow-x-auto p-6 font-mono text-sm leading-relaxed text-muted">
+            <pre className="overflow-x-auto leading-relaxed">
               <code>{tab.content}</code>
             </pre>
           </div>

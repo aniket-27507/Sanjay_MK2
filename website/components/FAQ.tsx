@@ -35,25 +35,46 @@ function Accordion({
   a,
   open,
   toggle,
-  id,
+  index,
 }: {
   q: string;
   a: string;
   open: boolean;
   toggle: () => void;
-  id: string;
+  index: number;
 }) {
   return (
-    <div className="border-b border-border">
+    <div className={`border-b border-border ${open ? "bg-cobalt-light" : ""} transition-colors`}>
       <button
         onClick={toggle}
         aria-expanded={open}
-        aria-controls={`faq-answer-${id}`}
-        className="flex w-full items-center justify-between py-5 text-left"
+        aria-controls={`faq-answer-${index}`}
+        className="flex w-full items-center justify-between py-5 px-6 text-left group"
       >
-        <span className="pr-4 text-base font-medium">{q}</span>
+        <div className="flex items-start gap-4">
+          <span
+            className="shrink-0 mt-0.5 text-accent/25 group-hover:text-accent/50 transition-colors"
+            style={{
+              fontFamily: "var(--font-jetbrains), monospace",
+              fontSize: "0.65rem",
+              letterSpacing: "0.06em",
+            }}
+          >
+            Q_{String(index + 1).padStart(2, "0")}
+          </span>
+          <span className="pr-4 text-base font-medium group-hover:text-accent transition-colors"
+            style={{ fontFamily: "var(--font-inter), system-ui, sans-serif" }}
+          >
+            {q}
+          </span>
+        </div>
         <span
-          className={`shrink-0 text-xl text-muted transition-transform ${open ? "rotate-45" : ""}`}
+          className={`shrink-0 text-muted transition-transform duration-200 ${open ? "rotate-45" : ""
+            }`}
+          style={{
+            fontFamily: "var(--font-jetbrains), monospace",
+            fontSize: "1.1rem",
+          }}
         >
           +
         </span>
@@ -61,15 +82,17 @@ function Accordion({
       <AnimatePresence>
         {open && (
           <motion.div
-            id={`faq-answer-${id}`}
+            id={`faq-answer-${index}`}
             role="region"
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25 }}
+            transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <p className="pb-5 text-sm leading-relaxed text-muted">{a}</p>
+            <p className="pb-5 pl-16 pr-6 text-sm leading-relaxed text-muted">
+              {a}
+            </p>
           </motion.div>
         )}
       </AnimatePresence>
@@ -81,31 +104,45 @@ export default function FAQ() {
   const [openIdx, setOpenIdx] = useState<number | null>(null);
 
   return (
-    <section id="faq" className="relative py-28">
+    <section id="faq" className="section-technical relative py-28">
+      <div className="divider-check mb-20" />
+
       <div className="mx-auto max-w-3xl px-6">
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 16 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, amount: 0.3 }}
-          transition={{ duration: 0.6 }}
+          transition={{ duration: 0.5 }}
           className="text-center"
         >
-          <h2 className="text-4xl font-bold tracking-tight sm:text-5xl">
+          <span
+            style={{
+              fontFamily: "var(--font-jetbrains), monospace",
+              fontSize: "0.65rem",
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "var(--color-accent)",
+            }}
+          >
+            CHAPTER 09 — FAQ
+          </span>
+          <h2 className="mt-3 font-display text-4xl tracking-tight sm:text-5xl">
             Frequently Asked <span className="text-accent">Questions</span>
           </h2>
         </motion.div>
 
         <motion.div
-          initial={{ opacity: 0, y: 24 }}
+          initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          transition={{ duration: 0.5, delay: 0.15 }}
-          className="mt-12"
+          transition={{ duration: 0.45, delay: 0.1 }}
+          className="mt-12 border-t border-border"
+          style={{ border: "1px solid var(--color-border)" }}
         >
           {faqs.map((f, i) => (
             <Accordion
               key={i}
-              id={String(i)}
+              index={i}
               q={f.q}
               a={f.a}
               open={openIdx === i}

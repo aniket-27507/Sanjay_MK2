@@ -13,9 +13,10 @@ function CopyButton({ text }: { text: string }) {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       }}
-      className="absolute right-3 top-3 rounded-md border border-border bg-panel px-2.5 py-1 text-xs text-muted transition-colors hover:text-foreground"
+      className="btn-bevel absolute right-3 top-3"
+      style={{ fontSize: "0.6rem", padding: "0.35rem 0.75rem" }}
     >
-      {copied ? "Copied!" : "Copy"}
+      {copied ? "COPIED" : "COPY"}
     </button>
   );
 }
@@ -23,7 +24,7 @@ function CopyButton({ text }: { text: string }) {
 const modes = [
   {
     id: "local",
-    label: "Local (Cursor / Claude)",
+    label: "LOCAL",
     description:
       "Run the server locally over stdio. Easiest way to get started — just register and go.",
     code: `# Claude Code CLI
@@ -38,7 +39,7 @@ claude mcp add --transport stdio \\
   },
   {
     id: "remote",
-    label: "Remote (HTTPS)",
+    label: "REMOTE",
     description:
       "Host IsaacMCP near your GPU boxes and query it securely from anywhere. Supports OAuth bearer-token verification.",
     code: `ISAAC_MCP_TRANSPORT=streamable-http \\
@@ -50,7 +51,7 @@ ISAAC_MCP_AUTH_ENABLED=true \\
   },
   {
     id: "cloudflare",
-    label: "Cloudflare Tunnel",
+    label: "CF TUNNEL",
     description:
       "Zero-trust deployment via Cloudflare Tunnel. Keep the runtime close to Isaac services, expose only HTTPS.",
     code: `# 1. Create tunnel
@@ -74,42 +75,58 @@ export default function Deploy() {
   const mode = modes.find((m) => m.id === active)!;
 
   return (
-    <section id="deploy" className="relative py-28">
+    <section id="deploy" className="section-technical relative py-28">
+      <div className="divider-check mb-20" />
+
       <div className="mx-auto max-w-4xl px-6">
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 16 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true, amount: 0.3 }}
-          transition={{ duration: 0.6 }}
+          transition={{ duration: 0.5 }}
           className="text-center"
         >
-          <h2 className="text-4xl font-bold tracking-tight sm:text-5xl">
+          <span
+            style={{
+              fontFamily: "var(--font-jetbrains), monospace",
+              fontSize: "0.65rem",
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "var(--color-accent)",
+            }}
+          >
+            CHAPTER 08 — DEPLOYMENT
+          </span>
+          <h2 className="mt-3 font-display text-4xl tracking-tight sm:text-5xl">
             Deployment <span className="text-accent">Modes</span>
           </h2>
-          <p className="mx-auto mt-4 max-w-2xl text-lg text-muted">
-            Run locally for quick iteration or deploy remotely for enterprise
-            scale.
+          <p className="mx-auto mt-5 max-w-2xl text-lg text-muted">
+            Run locally for quick iteration or deploy remotely for enterprise scale.
           </p>
         </motion.div>
 
         <motion.div
-          initial={{ opacity: 0, y: 24 }}
+          initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          transition={{ duration: 0.5, delay: 0.15 }}
+          transition={{ duration: 0.45, delay: 0.1 }}
           className="mt-12"
         >
           {/* Tabs */}
-          <div className="flex gap-1 rounded-xl border border-border bg-surface p-1">
+          <div className="flex border border-border">
             {modes.map((m) => (
               <button
                 key={m.id}
                 onClick={() => setActive(m.id)}
-                className={`flex-1 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
-                  active === m.id
-                    ? "bg-accent/15 text-accent"
-                    : "text-muted hover:text-foreground"
-                }`}
+                className={`flex-1 px-3 py-3 transition-colors ${active === m.id
+                    ? "bg-cobalt-light text-accent border-b-2 border-accent"
+                    : "bg-surface text-muted hover:text-foreground"
+                  }`}
+                style={{
+                  fontFamily: "var(--font-jetbrains), monospace",
+                  fontSize: "0.65rem",
+                  letterSpacing: "0.1em",
+                }}
               >
                 {m.label}
               </button>
@@ -118,9 +135,9 @@ export default function Deploy() {
 
           <p className="mt-6 text-sm text-muted">{mode.description}</p>
 
-          <div className="relative mt-4 overflow-hidden rounded-xl border border-border bg-surface">
+          <div className="code-block relative mt-4 p-6">
             <CopyButton text={mode.code} />
-            <pre className="overflow-x-auto p-6 font-mono text-sm leading-relaxed text-muted">
+            <pre className="overflow-x-auto leading-relaxed">
               <code>{mode.code}</code>
             </pre>
           </div>
