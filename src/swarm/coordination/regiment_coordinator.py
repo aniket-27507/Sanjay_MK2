@@ -37,9 +37,10 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -198,7 +199,7 @@ class AlphaRegimentCoordinator:
         self._last_election_time: float = 0.0
 
         # ── Shared Obstacle Map (C-SLAM) ──
-        self._global_obstacle_map: List[Dict] = []
+        self._global_obstacle_map: Deque[Dict] = deque(maxlen=200)
         self._last_cslam_share: float = 0.0
 
         # ── FANET Threat Relay ──
@@ -208,6 +209,7 @@ class AlphaRegimentCoordinator:
         # ── State ──
         self._running = False
         self._initialized = False
+        self._shared_state_lock = asyncio.Lock()
 
         # ── Callbacks ──
         self._on_sector_assigned: Optional[Callable] = None
@@ -305,7 +307,8 @@ class AlphaRegimentCoordinator:
     async def _coordination_loop(self):
         """Main coordination tick at 2 Hz."""
         while self._running:
-            self.coordination_step()
+            async with self._shared_state_lock:
+                self.coordination_step()
             await asyncio.sleep(0.5)
 
     def coordination_step(self):
@@ -477,7 +480,8 @@ class AlphaRegimentCoordinator:
             try:
                 now = time.time()
                 if now - self._last_cslam_share >= self.config.cslam_share_interval:
-                    await self._share_local_map()
+                    async with self._shared_state_lock:
+                        await self._share_local_map()
                     self._last_cslam_share = now
             except Exception as e:
                 logger.error(f"C-SLAM error: {e}")
@@ -543,9 +547,7 @@ class AlphaRegimentCoordinator:
                 obs["sources"] = [remote_id]
                 self._global_obstacle_map.append(obs)
 
-        # Prune old entries (keep last 200)
-        if len(self._global_obstacle_map) > 200:
-            self._global_obstacle_map = self._global_obstacle_map[-200:]
+        # deque(maxlen=200) auto-prunes oldest entries
 
     # ── FANET Threat Relay ────────────────────────────────────────
 

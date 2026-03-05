@@ -49,6 +49,16 @@ except Exception as e:
     SensorFusionPipeline = None  # type: ignore[assignment]
     logger.warning("SensorFusionPipeline unavailable, using no-op fusion: %s", e)
 
+try:
+    from src.surveillance.change_detection import ChangeDetector
+except Exception:
+    ChangeDetector = None  # type: ignore[assignment,misc]
+
+try:
+    from src.surveillance.threat_manager import ThreatManager
+except Exception:
+    ThreatManager = None  # type: ignore[assignment,misc]
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  Configuration
@@ -365,6 +375,14 @@ if _ROS2_AVAILABLE:
             else:
                 self._fusion = None
 
+            # Downstream surveillance pipeline
+            self._change_detector = ChangeDetector() if ChangeDetector is not None else None
+            self._threat_manager = ThreatManager() if ThreatManager is not None else None
+
+            # Autonomy hooks (set via register_autonomy_hooks)
+            self._on_threat_callback: Optional[Callable] = None
+            self._on_lidar_callback: Optional[Callable] = None
+
             # Set up subscriptions for each drone
             for idx, drone_cfg in enumerate(config.drones):
                 name = drone_cfg.name
@@ -443,6 +461,23 @@ if _ROS2_AVAILABLE:
                 f"fusion at {config.tick_rate_hz} Hz"
             )
 
+        def register_autonomy_hooks(
+            self,
+            on_threat: Optional[Callable] = None,
+            on_lidar: Optional[Callable] = None,
+        ):
+            """
+            Register callbacks that connect bridge output to the autonomy loop.
+
+            Args:
+                on_threat: Called with (drone_name, threat) when a new threat
+                    is detected via the surveillance pipeline.
+                on_lidar: Called with (drone_name, points_nx3) when LiDAR data
+                    arrives, allowing the avoidance stack to consume it.
+            """
+            self._on_threat_callback = on_threat
+            self._on_lidar_callback = on_lidar
+
         # ── Sensor Callbacks ──────────────────────────────────────
 
         def _on_rgb(self, drone_name: str, msg: Image):
@@ -511,10 +546,12 @@ if _ROS2_AVAILABLE:
                 if n_points <= 0:
                     state["lidar_point_count"] = 0
                     return
-                # Parse XYZ32F from PointCloud2 payload (supports extra channels).
                 floats_per_point = max(3, int(msg.point_step) // 4)
                 points = np.frombuffer(msg.data, dtype=np.float32).reshape(n_points, floats_per_point)[:, :3]
                 state["lidar_point_count"] = int(points.shape[0])
+
+                if self._on_lidar_callback is not None:
+                    self._on_lidar_callback(drone_name, points)
             except Exception as e:
                 self.get_logger().warn(
                     f"LiDAR callback error for {drone_name}: {e}"
@@ -530,7 +567,6 @@ if _ROS2_AVAILABLE:
             if fused is None:
                 return
 
-            # Log fused result
             n_objects = len(fused.detected_objects)
             if n_objects > 0:
                 self.get_logger().info(
@@ -538,9 +574,21 @@ if _ROS2_AVAILABLE:
                     f"sensors={fused.sensor_count}"
                 )
 
-            # Downstream processing (change detection, threat management)
-            # would be called here in a full deployment.
-            # For now we emit the fused observation for other nodes to use.
+            if self._change_detector is not None and n_objects > 0:
+                changes = self._change_detector.detect(fused)
+                for change in changes:
+                    if self._threat_manager is not None:
+                        threat = self._threat_manager.report_change(change)
+                        if threat is not None and self._on_threat_callback is not None:
+                            drone_name = self._drone_name_for_id(change.detected_by)
+                            self._on_threat_callback(drone_name, threat)
+
+        def _drone_name_for_id(self, drone_id: int) -> str:
+            """Map a numeric drone_id back to the configured drone name."""
+            for name, state in self._drone_state.items():
+                if state["drone_id"] == drone_id:
+                    return name
+            return f"drone_{drone_id}"
 
         # ── Command Publishing ────────────────────────────────────
 

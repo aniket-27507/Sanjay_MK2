@@ -24,7 +24,7 @@ import time
 from typing import Optional, List, Callable, Awaitable
 from dataclasses import dataclass
 
-from src.single_drone.flight_control.mavsdk_interface import MAVSDKInterface
+from src.single_drone.flight_control.mavsdk_interface import MAVSDKInterface, MAVSDK_AVAILABLE
 from src.single_drone.flight_control.isaac_sim_interface import IsaacSimInterface, IsaacInterfaceConfig
 from src.core.types.drone_types import (
     Vector3,
@@ -111,6 +111,11 @@ class FlightController:
         if self._backend == "isaac_sim":
             self._interface = IsaacSimInterface(drone_id=drone_id, config=isaac_config)
         else:
+            if not MAVSDK_AVAILABLE:
+                raise ImportError(
+                    "mavsdk is not installed. Use backend='isaac_sim' for Isaac Sim simulation. "
+                    "For PX4/real hardware: pip install mavsdk"
+                )
             self._interface = MAVSDKInterface()
         
         # State

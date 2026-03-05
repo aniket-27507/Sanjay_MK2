@@ -18,9 +18,10 @@ testing loops within `ScenarioRunner`.
 
 import time
 import random
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Dict, List, Optional, Callable, Any, Set
+from typing import Dict, Deque, List, Optional, Callable, Any, Set
 import logging
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ class FaultInjector:
         self._faults: Dict[str, ActiveFault] = {}
         self._fault_counter = 0
         self._callbacks: Dict[FaultType, List[Callable]] = {}
-        self._cleared_faults: List[ActiveFault] = []
+        self._cleared_faults: Deque[ActiveFault] = deque(maxlen=500)
     
     def inject_fault(
         self,

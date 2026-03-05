@@ -29,7 +29,8 @@ def _try_import_isaac_direct():
         import omni.usd  # type: ignore
         from pxr import Gf, UsdGeom  # type: ignore
         return omni, Gf, UsdGeom
-    except Exception:
+    except Exception as e:
+        logger.debug("Isaac Sim direct imports unavailable: %s", e)
         return None, None, None
 
 
@@ -41,7 +42,8 @@ def _try_import_ros2():
         from rclpy.node import Node  # type: ignore
 
         return rclpy, Node, Twist, Odometry
-    except Exception:
+    except Exception as e:
+        logger.debug("ROS 2 imports unavailable: %s", e)
         return None, None, None, None
 
 
@@ -143,8 +145,8 @@ class IsaacSimInterface:
         if self._mode == "ros2" and self._rclpy is not None and self._ros_node is not None:
             try:
                 self._ros_node.destroy_node()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("ROS 2 node cleanup error: %s", e)
 
         self._connected = False
 
@@ -255,8 +257,8 @@ class IsaacSimInterface:
         while self._running and self._rclpy is not None and self._ros_node is not None:
             try:
                 self._rclpy.spin_once(self._ros_node, timeout_sec=0.01)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("ROS 2 spin error: %s", e)
             await asyncio.sleep(0.01)
 
     async def _direct_sync_loop(self):
@@ -303,8 +305,8 @@ class IsaacSimInterface:
             msg.linear.y = float(ned.x)
             msg.linear.z = float(-ned.z)
             self._cmd_pub.publish(msg)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("ROS 2 velocity publish failed: %s", e)
 
     def _on_odom(self, msg):
         # ENU -> NED
@@ -328,7 +330,8 @@ class IsaacSimInterface:
             mat = xform.GetLocalTransformation()
             t = mat.ExtractTranslation()
             return Vector3(float(t[0]), float(t[1]), -float(t[2]))
-        except Exception:
+        except Exception as e:
+            logger.debug("Stage position read failed: %s", e)
             return None
 
     def _write_stage_position(self, ned_pos: Vector3):
@@ -348,8 +351,8 @@ class IsaacSimInterface:
             if translate is None:
                 translate = xform.AddTranslateOp(self._UsdGeom.XformOp.PrecisionDouble)
             translate.Set(self._Gf.Vec3d(float(ned_pos.x), float(ned_pos.y), float(-ned_pos.z)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Stage position write failed: %s", e)
 
     def _drone_prim_path(self) -> str:
         parts = self._drone_name.split("_")
@@ -365,6 +368,6 @@ class IsaacSimInterface:
             drones = raw.get("drones", {})
             cfg = drones.get(drone_name, {})
             out = cfg.get("topics", {}) or {}
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to load topics for %s: %s", drone_name, e)
         return out

@@ -13,7 +13,8 @@ PyYAML
 matplotlib
 transforms3d
 
-# Flight control and MAVLink
+# Flight control and MAVLink (optional for Isaac Sim)
+# Install only when using PX4 SITL or real hardware; use backend="isaac_sim" without these
 mavsdk
 pymavlink
 grpcio

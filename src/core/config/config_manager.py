@@ -44,8 +44,8 @@ class SwarmConfig:
     # Communication
     mesh_port_base: int = 14550
     broadcast_port: int = 14551
-    gossip_interval: float = 0.1  # 10Hz
-    heartbeat_interval: float = 0.1
+    gossip_interval: float = 0.2  # 5Hz (adaptive: increase to 0.1 during task changes)
+    heartbeat_interval: float = 0.2
     peer_timeout: float = 3.0
     
     # Formation
@@ -54,8 +54,6 @@ class SwarmConfig:
     
     # Coordination
     cbba_max_bundle_size: int = 3
-    boids_separation_radius: float = 10.0
-    boids_perception_radius: float = 50.0
 
 
 @dataclass

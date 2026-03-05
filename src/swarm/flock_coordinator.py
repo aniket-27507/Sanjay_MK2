@@ -140,7 +140,10 @@ class FlockCoordinator:
     ) -> Vector3:
         """Run one decentralized coordination tick and return desired velocity."""
         sectors = sector_assignments or []
-        self.upsert_tasks(self.task_gen.generate_startup_tasks(sectors))
+        if not self.task_gen._startup_generated and sectors:
+            startup = self.task_gen.generate_startup_tasks(sectors)
+            if startup:
+                self.upsert_tasks(startup)
 
         if my_state.battery <= self.task_gen.config.battery_low_threshold:
             self.upsert_tasks([

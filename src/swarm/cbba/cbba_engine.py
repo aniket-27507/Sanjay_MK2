@@ -51,12 +51,18 @@ class CBBAEngine:
         self.winning_agents: Dict[str, int] = {}
         self.bid_timestamps: Dict[str, float] = {}
 
+        self._tasks_dirty = True
+        self._cached_tasks_payload: Optional[List[Dict]] = None
+
     def upsert_tasks(self, tasks: List[SwarmTask]):
         for task in tasks:
             self._known_tasks[task.task_id] = task
+        if tasks:
+            self._tasks_dirty = True
 
     def upsert_task(self, task: SwarmTask):
         self._known_tasks[task.task_id] = task
+        self._tasks_dirty = True
 
     def remove_task(self, task_id: str):
         self._known_tasks.pop(task_id, None)
@@ -65,6 +71,7 @@ class CBBAEngine:
         self.bid_timestamps.pop(task_id, None)
         if task_id in self._bundle:
             self._remove_from_bundle(task_id)
+        self._tasks_dirty = True
 
     def get_bundle_ids(self) -> List[str]:
         return list(self._bundle)
@@ -218,7 +225,10 @@ class CBBAEngine:
         return payload
 
     def get_known_tasks_payload(self) -> List[Dict]:
-        return [task.to_dict() for task in self._known_tasks.values()]
+        if self._tasks_dirty or self._cached_tasks_payload is None:
+            self._cached_tasks_payload = [task.to_dict() for task in self._known_tasks.values()]
+            self._tasks_dirty = False
+        return self._cached_tasks_payload
 
     def _remove_from_bundle(self, task_id: str):
         if task_id not in self._bundle:
@@ -235,8 +245,14 @@ class CBBAEngine:
                 self.bid_timestamps.pop(removed, None)
 
     def _sync_assignments(self):
+        changed = False
         for task in self._known_tasks.values():
-            task.assigned_to = self.winning_agents.get(task.task_id, task.assigned_to)
+            new_owner = self.winning_agents.get(task.task_id, task.assigned_to)
+            if task.assigned_to != new_owner:
+                task.assigned_to = new_owner
+                changed = True
+        if changed:
+            self._tasks_dirty = True
 
     def _estimate_energy(self, distance: float) -> float:
         # Coarse linear model tuned for bundle feasibility pruning.

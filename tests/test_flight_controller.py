@@ -1,6 +1,10 @@
 """
 Tests for flight controller.
 
+Uses backend="isaac_sim" so tests run without MAVSDK (e.g. on Mac or
+Windows when only using Isaac Sim). For MAVSDK-specific tests, install
+mavsdk and use backend="mavsdk".
+
 Note: These tests use mocking since they don't connect to real PX4.
 For integration tests with simulation, see tests/integration/
 """
@@ -29,7 +33,7 @@ class TestFlightControllerStateMachine:
     
     def test_initial_state(self):
         """Test initial state is IDLE."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         assert controller.mode == FlightMode.IDLE
     
     def test_valid_transitions(self):
@@ -50,7 +54,7 @@ class TestFlightControllerStateMachine:
     
     def test_can_transition(self):
         """Test _can_transition method."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         
         # From IDLE, can transition to ARMING
         assert controller._can_transition(FlightMode.ARMING) == True
@@ -64,7 +68,7 @@ class TestFlightControllerConfig:
     
     def test_default_config(self):
         """Test default configuration is applied."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         assert controller.config is not None
         assert controller.config.drone_id == 0
     
@@ -75,7 +79,7 @@ class TestFlightControllerConfig:
             max_horizontal_speed=15.0,
             battery_critical=20.0
         )
-        controller = FlightController(drone_id=5, config=custom_config)
+        controller = FlightController(drone_id=5, config=custom_config, backend="isaac_sim")
         
         assert controller.config.max_horizontal_speed == 15.0
         assert controller.config.battery_critical == 20.0
@@ -99,7 +103,7 @@ class TestFlightControllerAsync:
     
     async def test_transition_to(self):
         """Test async state transition."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         
         # Valid transition
         result = await controller._transition_to(FlightMode.ARMING)
@@ -108,7 +112,7 @@ class TestFlightControllerAsync:
     
     async def test_invalid_transition_rejected(self):
         """Test invalid transition is rejected."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         
         # Invalid transition (IDLE -> HOVERING)
         result = await controller._transition_to(FlightMode.HOVERING)
@@ -117,7 +121,7 @@ class TestFlightControllerAsync:
     
     async def test_mode_change_callback(self):
         """Test mode change callback is called."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         
         callback_called = False
         old_mode_received = None
@@ -144,7 +148,7 @@ class TestFlightControllerWithMockedInterface:
     
     async def test_arm_success(self):
         """Test successful arming."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         
         # Mock the interface
         controller._interface = MagicMock()
@@ -158,7 +162,7 @@ class TestFlightControllerWithMockedInterface:
     
     async def test_arm_failure(self):
         """Test arm failure handling."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         
         # Mock the interface to fail
         controller._interface = MagicMock()
@@ -171,7 +175,7 @@ class TestFlightControllerWithMockedInterface:
     
     async def test_arm_wrong_state(self):
         """Test arm from wrong state."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         controller._mode = FlightMode.HOVERING  # Wrong state
         
         result = await controller.arm()
@@ -180,7 +184,7 @@ class TestFlightControllerWithMockedInterface:
     
     async def test_takeoff_includes_arm(self):
         """Test takeoff automatically arms if needed."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         
         # Mock the interface
         controller._interface = MagicMock()
@@ -198,7 +202,7 @@ class TestFlightControllerWithMockedInterface:
     
     async def test_land(self):
         """Test landing."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         controller._mode = FlightMode.HOVERING
         
         # Mock the interface
@@ -215,7 +219,7 @@ class TestFlightControllerWithMockedInterface:
     
     async def test_get_state(self):
         """Test getting drone state."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         controller._mode = FlightMode.HOVERING
         controller._target_position = Vector3(x=10, y=20, z=-30)
         
@@ -239,17 +243,17 @@ class TestFlightControllerProperties:
     
     def test_drone_id(self):
         """Test drone_id property."""
-        controller = FlightController(drone_id=5)
+        controller = FlightController(drone_id=5, backend="isaac_sim")
         assert controller.drone_id == 5
     
     def test_mode_property(self):
         """Test mode property."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         assert controller.mode == FlightMode.IDLE
     
     def test_is_healthy_property(self):
         """Test is_healthy property."""
-        controller = FlightController(drone_id=0)
+        controller = FlightController(drone_id=0, backend="isaac_sim")
         assert controller.is_healthy == True
         
         controller._status.is_healthy = False

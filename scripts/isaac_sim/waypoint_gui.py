@@ -200,10 +200,18 @@ class WaypointGuiPanel:
         self._set_status(f"Formation set to {self._formation_model.as_bool}")
 
     def _manual_on(self):
-        asyncio.create_task(self._manual_on_async())
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._manual_on_async())
+        except RuntimeError:
+            pass
 
     def _manual_off(self):
-        asyncio.create_task(self._manual_off_async())
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._manual_off_async())
+        except RuntimeError:
+            pass
 
     async def _manual_on_async(self):
         ok = await self.waypoint_controller.enable_manual_overtake()
@@ -211,8 +219,9 @@ class WaypointGuiPanel:
         try:
             from scripts.isaac_sim.create_surveillance_scene import get_mission_overlay
             get_mission_overlay().set_manual_override(ok)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug("Overlay update skipped: %s", e)
         self._set_status("Manual overtake enabled" if ok else "Manual overtake failed")
 
     async def _manual_off_async(self):
@@ -221,8 +230,9 @@ class WaypointGuiPanel:
         try:
             from scripts.isaac_sim.create_surveillance_scene import get_mission_overlay
             get_mission_overlay().set_manual_override(not ok)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug("Overlay update skipped: %s", e)
         self._set_status("Manual overtake disabled" if ok else "Manual overtake disable failed")
 
     def _register_keyboard_handlers(self):
@@ -242,8 +252,9 @@ class WaypointGuiPanel:
                 keyboard,
                 self._on_keyboard_event,
             )
-        except Exception:
-            # Keyboard binding is optional; UI buttons still work.
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug("Keyboard binding unavailable: %s", e)
             self._key_sub = None
 
     def _on_keyboard_event(self, event, *_args):
@@ -273,7 +284,9 @@ class WaypointGuiPanel:
             if key in mapping:
                 self.manual_controller.set_input_state(**{mapping[key]: state})
             return True
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug("Keyboard event error: %s", e)
             return True
 
 

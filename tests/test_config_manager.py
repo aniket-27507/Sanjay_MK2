@@ -32,7 +32,7 @@ class TestSwarmConfig:
         assert config.num_alpha_drones == 3
         assert config.num_beta_drones == 7
         assert config.total_drones == 10
-        assert config.gossip_interval == 0.1
+        assert config.gossip_interval == 0.2
 
 
 class TestSimulationConfig:

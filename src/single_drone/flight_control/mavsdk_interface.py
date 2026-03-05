@@ -12,6 +12,10 @@ This module provides:
 - High frequency asynchronous telemetry subscription routines
 - Intelligent caching model for thread safe telemetry sharing
 
+MAVSDK is optional: when not installed, this module still loads but
+MAVSDKInterface will raise on construction. Use FlightController(backend="isaac_sim")
+for Isaac Sim simulation without MAVSDK.
+
 @author: Archishman Paul
 """
 
@@ -21,24 +25,35 @@ import asyncio
 import logging
 import time
 import math
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, List
 from dataclasses import dataclass
 
-from builtins import int, float, bool, str
+MAVSDK_AVAILABLE = False
+System = None
+OffboardError = None
+VelocityNedYaw = None
+PositionNedYaw = None
+VelocityBodyYawspeed = None
+Attitude = None
+ActionError = None
 
-from mavsdk import System
-from mavsdk.offboard import (
-    OffboardError, 
-    VelocityNedYaw, 
-    PositionNedYaw,
-    VelocityBodyYawspeed,
-    Attitude
-)
-from mavsdk.action import ActionError
+try:
+    from mavsdk import System
+    from mavsdk.offboard import (
+        OffboardError,
+        VelocityNedYaw,
+        PositionNedYaw,
+        VelocityBodyYawspeed,
+        Attitude,
+    )
+    from mavsdk.action import ActionError
+    MAVSDK_AVAILABLE = True
+except ImportError:
+    pass
 
 from src.core.types.drone_types import (
-    Vector3, 
-    Quaternion, 
+    Vector3,
+    Quaternion,
     TelemetryData,
     FlightMode
 )
@@ -70,6 +85,12 @@ class MAVSDKInterface:
     
     def __init__(self):
         """Initialize the MAVSDK interface."""
+        if not MAVSDK_AVAILABLE:
+            raise ImportError(
+                "mavsdk is not installed. For Isaac Sim simulation use "
+                "FlightController(backend='isaac_sim'). "
+                "For PX4/real hardware install: pip install mavsdk"
+            )
         self._drone: Optional[System] = None
         self._connected = False
         self._running = False

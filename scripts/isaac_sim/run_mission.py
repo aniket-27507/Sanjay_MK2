@@ -40,6 +40,7 @@ import math
 import os
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -160,99 +161,94 @@ class SyntheticLidar:
     """
     Generates synthetic 3D LiDAR returns from the obstacle database.
 
-    Casts rays in a 360° × 30° pattern and checks intersection with
-    axis-aligned bounding boxes.  This lets us test the avoidance
-    stack without Isaac Sim's physics engine.
+    Casts rays in a 360 x 30 deg pattern and checks intersection with
+    axis-aligned bounding boxes.  Uses fully vectorized numpy operations
+    for the slab-method ray-AABB test across all rays and obstacles
+    simultaneously.
     """
 
     def __init__(
         self,
         obstacles: List[Dict],
-        h_rays: int = 180,   # horizontal rays
-        v_rays: int = 8,     # vertical channels
+        h_rays: int = 180,
+        v_rays: int = 8,
         max_range: float = 30.0,
+        cull_range: float = 60.0,
     ):
-        self._obstacles = obstacles
-        self._h_rays = h_rays
-        self._v_rays = v_rays
         self._max_range = max_range
+        self._cull_range = cull_range
 
-        # Pre-compute ray directions
         h_angles = np.linspace(0, 2 * math.pi, h_rays, endpoint=False)
         v_angles = np.linspace(-15, 15, v_rays) * math.pi / 180
+        va_grid, ha_grid = np.meshgrid(v_angles, h_angles, indexing="ij")
+        cos_va = np.cos(va_grid.ravel())
+        self._directions = np.column_stack([
+            cos_va * np.cos(ha_grid.ravel()),
+            cos_va * np.sin(ha_grid.ravel()),
+            np.sin(va_grid.ravel()),
+        ]).astype(np.float64)
 
-        self._directions = []
-        for va in v_angles:
-            for ha in h_angles:
-                dx = math.cos(va) * math.cos(ha)
-                dy = math.cos(va) * math.sin(ha)
-                dz = math.sin(va)
-                self._directions.append(np.array([dx, dy, dz]))
-
-        self._directions = np.array(self._directions)
+        self._obs_centers = np.array(
+            [[o["x"], o["y"], o["z"]] for o in obstacles], dtype=np.float64,
+        )
+        half_extents = np.array(
+            [[o["w"] / 2, o["d"] / 2, o["h"] / 2] for o in obstacles], dtype=np.float64,
+        )
+        self._aabb_min = self._obs_centers - half_extents
+        self._aabb_max = self._obs_centers + half_extents
 
     def scan(self, position: Vector3) -> np.ndarray:
         """
         Generate a synthetic point cloud from the given drone position.
 
-        Args:
-            position: Drone position in world frame (NED).
-
         Returns:
             Nx3 array of hit points in body frame.
         """
-        pos = np.array([position.x, position.y, position.z])
-        hits = []
+        pos = np.array([position.x, position.y, position.z], dtype=np.float64)
 
-        for direction in self._directions:
-            hit = self._cast_ray(pos, direction)
-            if hit is not None:
-                hits.append(hit - pos)  # Convert to body frame
+        dists = np.linalg.norm(self._obs_centers - pos, axis=1)
+        mask = dists < self._cull_range
+        if not np.any(mask):
+            return np.empty((0, 3), dtype=np.float32)
+        aabb_min = self._aabb_min[mask]
+        aabb_max = self._aabb_max[mask]
 
-        if hits:
-            return np.array(hits, dtype=np.float32)
-        return np.empty((0, 3), dtype=np.float32)
+        dirs = self._directions
+        n_rays = dirs.shape[0]
+        n_obs = aabb_min.shape[0]
 
-    def _cast_ray(self, origin: np.ndarray, direction: np.ndarray) -> Optional[np.ndarray]:
-        """Cast a single ray and return the closest hit point."""
-        closest_t = self._max_range
-        closest_point = None
-
-        for obs in self._obstacles:
-            t = self._ray_aabb(
-                origin, direction,
-                obs["x"] - obs["w"] / 2, obs["y"] - obs["d"] / 2, obs["z"] - obs["h"] / 2,
-                obs["x"] + obs["w"] / 2, obs["y"] + obs["d"] / 2, obs["z"] + obs["h"] / 2,
-            )
-            if t is not None and 0.3 < t < closest_t:
-                closest_t = t
-                closest_point = origin + direction * t
-
-        return closest_point
-
-    @staticmethod
-    def _ray_aabb(
-        origin: np.ndarray, direction: np.ndarray,
-        x_min: float, y_min: float, z_min: float,
-        x_max: float, y_max: float, z_max: float,
-    ) -> Optional[float]:
-        """Ray–AABB intersection test (slab method)."""
         eps = 1e-10
-        inv_dir = np.divide(1.0, direction, out=np.full_like(direction, 1e10), where=np.abs(direction) > eps)
+        safe = np.where(np.abs(dirs) > eps, dirs, eps)
+        inv_dir = 1.0 / safe
 
-        t1 = (x_min - origin[0]) * inv_dir[0]
-        t2 = (x_max - origin[0]) * inv_dir[0]
-        t3 = (y_min - origin[1]) * inv_dir[1]
-        t4 = (y_max - origin[1]) * inv_dir[1]
-        t5 = (z_min - origin[2]) * inv_dir[2]
-        t6 = (z_max - origin[2]) * inv_dir[2]
+        origin_expanded = pos[np.newaxis, np.newaxis, :]
+        inv_expanded = inv_dir[:, np.newaxis, :]
 
-        t_min = max(min(t1, t2), min(t3, t4), min(t5, t6))
-        t_max = min(max(t1, t2), max(t3, t4), max(t5, t6))
+        t_lo = (aabb_min[np.newaxis, :, :] - origin_expanded) * inv_expanded
+        t_hi = (aabb_max[np.newaxis, :, :] - origin_expanded) * inv_expanded
 
-        if t_max < 0 or t_min > t_max:
-            return None
-        return t_min if t_min > 0 else t_max
+        t_enter = np.minimum(t_lo, t_hi)
+        t_exit = np.maximum(t_lo, t_hi)
+
+        t_min = np.max(t_enter, axis=2)
+        t_max = np.min(t_exit, axis=2)
+
+        t_hit = np.where(t_min > 0, t_min, t_max)
+        valid = (t_max >= t_min) & (t_hit > 0.3) & (t_hit < self._max_range)
+
+        t_hit = np.where(valid, t_hit, self._max_range + 1.0)
+        best_idx = np.argmin(t_hit, axis=1)
+        best_t = t_hit[np.arange(n_rays), best_idx]
+
+        hit_mask = best_t <= self._max_range
+        if not np.any(hit_mask):
+            return np.empty((0, 3), dtype=np.float32)
+
+        hit_dirs = dirs[hit_mask]
+        hit_t = best_t[hit_mask, np.newaxis]
+        points = hit_dirs * hit_t
+
+        return points.astype(np.float32)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -371,8 +367,8 @@ class MissionRunner:
         self._start_time = 0.0
         self._max_mission_time = 600.0  # 10 minutes
 
-        # Telemetry log
-        self._event_log: List[Dict] = []
+        # Telemetry log (bounded to prevent memory growth in long missions)
+        self._event_log: deque = deque(maxlen=10000)
         self._collision_count = 0
         self._hpl_override_count = 0
         self._min_inter_drone_distance = float("inf")
@@ -381,6 +377,8 @@ class MissionRunner:
         self._overlay = None
         # Stage sync subscription (Isaac Sim mode) - runs on main Kit thread
         self._sync_sub = None
+        # Bridge reference for publishing velocity commands (Isaac Sim mode)
+        self._bridge = None
 
         # Optional controller-backed execution path.
         self._flight_controller: Optional[FlightController] = None
@@ -404,10 +402,11 @@ class MissionRunner:
         self._init_avoidance()
         await self._init_coordinators()
 
-        # Connect to Isaac Sim overlay and stage sync if available
+        # Connect to Isaac Sim overlay, stage sync, and bridge if available
         if not self._headless:
             self._init_overlay()
             self._register_stage_sync()
+            self._init_bridge()
 
         self._start_time = time.time()
         self._log_event("SYSTEM", "Mission started")
@@ -479,6 +478,7 @@ class MissionRunner:
                         velocity = desired_velocity
 
                     drone.step(velocity, self._dt)
+                    self._publish_velocity(drone_id, velocity)
 
                 for drone_id, drone in self._drones.items():
                     if not drone.is_active:
@@ -630,6 +630,51 @@ class MissionRunner:
             self._overlay = get_mission_overlay()
         except Exception:
             self._overlay = None
+
+    def _init_bridge(self):
+        """Connect to the Isaac Sim ROS 2 bridge for velocity publishing."""
+        try:
+            from src.integration.isaac_sim_bridge import IsaacSimBridgeNode, BridgeConfig, is_ros2_available
+
+            if not is_ros2_available():
+                logger.info("ROS 2 unavailable — bridge velocity publishing disabled")
+                return
+
+            config = BridgeConfig.from_yaml(
+                os.path.join(PROJECT_ROOT, "config", "isaac_sim.yaml")
+            )
+            import rclpy
+            if not rclpy.ok():
+                rclpy.init()
+            self._bridge = IsaacSimBridgeNode(config)
+
+            def _lidar_hook(drone_name: str, points: np.ndarray):
+                drone_id = int(drone_name.split("_")[-1]) if "_" in drone_name else 0
+                mgr = self._avoidance_managers.get(drone_id)
+                drone = self._drones.get(drone_id)
+                if mgr is not None and drone is not None:
+                    mgr.feed_lidar_points(points, drone_position=drone.position)
+
+            def _threat_hook(drone_name: str, threat):
+                logger.info(f"Bridge threat from {drone_name}: {threat}")
+
+            self._bridge.register_autonomy_hooks(
+                on_threat=_threat_hook,
+                on_lidar=_lidar_hook,
+            )
+            logger.info("Isaac Sim bridge connected for velocity publishing")
+        except Exception as e:
+            logger.debug(f"Bridge init skipped: {e}")
+            self._bridge = None
+
+    def _publish_velocity(self, drone_id: int, velocity: Vector3):
+        """Publish velocity command to Isaac Sim via ROS 2 bridge."""
+        if self._bridge is None:
+            return
+        drone_name = f"alpha_{drone_id}"
+        self._bridge.send_velocity(
+            drone_name, vx=velocity.x, vy=velocity.y, vz=velocity.z
+        )
 
     def _register_stage_sync(self):
         """Register per-frame stage sync on main Kit thread so drones move visibly."""
@@ -786,7 +831,7 @@ class MissionRunner:
                 }
                 for did, d in self._drones.items()
             },
-            "events": self._event_log,
+            "events": list(self._event_log),
         }
 
         try:
