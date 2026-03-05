@@ -165,7 +165,19 @@ class FlockCoordinator:
             current_task = self.cbba.get_current_task()
 
         slot = self.formation.get_slot_for_drone(my_state.drone_id) if self._formation_enabled else None
-        goal = current_task.position if current_task else slot
+
+        if current_task:
+            task_dist = (current_task.position - self.formation._center).magnitude()
+            if slot and task_dist < self.formation.config.spacing * 2:
+                # Task is near formation — let formation bias handle positioning
+                goal = slot
+            else:
+                # Task is far — suppress formation to avoid conflicting pulls
+                goal = current_task.position
+                slot = None
+        else:
+            goal = slot if slot else my_state.position
+
         if goal is None:
             goal = my_state.position
         self._current_goal = goal

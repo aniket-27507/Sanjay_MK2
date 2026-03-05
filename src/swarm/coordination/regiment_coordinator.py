@@ -421,7 +421,7 @@ class AlphaRegimentCoordinator:
 
         if n > 1:
             for i in range(min(n - 1, 6)):
-                angle = i * (2 * np.pi / 6)
+                angle = (np.pi / 2) + i * (2 * np.pi / 6)
                 x = center + spacing * np.cos(angle)
                 y = center + spacing * np.sin(angle)
                 positions.append((x, y))

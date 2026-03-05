@@ -57,11 +57,12 @@ class FormationConfig:
     formation_type: FormationType = FormationType.HEXAGONAL
     spacing: float = 80.0                # Inter-drone spacing (m)
     altitude: float = 65.0               # Formation altitude (m)
-    convergence_gain: float = 0.3        # P-gain for position correction
-    max_correction_speed: float = 3.0    # Max formation correction speed (m/s)
+    convergence_gain: float = 0.7        # P-gain for position correction
+    max_correction_speed: float = 4.0    # Max formation correction speed (m/s)
     deceleration_radius: float = 10.0    # Start slowing within this radius (m)
     min_separation: float = 50.0         # Anti-collision minimum distance (m)
     separation_gain: float = 2.0         # Repulsive gain for anti-collision
+    center_altitude_offset: float = 0.0  # Z-offset for center slot (e.g., Beta at different alt)
 
 
 class FormationController:
@@ -214,8 +215,8 @@ class FormationController:
             ))
 
     def _hex_offsets(self, n: int, spacing: float) -> List[Vector3]:
-        offsets: List[Vector3] = []
-        for i in range(min(n, 6)):
+        offsets: List[Vector3] = [Vector3(0, 0, self.config.center_altitude_offset)]  # Center drone (Beta)
+        for i in range(min(n - 1, 6)):
             # Start at top vertex (90 deg) to align with Alpha_0 slot.
             angle = (math.pi / 2) + i * (2 * math.pi / 6)
             offsets.append(Vector3(
@@ -223,7 +224,7 @@ class FormationController:
                 y=spacing * math.sin(angle),
                 z=0,
             ))
-        return offsets
+        return offsets[:n]
 
     def _linear_offsets(self, n: int, spacing: float) -> List[Vector3]:
         total = (n - 1) * spacing

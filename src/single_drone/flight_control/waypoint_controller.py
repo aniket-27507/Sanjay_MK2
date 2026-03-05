@@ -129,6 +129,26 @@ class WaypointController:
             self._status.error = "Mission already running"
             return False
 
+        # Validate waypoints against geofence
+        config = self._flight_controller.config
+        for idx, wp in enumerate(self._waypoints):
+            wp_altitude = -wp.position.z
+            wp_horizontal = (wp.position.x**2 + wp.position.y**2)**0.5
+            if wp_altitude > config.geofence_altitude:
+                self._status.state = WaypointExecutionState.FAILED
+                self._status.error = (
+                    f"Waypoint {idx} altitude {wp_altitude:.1f}m exceeds "
+                    f"geofence {config.geofence_altitude:.1f}m"
+                )
+                return False
+            if wp_horizontal > config.geofence_radius:
+                self._status.state = WaypointExecutionState.FAILED
+                self._status.error = (
+                    f"Waypoint {idx} distance {wp_horizontal:.1f}m exceeds "
+                    f"geofence radius {config.geofence_radius:.1f}m"
+                )
+                return False
+
         self._stop_requested = False
         self._pause_event.set()
         self._status = WaypointControllerStatus(
@@ -169,9 +189,18 @@ class WaypointController:
                 tolerance=wp.acceptance_radius,
             )
             if not ok:
-                self._status.state = WaypointExecutionState.FAILED
-                self._status.error = f"Failed at waypoint index {i}"
-                return False
+                # If paused (e.g. manual overtake), wait for resume then retry
+                if self._status.state == WaypointExecutionState.PAUSED:
+                    await self._pause_event.wait()
+                    ok = await self._flight_controller.goto_position(
+                        wp.position,
+                        speed=wp.speed,
+                        tolerance=wp.acceptance_radius,
+                    )
+                if not ok and self._status.state != WaypointExecutionState.PAUSED:
+                    self._status.state = WaypointExecutionState.FAILED
+                    self._status.error = f"Failed at waypoint index {i}"
+                    return False
 
             if self._on_waypoint_reached:
                 try:

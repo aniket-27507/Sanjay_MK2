@@ -75,7 +75,7 @@ def generate_hexagon_vertices(center_x: float, center_y: float, radius: float) -
     """Generate hexagon vertices."""
     vertices = []
     for i in range(6):
-        angle = (math.pi / 3) * i - math.pi / 2  # Start from top
+        angle = (math.pi / 2) + i * (2 * math.pi / 6)  # Start from top vertex
         vertices.append(Vector3(
             x=center_x + radius * math.cos(angle),
             y=center_y + radius * math.sin(angle),

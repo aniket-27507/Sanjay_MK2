@@ -23,11 +23,11 @@ class BoidsConfig:
     w_cohesion: float = 0.3
     w_goal_seeking: float = 1.5
     w_obstacle_avoidance: float = 3.0
-    w_formation_bias: float = 2.0
+    w_formation_bias: float = 4.0
     w_energy_saving: float = 0.4
 
     # Velocity limits
-    max_speed: float = 8.0
+    max_speed: float = 10.0  # Soft limit; FlightController enforces hardware cap
     cruise_speed: float = 5.0
     max_vertical_speed: float = 3.0
 

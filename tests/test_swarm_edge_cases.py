@@ -103,13 +103,26 @@ class TestScenarioDefinitions:
         assert scenario.timeout > 0
 
 
+_FAULT_SCENARIOS = [s for s in EDGE_TEST_SCENARIOS if s.faults]
+_FAULT_IDS = [s.id for s in _FAULT_SCENARIOS]
+_NO_FAULT_SCENARIOS = [s for s in EDGE_TEST_SCENARIOS if not s.faults]
+_NO_FAULT_IDS = [s.id for s in _NO_FAULT_SCENARIOS]
+
+
+class TestNoFaultScenarios:
+    """Verify scenarios that exercise non-fault behaviors."""
+
+    @pytest.mark.parametrize("scenario", _NO_FAULT_SCENARIOS, ids=_NO_FAULT_IDS)
+    def test_scenario_is_valid_non_fault(self, scenario: TestScenario):
+        assert len(scenario.faults) == 0
+        assert len(scenario.success_criteria) >= 1
+
+
 class TestFaultInjectionScenarios:
     """Inject faults per scenario and verify the injector state machine."""
 
-    @pytest.mark.parametrize("scenario", EDGE_TEST_SCENARIOS, ids=_scenario_ids())
+    @pytest.mark.parametrize("scenario", _FAULT_SCENARIOS, ids=_FAULT_IDS)
     def test_faults_inject_and_clear(self, scenario: TestScenario):
-        if not scenario.faults:
-            pytest.skip("No faults defined for this scenario")
 
         injector = FaultInjector()
         now = time.time()

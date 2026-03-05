@@ -560,6 +560,25 @@ class FlightController:
         """Send operator-commanded velocity while in manual mode."""
         if self._mode != FlightMode.MANUAL:
             return False
+
+        pos = self.position
+        horizontal_dist = (pos.x**2 + pos.y**2)**0.5
+        altitude = -pos.z  # NED to positive altitude
+
+        # Clip outward velocity near radius boundary
+        margin = 20.0
+        if horizontal_dist > (self.config.geofence_radius - margin) and horizontal_dist > 0.1:
+            outward_x = pos.x / horizontal_dist
+            outward_y = pos.y / horizontal_dist
+            outward_speed = vx * outward_x + vy * outward_y
+            if outward_speed > 0:
+                vx -= outward_speed * outward_x
+                vy -= outward_speed * outward_y
+
+        # Clip upward velocity near altitude ceiling (NED: negative z = up)
+        if altitude > (self.config.geofence_altitude - margin):
+            vz = max(vz, 0)  # Prevent climbing higher
+
         await self._interface.set_velocity_ned(vx, vy, vz, yaw_rate)
         return True
     
@@ -736,18 +755,23 @@ class FlightController:
     async def _check_geofence(self):
         """Check geofence boundaries."""
         position = self.position
-        
+
         # Check altitude
         altitude = -position.z  # Convert from NED
         if altitude > self.config.geofence_altitude:
             logger.warning(f"Altitude geofence breach: {altitude:.1f}m")
-            # Lower altitude
+            if self._mode == FlightMode.MANUAL:
+                logger.warning("Forcing exit from MANUAL mode for altitude geofence")
+                await self.exit_manual_mode(hover=True)
             await self.goto_altitude(self.config.geofence_altitude - 5)
-        
+
         # Check radius (assuming home at origin)
         horizontal_distance = (position.x**2 + position.y**2)**0.5
         if horizontal_distance > self.config.geofence_radius:
             logger.warning(f"Radius geofence breach: {horizontal_distance:.1f}m")
+            if self._mode == FlightMode.MANUAL:
+                logger.warning("Forcing exit from MANUAL mode for radius geofence")
+                await self.exit_manual_mode(hover=True)
             await self.return_to_launch()
     
     async def _check_health(self):

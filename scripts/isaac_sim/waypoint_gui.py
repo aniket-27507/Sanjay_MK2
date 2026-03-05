@@ -245,6 +245,8 @@ class WaypointGuiPanel:
         ok = await self.manual_controller.disable()
         self.mode_manager.set_manual_override(not ok)
         self.session.set_manual_override(not ok)
+        if ok:
+            self.session.request_resume()  # Resume waypoint mission after manual overtake
         try:
             from scripts.isaac_sim.create_surveillance_scene import get_mission_overlay
             get_mission_overlay().set_manual_override(not ok)
