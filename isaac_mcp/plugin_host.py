@@ -6,6 +6,7 @@ import importlib
 import importlib.util
 import inspect
 import logging
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,6 +28,14 @@ class PluginHost:
         self._registered_resources: list[str] = []
         self._registered_tool_annotations: dict[str, ToolAnnotations | None] = {}
 
+        # Observability (lazily initialized)
+        self._metrics_collector: Any | None = None
+        self._event_logger: Any | None = None
+        # RBAC (lazily initialized)
+        self._rbac_enforcer: Any | None = None
+        # Track which plugin registered each tool (for RBAC category mapping)
+        self._current_plugin: str = ""
+
     @property
     def registered_tools(self) -> list[str]:
         return list(self._registered_tools)
@@ -43,6 +52,22 @@ class PluginHost:
     def mutations_enabled(self) -> bool:
         return self._enable_mutations
 
+    def set_metrics_collector(self, collector: Any) -> None:
+        """Attach a ToolMetricsCollector for automatic instrumentation."""
+        self._metrics_collector = collector
+
+    def set_event_logger(self, event_logger: Any) -> None:
+        """Attach an EventLogger for audit trail."""
+        self._event_logger = event_logger
+
+    def set_rbac_enforcer(self, enforcer: Any) -> None:
+        """Attach an RBACEnforcer for access control."""
+        self._rbac_enforcer = enforcer
+
+    def set_current_plugin(self, plugin_name: str) -> None:
+        """Set the current plugin being loaded (for RBAC category mapping)."""
+        self._current_plugin = plugin_name
+
     def tool(
         self,
         *,
@@ -56,10 +81,19 @@ class PluginHost:
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             tool_name = name or func.__name__
+            metrics = self._metrics_collector
+            event_log = self._event_logger
+            rbac = self._rbac_enforcer
+
+            # Register tool category for RBAC
+            if rbac is not None and self._current_plugin:
+                rbac.register_tool_category(tool_name, self._current_plugin)
 
             async def wrapped(*args: Any, **kwargs: Any) -> Any:
+                instance = _resolve_instance_arg(func, args, kwargs)
+
+                # Mutation gate
                 if mutating and not self._enable_mutations:
-                    instance = _resolve_instance_arg(func, args, kwargs)
                     return error(
                         tool_name,
                         instance,
@@ -68,10 +102,39 @@ class PluginHost:
                         {"hint": "Set ISAAC_MCP_ENABLE_MUTATIONS=true to allow mutating tools"},
                     )
 
-                result = func(*args, **kwargs)
-                if inspect.isawaitable(result):
-                    return await result
-                return result
+                start = time.monotonic()
+                success = True
+                err_msg = ""
+
+                try:
+                    result = func(*args, **kwargs)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    return result
+                except Exception as exc:
+                    success = False
+                    err_msg = str(exc)
+                    raise
+                finally:
+                    duration = time.monotonic() - start
+                    # Record metrics
+                    if metrics is not None:
+                        try:
+                            metrics.record_invocation(tool_name, duration, success)
+                        except Exception:
+                            pass
+                    # Record audit event
+                    if event_log is not None:
+                        try:
+                            event_log.log_tool_call(
+                                tool_name=tool_name,
+                                instance=instance,
+                                success=success,
+                                duration_s=duration,
+                                error=err_msg,
+                            )
+                        except Exception:
+                            pass
 
             wrapped.__name__ = func.__name__
             wrapped.__doc__ = func.__doc__
@@ -156,6 +219,7 @@ def discover_and_load_plugins(host: PluginHost, plugin_dir: str, disabled: list[
 
             register = getattr(module, "register", None)
             if callable(register):
+                host.set_current_plugin(plugin_name)
                 register(host)
                 loaded.append(plugin_name)
                 logger.info("Loaded plugin: %s", plugin_name)
@@ -164,6 +228,7 @@ def discover_and_load_plugins(host: PluginHost, plugin_dir: str, disabled: list[
         except Exception:
             logger.exception("Failed to load plugin '%s'", plugin_name)
 
+    host.set_current_plugin("")
     return loaded
 
 
@@ -175,6 +240,7 @@ def discover_and_load_packs(host: PluginHost, enabled_packs: list[str]) -> list[
             module = importlib.import_module(f"isaac_mcp.packs.{pack_name}")
             register_fn = getattr(module, "register", None)
             if callable(register_fn):
+                host.set_current_plugin(f"pack:{pack_name}")
                 register_fn(host)
                 loaded.append(pack_name)
                 logger.info("Loaded pack: %s", pack_name)
@@ -182,6 +248,7 @@ def discover_and_load_packs(host: PluginHost, enabled_packs: list[str]) -> list[
                 logger.warning("Pack '%s' has no register(host), skipping", pack_name)
         except Exception:
             logger.exception("Failed to load pack '%s'", pack_name)
+    host.set_current_plugin("")
     return loaded
 
 

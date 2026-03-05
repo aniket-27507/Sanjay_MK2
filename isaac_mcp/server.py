@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 
 from isaac_mcp.auth import build_auth_components
 from isaac_mcp.config import ServerConfig, load_config
@@ -85,7 +85,40 @@ def create_server_components(
     mcp = FastMCP(**fastmcp_kwargs)
     _register_health_route(mcp, config, instance_manager)
 
+    # --- Observability ---
+    metrics_collector = None
+    event_logger_instance = None
+    if config.observability.metrics_enabled:
+        _register_metrics_route(mcp, config)
+        from isaac_mcp.observability.metrics import get_collector
+        metrics_collector = get_collector()
+    if config.observability.audit_log_path:
+        from isaac_mcp.observability.event_logger import init_event_logger
+        event_logger_instance = init_event_logger(
+            log_path=config.observability.audit_log_path,
+            buffer_size=config.observability.audit_buffer_size,
+        )
+
+    # --- RBAC ---
+    rbac_enforcer = None
+    if config.rbac.enabled:
+        from isaac_mcp.auth.rbac import RBACEnforcer, RBACPolicy
+        policy = RBACPolicy(
+            enabled=True,
+            default_role=config.rbac.default_role,
+            category_roles=config.rbac.category_roles,
+            tool_roles=config.rbac.tool_roles,
+            user_roles=config.rbac.user_roles,
+        )
+        rbac_enforcer = RBACEnforcer(policy)
+
     host = PluginHost(mcp, instance_manager, enable_mutations=config.security.enable_mutations)
+    if metrics_collector:
+        host.set_metrics_collector(metrics_collector)
+    if event_logger_instance:
+        host.set_event_logger(event_logger_instance)
+    if rbac_enforcer:
+        host.set_rbac_enforcer(rbac_enforcer)
 
     loaded_plugins: list[str] = []
     if config.plugins.auto_discover:
@@ -150,6 +183,21 @@ def _register_health_route(mcp: FastMCP, config: ServerConfig, instance_manager:
                 "mutations_enabled": config.security.enable_mutations,
                 "instances": instance_manager.health_snapshot(),
             }
+        )
+
+
+def _register_metrics_route(mcp: FastMCP, config: ServerConfig) -> None:
+    """Register a Prometheus-compatible /metrics endpoint."""
+    from isaac_mcp.observability.metrics import get_registry
+
+    metrics_path = _normalize_route_path(config.observability.metrics_path)
+
+    @mcp.custom_route(metrics_path, methods=["GET"], include_in_schema=False)
+    async def metrics_route(_request):
+        registry = get_registry()
+        return PlainTextResponse(
+            registry.export_prometheus(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
         )
 
 

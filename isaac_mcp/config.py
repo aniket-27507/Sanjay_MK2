@@ -149,12 +149,39 @@ class SecurityConfig:
 
 
 @dataclass(slots=True)
+class ObservabilityConfig:
+    metrics_enabled: bool = False
+    metrics_path: str = "/metrics"
+    audit_log_path: str = ""
+    audit_buffer_size: int = 5000
+
+
+@dataclass(slots=True)
+class RBACConfig:
+    enabled: bool = False
+    default_role: str = "viewer"
+    category_roles: dict[str, str] = field(default_factory=dict)
+    tool_roles: dict[str, str] = field(default_factory=dict)
+    user_roles: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class CICDConfig:
+    enabled: bool = False
+    suites_dir: str = "data/suites"
+    test_timeout_s: float = 300.0
+
+
+@dataclass(slots=True)
 class ServerConfig:
     name: str = "isaac-sim-mcp"
     version: str = "0.1.0"
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
+    observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
+    rbac: RBACConfig = field(default_factory=RBACConfig)
+    cicd: CICDConfig = field(default_factory=CICDConfig)
     instances: dict[str, InstanceConfig] = field(default_factory=lambda: {"primary": InstanceConfig()})
     plugins: PluginConfig = field(default_factory=PluginConfig)
     packs: PacksConfig = field(default_factory=PacksConfig)
@@ -223,6 +250,9 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
     runtime_raw = server.get("runtime", {}) or {}
     auth_raw = server.get("auth", {}) or {}
     security_raw = server.get("security", {}) or {}
+    observability_raw = server.get("observability", {}) or {}
+    rbac_raw = server.get("rbac", {}) or {}
+    cicd_raw = server.get("cicd", {}) or {}
     instances_raw = raw.get("instances", {}) or {}
     plugins_raw = raw.get("plugins", {}) or {}
     packs_raw = raw.get("packs", {}) or {}
@@ -337,6 +367,24 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
         security=SecurityConfig(
             enable_mutations=bool(security_raw.get("enable_mutations", False)),
         ),
+        observability=ObservabilityConfig(
+            metrics_enabled=bool(observability_raw.get("metrics_enabled", False)),
+            metrics_path=str(observability_raw.get("metrics_path", "/metrics")),
+            audit_log_path=str(observability_raw.get("audit_log_path", "")),
+            audit_buffer_size=int(observability_raw.get("audit_buffer_size", 5000)),
+        ),
+        rbac=RBACConfig(
+            enabled=bool(rbac_raw.get("enabled", False)),
+            default_role=str(rbac_raw.get("default_role", "viewer")),
+            category_roles=dict(rbac_raw.get("category_roles", {}) or {}),
+            tool_roles=dict(rbac_raw.get("tool_roles", {}) or {}),
+            user_roles=dict(rbac_raw.get("user_roles", {}) or {}),
+        ),
+        cicd=CICDConfig(
+            enabled=bool(cicd_raw.get("enabled", False)),
+            suites_dir=str(cicd_raw.get("suites_dir", "data/suites")),
+            test_timeout_s=float(cicd_raw.get("test_timeout_s", 300.0)),
+        ),
         instances=instances,
         plugins=PluginConfig(
             auto_discover=bool(plugins_raw.get("auto_discover", True)),
@@ -411,6 +459,15 @@ def _apply_env_overrides(config: ServerConfig) -> None:
 
     if enable_mutations := os.environ.get("ISAAC_MCP_ENABLE_MUTATIONS"):
         config.security.enable_mutations = _parse_bool(enable_mutations)
+
+    if metrics_enabled := os.environ.get("ISAAC_MCP_METRICS_ENABLED"):
+        config.observability.metrics_enabled = _parse_bool(metrics_enabled)
+
+    if rbac_enabled := os.environ.get("ISAAC_MCP_RBAC_ENABLED"):
+        config.rbac.enabled = _parse_bool(rbac_enabled)
+
+    if rbac_default_role := os.environ.get("ISAAC_MCP_RBAC_DEFAULT_ROLE"):
+        config.rbac.default_role = rbac_default_role
 
     if primary is not None:
         if ros2_domain := os.environ.get("ISAAC_MCP_ROS2_DOMAIN_ID"):
