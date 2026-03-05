@@ -1,6 +1,8 @@
 import Navbar from "../components/Navbar";
 import Hero from "../components/Hero";
 import Features from "../components/Features";
+import PluginPacks from "../components/PluginPacks";
+import QuickStart from "../components/QuickStart";
 import HowItWorks from "../components/HowItWorks";
 import Demo from "../components/Demo";
 import Install from "../components/Install";
@@ -15,6 +17,8 @@ export default function Home() {
       <Navbar />
       <Hero />
       <Features />
+      <PluginPacks />
+      <QuickStart />
       <HowItWorks />
       <Demo />
       <Install />

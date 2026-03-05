@@ -5,45 +5,55 @@ import { motion } from "framer-motion";
 
 const tabs = [
   {
+    id: "quick",
+    label: "Quick Start",
+    content: `# Install IsaacMCP
+pip install isaac-mcp
+
+# Navigate to your project
+cd /path/to/your-robotics-project
+
+# Auto-detect, configure, and register
+isaac-mcp init
+isaac-mcp register --cursor  # or --claude
+
+# Start the server
+isaac-mcp start`,
+  },
+  {
     id: "local",
-    label: "Local (stdio)",
+    label: "From Source",
     content: `# Clone & install
-git clone https://github.com/your-org/isaac-mcp.git
-cd isaac-mcp
+git clone https://github.com/yanitedhacker/IsaacMCP.git
+cd IsaacMCP
 
 # Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install with dev dependencies
-pip install -U pip
-pip install -e '.[dev]'
+# Install with all optional dependencies
+pip install -e '.[all,dev]'
 
-# Register with Claude Code
-claude mcp add --transport stdio \\
-  --scope project isaac-sim -- \\
-  .venv/bin/python -m isaac_mcp.server
+# Run the doctor to check connectivity
+isaac-mcp doctor
 
-# Or generate a Cursor deeplink
-.venv/bin/python scripts/generate_cursor_deeplink.py \\
-  --name isaac-sim \\
-  --remote-url 'http://localhost:8000/mcp'`,
+# Register with your IDE
+isaac-mcp register --cursor  # or --claude`,
   },
   {
-    id: "remote",
-    label: "Remote (HTTPS)",
-    content: `# Start the server in streamable-http mode
-ISAAC_MCP_TRANSPORT=streamable-http \\
-ISAAC_MCP_HOST=0.0.0.1 \\
-ISAAC_MCP_PORT=8000 \\
-ISAAC_MCP_PUBLIC_BASE_URL='https://mcp.your-domain.com' \\
-.venv/bin/python -m isaac_mcp.server
+    id: "docker",
+    label: "Docker",
+    content: `# Initialize with Docker support
+cd /path/to/your-project
+isaac-mcp init --docker
 
-# Health check
-curl -fsS http://127.0.0.1:8000/healthz
+# Start alongside your project's Docker stack
+docker compose \\
+  -f docker-compose.yml \\
+  -f docker-compose.isaac-mcp.yml \\
+  up
 
-# Enable mutations (optional)
-export ISAAC_MCP_ENABLE_MUTATIONS=true`,
+# Connect your IDE to http://localhost:8000/mcp`,
   },
 ];
 

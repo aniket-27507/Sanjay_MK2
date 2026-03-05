@@ -3,9 +3,9 @@
 import { motion } from "framer-motion";
 
 const stats = [
-  { value: "54", label: "MCP Tools" },
-  { value: "10", label: "Plugins" },
-  { value: "100%", label: "Test Coverage" },
+  { value: "80+", label: "MCP Tools" },
+  { value: "12", label: "Plugins + Packs" },
+  { value: "1 Cmd", label: "Setup" },
 ];
 
 export default function Hero() {
@@ -63,7 +63,7 @@ export default function Hero() {
             Get Started
           </a>
           <a
-            href="https://github.com/your-org/isaac-mcp"
+            href="https://github.com/yanitedhacker/IsaacMCP"
             target="_blank"
             rel="noopener noreferrer"
             className="rounded-xl border border-border px-8 py-3.5 text-base font-semibold text-foreground transition-colors hover:border-accent/50 hover:bg-panel"

@@ -64,6 +64,10 @@ class InstanceManager:
                 ros2_client = Ros2Client(
                     domain_id=instance_cfg.ros2.domain_id,
                     configured_topics=[{"name": t.name, "type": t.type} for t in instance_cfg.ros2.topics],
+                    qos_depth=instance_cfg.ros2.qos_depth,
+                    reliability=instance_cfg.ros2.reliability,
+                    auto_subscribe=[{"name": t.name, "type": t.type} for t in instance_cfg.ros2.auto_subscribe],
+                    coordinate_frame=instance_cfg.ros2.coordinate_frame,
                 )
 
             self._instances[name] = IsaacInstance(

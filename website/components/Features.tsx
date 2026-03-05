@@ -59,9 +59,21 @@ const features = [
   },
   {
     icon: "🤖",
-    title: "ROS2 Bridge",
+    title: "ROS 2 Bridge",
     description:
-      "Bidirectional ROS2 integration for topics, services, and actions — bridge simulation with real robot stacks.",
+      "Full rclpy integration with real-time topic subscriptions, publishing, discovery, and ENU/NED coordinate conversion.",
+  },
+  {
+    icon: "🚁",
+    title: "Drone Swarm Pack",
+    description:
+      "25+ tools for fleet management, mission control, threat tracking, telemetry, and parameter tuning for multi-drone projects.",
+  },
+  {
+    icon: "⚡",
+    title: "One-Command Setup",
+    description:
+      "Auto-detect your project, generate configs, and register with your IDE in seconds via the isaac-mcp CLI.",
   },
 ];
 
@@ -86,15 +98,15 @@ export default function Features() {
           className="text-center"
         >
           <h2 className="text-4xl font-bold tracking-tight sm:text-5xl">
-            54 Tools. 10 Plugins. <span className="text-accent">One Protocol.</span>
+            80+ Tools. Plugin Packs. <span className="text-accent">One Protocol.</span>
           </h2>
           <p className="mx-auto mt-4 max-w-2xl text-lg text-muted">
             A comprehensive toolkit that turns your LLM into a full-stack
-            robotics simulation engineer.
+            robotics simulation engineer — for drones, manipulators, and beyond.
           </p>
         </motion.div>
 
-        <div className="mt-16 grid gap-5 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="mt-16 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
           {features.map((f, i) => (
             <motion.div
               key={f.title}

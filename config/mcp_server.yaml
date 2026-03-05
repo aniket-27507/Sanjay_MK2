@@ -47,7 +47,11 @@ instances:
     ros2:
       enabled: true
       domain_id: 10
+      qos_depth: 10
+      reliability: "best_effort"
+      coordinate_frame: "enu"
       topics: []
+      auto_subscribe: []
     training:
       enabled: true
       log_dir: "~/isaac_rl_logs/"
@@ -69,6 +73,9 @@ plugins:
   auto_discover: true
   plugin_dir: "isaac_mcp/plugins"
   disabled: []
+
+packs:
+  enabled: []
 
 memory:
   enabled: true

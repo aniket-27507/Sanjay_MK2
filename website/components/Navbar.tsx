@@ -5,10 +5,9 @@ import { motion, AnimatePresence } from "framer-motion";
 
 const links = [
   { label: "Features", href: "#features" },
-  { label: "How It Works", href: "#how-it-works" },
-  { label: "Demo", href: "#demo" },
+  { label: "Packs", href: "#packs" },
+  { label: "Quick Start", href: "#quickstart" },
   { label: "Install", href: "#install" },
-  { label: "Security", href: "#security" },
   { label: "Deploy", href: "#deploy" },
   { label: "FAQ", href: "#faq" },
 ];
@@ -34,7 +33,7 @@ export default function Navbar() {
             </a>
           ))}
           <a
-            href="https://github.com/your-org/isaac-mcp"
+            href="https://github.com/yanitedhacker/IsaacMCP"
             target="_blank"
             rel="noopener noreferrer"
             className="rounded-lg border border-accent bg-accent/10 px-4 py-2 text-sm font-semibold text-accent transition-colors hover:bg-accent/20"
@@ -80,7 +79,7 @@ export default function Navbar() {
                 </a>
               ))}
               <a
-                href="https://github.com/your-org/isaac-mcp"
+                href="https://github.com/yanitedhacker/IsaacMCP"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="mt-2 rounded-lg border border-accent bg-accent/10 px-4 py-2 text-center text-sm font-semibold text-accent"

@@ -22,7 +22,7 @@ export default function Footer() {
             <ul className="space-y-2.5 text-sm">
               <li>
                 <a
-                  href="https://github.com/your-org/isaac-mcp"
+                  href="https://github.com/yanitedhacker/IsaacMCP"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-muted transition-colors hover:text-foreground"

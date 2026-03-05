@@ -21,13 +21,15 @@ dependencies = [
 
 [project.optional-dependencies]
 ros2 = ["rclpy"]
+drone-swarm = []
+all = ["rclpy"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
 ]
 
 [project.scripts]
-isaac-mcp = "isaac_mcp.server:main"
+isaac-mcp = "isaac_mcp.cli.main:cli"
 
 [tool.pytest.ini_options]
 addopts = "-q"

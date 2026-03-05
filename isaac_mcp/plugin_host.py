@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import inspect
 import logging
@@ -163,6 +164,24 @@ def discover_and_load_plugins(host: PluginHost, plugin_dir: str, disabled: list[
         except Exception:
             logger.exception("Failed to load plugin '%s'", plugin_name)
 
+    return loaded
+
+
+def discover_and_load_packs(host: PluginHost, enabled_packs: list[str]) -> list[str]:
+    """Load domain plugin packs by name (e.g. 'drone_swarm')."""
+    loaded: list[str] = []
+    for pack_name in enabled_packs:
+        try:
+            module = importlib.import_module(f"isaac_mcp.packs.{pack_name}")
+            register_fn = getattr(module, "register", None)
+            if callable(register_fn):
+                register_fn(host)
+                loaded.append(pack_name)
+                logger.info("Loaded pack: %s", pack_name)
+            else:
+                logger.warning("Pack '%s' has no register(host), skipping", pack_name)
+        except Exception:
+            logger.exception("Failed to load pack '%s'", pack_name)
     return loaded
 
 

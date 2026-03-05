@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse
 from isaac_mcp.auth import build_auth_components
 from isaac_mcp.config import ServerConfig, load_config
 from isaac_mcp.instance_manager import InstanceManager
-from isaac_mcp.plugin_host import PluginHost, discover_and_load_plugins
+from isaac_mcp.plugin_host import PluginHost, discover_and_load_plugins, discover_and_load_packs
 
 # stdout must remain reserved for MCP JSON-RPC.
 logging.basicConfig(
@@ -94,6 +94,11 @@ def create_server_components(
             plugin_dir=config.plugins.plugin_dir,
             disabled=config.plugins.disabled,
         )
+
+    loaded_packs: list[str] = []
+    if config.packs.enabled:
+        loaded_packs = discover_and_load_packs(host, config.packs.enabled)
+        loaded_plugins.extend(f"pack:{p}" for p in loaded_packs)
 
     return mcp, host, instance_manager, loaded_plugins, config
 

@@ -51,6 +51,10 @@ class Ros2Config:
     enabled: bool = False
     domain_id: int = 10
     topics: list[Ros2TopicConfig] = field(default_factory=list)
+    qos_depth: int = 10
+    reliability: str = "best_effort"
+    auto_subscribe: list[Ros2TopicConfig] = field(default_factory=list)
+    coordinate_frame: str = "enu"
 
 
 @dataclass(slots=True)
@@ -102,6 +106,11 @@ class InstanceConfig:
 
 
 @dataclass(slots=True)
+class PacksConfig:
+    enabled: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class PluginConfig:
     auto_discover: bool = True
     plugin_dir: str = "isaac_mcp/plugins"
@@ -148,11 +157,12 @@ class ServerConfig:
     security: SecurityConfig = field(default_factory=SecurityConfig)
     instances: dict[str, InstanceConfig] = field(default_factory=lambda: {"primary": InstanceConfig()})
     plugins: PluginConfig = field(default_factory=PluginConfig)
+    packs: PacksConfig = field(default_factory=PacksConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 
 def load_config(config_path: str | Path = "config/mcp_server.yaml") -> ServerConfig:
-    """Load configuration from YAML with environment overrides."""
+    """Load configuration from YAML with environment overrides and optional manifest."""
     path = Path(config_path)
     if not path.is_absolute():
         path = Path(__file__).resolve().parent.parent / path
@@ -165,7 +175,47 @@ def load_config(config_path: str | Path = "config/mcp_server.yaml") -> ServerCon
 
     config = _parse_config(raw)
     _apply_env_overrides(config)
+    _apply_manifest_overrides(config, path.parent.parent)
     return config
+
+
+def _apply_manifest_overrides(config: ServerConfig, project_root: Path) -> None:
+    """Apply overrides from isaac-mcp.yaml project manifest if present."""
+    manifest_path = project_root / "isaac-mcp.yaml"
+    if not manifest_path.exists():
+        return
+
+    try:
+        with manifest_path.open("r", encoding="utf-8") as f:
+            manifest = yaml.safe_load(f) or {}
+    except Exception:
+        return
+
+    packs = manifest.get("packs", [])
+    if isinstance(packs, list) and packs:
+        existing = set(config.packs.enabled)
+        for p in packs:
+            if p not in existing:
+                config.packs.enabled.append(p)
+
+    ros2 = manifest.get("ros2", {})
+    if ros2 and "primary" in config.instances:
+        primary = config.instances["primary"]
+        if "domain_id" in ros2:
+            primary.ros2.domain_id = int(ros2["domain_id"])
+        if "coordinate_frame" in ros2:
+            primary.ros2.coordinate_frame = str(ros2["coordinate_frame"])
+        if not primary.ros2.enabled and ros2:
+            primary.ros2.enabled = True
+
+    isaac = manifest.get("isaac_sim", {})
+    if isaac and "primary" in config.instances:
+        primary = config.instances["primary"]
+        if "kit_api_url" in isaac:
+            primary.kit_api.base_url = str(isaac["kit_api_url"])
+            primary.kit_api.enabled = True
+        if "websocket_url" in isaac:
+            primary.simulation.websocket_url = str(isaac["websocket_url"])
 
 
 def _parse_config(raw: dict[str, Any]) -> ServerConfig:
@@ -175,6 +225,7 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
     security_raw = server.get("security", {}) or {}
     instances_raw = raw.get("instances", {}) or {}
     plugins_raw = raw.get("plugins", {}) or {}
+    packs_raw = raw.get("packs", {}) or {}
     memory_raw = raw.get("memory", {}) or {}
 
     instances: dict[str, InstanceConfig] = {}
@@ -193,6 +244,11 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
         topics = [
             Ros2TopicConfig(name=str(topic.get("name", "")), type=str(topic.get("type", "")))
             for topic in ros2_raw.get("topics", [])
+            if isinstance(topic, dict)
+        ]
+        auto_subscribe = [
+            Ros2TopicConfig(name=str(topic.get("name", "")), type=str(topic.get("type", "")))
+            for topic in ros2_raw.get("auto_subscribe", [])
             if isinstance(topic, dict)
         ]
 
@@ -223,6 +279,10 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
                 enabled=bool(ros2_raw.get("enabled", False)),
                 domain_id=int(ros2_raw.get("domain_id", 10)),
                 topics=topics,
+                qos_depth=int(ros2_raw.get("qos_depth", 10)),
+                reliability=str(ros2_raw.get("reliability", "best_effort")),
+                auto_subscribe=auto_subscribe,
+                coordinate_frame=str(ros2_raw.get("coordinate_frame", "enu")),
             ),
             training=TrainingConfig(
                 enabled=bool(training_raw.get("enabled", False)),
@@ -282,6 +342,9 @@ def _parse_config(raw: dict[str, Any]) -> ServerConfig:
             auto_discover=bool(plugins_raw.get("auto_discover", True)),
             plugin_dir=str(plugins_raw.get("plugin_dir", "isaac_mcp/plugins")),
             disabled=list(plugins_raw.get("disabled", []) or []),
+        ),
+        packs=PacksConfig(
+            enabled=list(packs_raw.get("enabled", []) or []),
         ),
         memory=MemoryConfig(
             enabled=bool(memory_raw.get("enabled", True)),
@@ -350,6 +413,21 @@ def _apply_env_overrides(config: ServerConfig) -> None:
         config.security.enable_mutations = _parse_bool(enable_mutations)
 
     if primary is not None:
+        if ros2_domain := os.environ.get("ISAAC_MCP_ROS2_DOMAIN_ID"):
+            primary.ros2.domain_id = int(ros2_domain)
+
+        if ros2_qos := os.environ.get("ISAAC_MCP_ROS2_QOS_DEPTH"):
+            primary.ros2.qos_depth = int(ros2_qos)
+
+        if ros2_reliability := os.environ.get("ISAAC_MCP_ROS2_RELIABILITY"):
+            primary.ros2.reliability = ros2_reliability
+
+        if ros2_frame := os.environ.get("ISAAC_MCP_ROS2_COORDINATE_FRAME"):
+            primary.ros2.coordinate_frame = ros2_frame
+
+        if ros2_enabled := os.environ.get("ISAAC_MCP_ROS2_ENABLED"):
+            primary.ros2.enabled = _parse_bool(ros2_enabled)
+
         if fix_loop_enabled := os.environ.get("ISAAC_MCP_FIX_LOOP_ENABLED"):
             primary.fix_loop.enabled = _parse_bool(fix_loop_enabled)
 

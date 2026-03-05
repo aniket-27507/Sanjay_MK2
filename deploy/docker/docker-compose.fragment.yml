@@ -1,0 +1,27 @@
+# IsaacMCP Docker Compose fragment
+# Include alongside your project's docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.isaac-mcp.yml up
+
+services:
+  isaac-mcp:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.ros2
+    network_mode: host
+    environment:
+      - ISAAC_MCP_TRANSPORT=streamable-http
+      - ISAAC_MCP_HOST=0.0.0.0
+      - ISAAC_MCP_PORT=8000
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-10}
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - ISAAC_MCP_ENABLE_MUTATIONS=false
+      - ISAAC_MCP_ROS2_ENABLED=true
+    volumes:
+      - ./config:/opt/isaac-mcp/config:ro
+      - ./data:/opt/isaac-mcp/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    restart: unless-stopped
