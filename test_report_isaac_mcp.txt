@@ -1,0 +1,52 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.14.3, pytest-9.0.2, pluggy-1.6.0
+rootdir: /Users/archishmanpaul/Desktop/Sanjay_MK2/IsaacMCP
+configfile: pyproject.toml
+plugins: anyio-4.12.1, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 391 items / 43 deselected / 348 selected
+
+tests/test_adversarial_generator.py ...........                          [  3%]
+tests/test_auth.py ....                                                  [  4%]
+tests/test_autonomous_loop.py ............                               [  7%]
+tests/test_camera_render.py ..                                           [  8%]
+tests/test_cicd.py ...................                                   [ 13%]
+tests/test_config.py ...                                                 [ 14%]
+tests/test_connections.py ....                                           [ 15%]
+tests/test_dataset_generation.py ...............                         [ 20%]
+tests/test_devtools.py ....................                              [ 25%]
+tests/test_diagnostics_plugin.py .....                                   [ 27%]
+tests/test_error_patterns.py ..                                          [ 27%]
+tests/test_experiments_plugin.py ......                                  [ 29%]
+tests/test_failure_detector.py .........                                 [ 32%]
+tests/test_failure_injector.py ......                                    [ 33%]
+tests/test_fix_strategy.py .......                                       [ 35%]
+tests/test_json_store.py .......                                         [ 37%]
+tests/test_knowledge_base.py .......                                     [ 39%]
+tests/test_knowledge_graph.py .............                              [ 43%]
+tests/test_llm_fix_generator.py .........                                [ 46%]
+tests/test_log_monitor.py ...                                            [ 47%]
+tests/test_log_parser.py ...                                             [ 47%]
+tests/test_loop_orchestrator.py .........                                [ 50%]
+tests/test_observability.py ........................                     [ 57%]
+tests/test_onboarding.py ...                                             [ 58%]
+tests/test_orchestrator.py ...................................           [ 68%]
+tests/test_parameter_sweeps.py ...                                       [ 69%]
+tests/test_pattern_learner.py ......                                     [ 70%]
+tests/test_plugin_host.py ....                                           [ 72%]
+tests/test_rbac.py ..........................                            [ 79%]
+tests/test_rl_training.py ..                                             [ 80%]
+tests/test_robustness_tester.py ....                                     [ 81%]
+tests/test_ros2_bridge.py ...                                            [ 82%]
+tests/test_scenario_generator.py .....                                   [ 83%]
+tests/test_scenario_lab_plugin.py .......                                [ 85%]
+tests/test_scenario_runner.py ...                                        [ 86%]
+tests/test_scene_inspect.py ..                                           [ 87%]
+tests/test_server_runtime.py ...                                         [ 87%]
+tests/test_sim_control.py .....                                          [ 89%]
+tests/test_simulation_analyzer.py ..........                             [ 92%]
+tests/test_sqlite_store.py .......                                       [ 94%]
+tests/test_state_cache.py ............                                   [ 97%]
+tests/test_storage_backends.py ....ssss                                  [100%]
+
+================ 344 passed, 4 skipped, 43 deselected in 9.02s =================

@@ -7,9 +7,14 @@ Pillow>=10.0
 PyJWT[crypto]>=2.10.0
 aiosqlite>=0.19.0
 
+[all]
+rclpy
+
 [dev]
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+
+[drone-swarm]
 
 [ros2]
 rclpy

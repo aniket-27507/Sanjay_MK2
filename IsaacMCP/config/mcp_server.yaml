@@ -56,12 +56,12 @@ instances:
       enabled: true
       log_dir: "~/isaac_rl_logs/"
     fix_loop:
-      enabled: false
+      enabled: true
       max_retries: 5
       simulation_timeout_s: 60.0
       script_timeout_s: 30.0
     experiments:
-      enabled: false
+      enabled: true
       db_path: "data/isaac_experiments.db"
       max_concurrent_runs: 1
     scenario_lab:
@@ -75,7 +75,7 @@ plugins:
   disabled: []
 
 packs:
-  enabled: []
+  enabled: ["drone_swarm"]
 
 memory:
   enabled: true

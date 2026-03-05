@@ -8,7 +8,7 @@
         "isaac_mcp.server"
       ],
       "env": {
-        "PYTHONPATH": "/Users/archishmanpaul/Desktop/MCP"
+        "PYTHONPATH": "."
       }
     }
   }

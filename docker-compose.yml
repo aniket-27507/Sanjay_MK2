@@ -286,6 +286,39 @@ services:
       "
 
   # =======================================================================
+  # IsaacMCP - MCP Server for AI-Assisted Simulation Control
+  # =======================================================================
+  #
+  # Exposes Isaac Sim as an MCP server so Cursor/Claude can control
+  # simulation, inspect scenes, run diagnostics, and manage the drone
+  # swarm through natural-language tool calls.
+  #
+  # Requires simulation_server.py (port 8765) or Isaac Sim Kit API
+  # (port 8211) to be reachable from this container.
+  #
+  isaac-mcp:
+    build:
+      context: ./IsaacMCP
+      dockerfile: deploy/docker/Dockerfile
+    container_name: isaac-mcp
+    hostname: isaac-mcp
+    profiles:
+      - mcp
+    environment:
+      - ISAAC_MCP_TRANSPORT=streamable-http
+      - ISAAC_MCP_HOST=0.0.0.0
+      - ISAAC_MCP_PORT=8000
+      - ISAAC_MCP_ENABLE_MUTATIONS=false
+      - ISAAC_MCP_ROS2_ENABLED=true
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-10}
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+    volumes:
+      - ./IsaacMCP/config:/opt/isaac-mcp/config:ro
+      - ./IsaacMCP/data:/opt/isaac-mcp/data
+    network_mode: host
+    restart: unless-stopped
+
+  # =======================================================================
   # Note about waypoint GUI
   # =======================================================================
   # waypoint_gui.py depends on Isaac Sim's omni.ui runtime and must be run

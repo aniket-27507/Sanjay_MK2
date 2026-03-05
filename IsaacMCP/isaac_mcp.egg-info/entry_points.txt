@@ -1,2 +1,2 @@
 [console_scripts]
-isaac-mcp = isaac_mcp.server:main
+isaac-mcp = isaac_mcp.cli.main:cli

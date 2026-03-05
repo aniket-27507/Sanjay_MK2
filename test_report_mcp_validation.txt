@@ -1,0 +1,15 @@
+
+=== IsaacMCP Integration Validation ===
+
+  [[92mPASS[0m] venv exists
+  [[92mPASS[0m] isaac-mcp importable  (isaac_mcp)
+  [[92mPASS[0m] mcp_server.yaml exists
+  [[92mPASS[0m] drone_swarm pack enabled
+  [[92mPASS[0m] fix_loop enabled
+  [[92mPASS[0m] experiments enabled
+  [[92mPASS[0m] .cursor/mcp.json exists  (isaac-sim server configured)
+  [[92mPASS[0m] server startup  (server initialised (stdio mode))
+
+--- Summary ---
+  8 passed, 0 failed, 0 warnings
+
