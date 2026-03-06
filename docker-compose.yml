@@ -30,6 +30,10 @@ services:
   #
   ros2-base:
     image: osrf/ros:humble-desktop
+    # This is a template service — never started directly.
+    # The "_template" profile ensures it stays inactive.
+    profiles:
+      - _template
     # Environment variables for ROS 2 + Fast DDS
     environment:
       # Domain ID - MUST match Isaac Sim's ROS_DOMAIN_ID

@@ -51,8 +51,10 @@ except Exception as e:
 
 try:
     from src.surveillance.change_detection import ChangeDetector
+    from src.surveillance.baseline_map import BaselineMap
 except Exception:
     ChangeDetector = None  # type: ignore[assignment,misc]
+    BaselineMap = None  # type: ignore[assignment,misc]
 
 try:
     from src.surveillance.threat_manager import ThreatManager
@@ -376,7 +378,16 @@ if _ROS2_AVAILABLE:
                 self._fusion = None
 
             # Downstream surveillance pipeline
-            self._change_detector = ChangeDetector() if ChangeDetector is not None else None
+            if ChangeDetector is not None and BaselineMap is not None:
+                # Empty baseline (200x200 grid = 1000m world / 5m cells)
+                # Baseline gets populated incrementally as drones survey
+                baseline = BaselineMap(rows=200, cols=200, cell_size=5.0)
+                self._change_detector = ChangeDetector(
+                    baseline=baseline,
+                    min_confidence=config.min_change_confidence,
+                )
+            else:
+                self._change_detector = None
             self._threat_manager = ThreatManager() if ThreatManager is not None else None
 
             # Autonomy hooks (set via register_autonomy_hooks)
