@@ -6,6 +6,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.8.1] - 2026-03-06
+
+### Fixed — Simulation Mission Progression and Completion Path
+
+Improved the decentralized headless/Isaac mission flow so waypoint progression
+is measurable and mission completion can be achieved under configurable timeout
+windows passed at runtime (`--timeout`).
+
+#### Mission Execution Improvements
+
+| File | Changes |
+|------|---------|
+| `scripts/isaac_sim/run_mission.py` | Replaced elapsed-time success logic with waypoint-based success (`11/11` route completion) |
+| `scripts/isaac_sim/run_mission.py` | Added mission waypoint progression tracking and event logging per reached waypoint |
+| `scripts/isaac_sim/run_mission.py` | Added per-drone formation-aware waypoint targets to reduce swarm collapse and preserve separation |
+| `scripts/isaac_sim/run_mission.py` | Added quorum-based waypoint completion semantics for swarm progress (multi-drone confirmation) |
+| `scripts/isaac_sim/run_mission.py` | Added runtime bridge callback servicing (`rclpy.spin_once`) and cleanup to keep ROS 2 bridge responsive in mission loop |
+
+#### Throughput and Guidance Tuning
+
+| File | Changes |
+|------|---------|
+| `src/swarm/coordination/regiment_coordinator.py` | Added mission forced-goal support via `set_forced_goal(...)` |
+| `src/swarm/coordination/regiment_coordinator.py` | Added adaptive forced-goal blending by distance to increase long-leg throughput while retaining boids safety behavior |
+
+#### Simulation Data/Scene Consistency
+
+| File | Changes |
+|------|---------|
+| `src/simulation/surveillance_layout.py` | New shared surveillance layout module: mission waypoints, formation constants, and obstacle database source-of-truth |
+| `scripts/isaac_sim/run_mission.py` | Switched obstacle loading to shared surveillance layout source |
+| `scripts/isaac_sim/create_surveillance_scene.py` | Switched waypoint/formation constants and zone obstacle construction to shared surveillance layout source |
+
+#### Web Simulation Control
+
+| File | Changes |
+|------|---------|
+| `scripts/simulation_server.py` | Fixed pause behavior to be explicit (no toggle ambiguity) and added explicit `resume` command handling |
+
+#### Validation
+
+- Python source compile checks passed for updated simulation files.
+- Lint checks passed for updated simulation files.
+- Headless mission validation runs confirmed improved progression:
+  - 120s window: early waypoint progression observed.
+  - 240s window: reached 5/11 waypoints.
+  - 360s window: reached 8/11 waypoints after throughput tuning.
+  - 600s window: achieved full mission completion (11/11 waypoints, no collisions).
+
+---
+
 ## [0.8.0] - 2026-03-04
 
 ### Added — Decentralized Boids + CBBA Swarm Autonomy
