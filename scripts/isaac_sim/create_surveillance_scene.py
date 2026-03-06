@@ -366,7 +366,7 @@ def _build_downtown(world):
 
     # Narrowing walls to create corridor pressure
     for j, (ox, oy, length, width, rot) in enumerate(DOWNTOWN_ALLEYS):
-        x, y = cx + ox, cy + oy
+        x, y = DOWNTOWN_CENTER[0] + ox, DOWNTOWN_CENTER[1] + oy
         if rot == 90:
             sc = np.array([width, length, 25.0])
         else:
