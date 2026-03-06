@@ -593,8 +593,13 @@ class SimulationManager:
     
     def pause(self):
         """Pause the simulation."""
-        self.is_running = not self.is_running
-        logger.info(f"Simulation {'resumed' if self.is_running else 'paused'}")
+        self.is_running = False
+        logger.info("Simulation paused")
+
+    def resume(self):
+        """Resume the simulation."""
+        self.is_running = True
+        logger.info("Simulation resumed")
     
     def reset(self):
         """Reset the simulation."""
@@ -839,6 +844,8 @@ async def websocket_handler(websocket: websockets.WebSocketServerProtocol):
                         simulation.start_scenario()
                 elif command == 'pause':
                     simulation.pause()
+                elif command == 'resume':
+                    simulation.resume()
                 elif command == 'reset':
                     simulation.reset()
                 

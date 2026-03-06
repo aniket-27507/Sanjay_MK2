@@ -185,9 +185,19 @@ class WaypointController:
         self._status.state = WaypointExecutionState.COMPLETE
         return True
 
-    def execute_mission_background(self, **kwargs) -> asyncio.Task:
-        """Launch mission asynchronously and return task handle."""
-        self._execution_task = asyncio.create_task(self.execute_mission(**kwargs))
+    def execute_mission_background(
+        self, *, loop: asyncio.AbstractEventLoop | None = None, **kwargs
+    ) -> asyncio.Task:
+        """Launch mission asynchronously and return task handle.
+
+        When called from a sync callback (e.g. Isaac Sim UI) with no running loop,
+        pass the event loop explicitly so the task can be scheduled.
+        """
+        coro = self.execute_mission(**kwargs)
+        if loop is not None:
+            self._execution_task = asyncio.ensure_future(coro, loop=loop)
+        else:
+            self._execution_task = asyncio.create_task(coro)
         return self._execution_task
 
     def pause(self):

@@ -1,0 +1,129 @@
+{
+  "result": "TIMEOUT",
+  "duration_s": 360.020681142807,
+  "min_inter_drone_distance_m": 49.6963204841159,
+  "hpl_overrides": 0,
+  "collisions": 0,
+  "drone_finals": {
+    "alpha_0": {
+      "position": [
+        238.7846117784197,
+        564.7160936484931,
+        -55.465040911200624
+      ],
+      "battery": 99.76323333332547
+    },
+    "alpha_1": {
+      "position": [
+        288.7440649940803,
+        562.575559093116,
+        -55.61147300529977
+      ],
+      "battery": 99.76323333332547
+    },
+    "alpha_2": {
+      "position": [
+        265.599080162621,
+        606.9103264110801,
+        -55.45223017372541
+      ],
+      "battery": 99.76323333332547
+    },
+    "alpha_3": {
+      "position": [
+        215.642167548414,
+        609.0292998515249,
+        -55.37243550957416
+      ],
+      "battery": 99.76323333332547
+    },
+    "alpha_4": {
+      "position": [
+        188.82686871680372,
+        566.836520961582,
+        -55.47207288890785
+      ],
+      "battery": 99.76323333332547
+    },
+    "alpha_5": {
+      "position": [
+        212.97008355878864,
+        521.8844883620393,
+        -55.597510868895256
+      ],
+      "battery": 99.76323333332547
+    }
+  },
+  "events": [
+    {
+      "timestamp": 1772798568.8211102,
+      "elapsed": 1.430511474609375e-06,
+      "source": "SYSTEM",
+      "level": "INFO",
+      "message": "Mission started"
+    },
+    {
+      "timestamp": 1772798643.067136,
+      "elapsed": 74.24602699279785,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_01 (Downtown Entry) with quorum 4/6"
+    },
+    {
+      "timestamp": 1772798643.1180966,
+      "elapsed": 74.29698777198792,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_02 (Tower Gap) with quorum 4/6"
+    },
+    {
+      "timestamp": 1772798653.3197312,
+      "elapsed": 84.49862241744995,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_03 (U-Trap Test) with quorum 4/6"
+    },
+    {
+      "timestamp": 1772798722.4149485,
+      "elapsed": 153.59383940696716,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_04 (Industrial Entry) with quorum 4/6"
+    },
+    {
+      "timestamp": 1772798733.281407,
+      "elapsed": 164.46029829978943,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_05 (Pipe Corridor) with quorum 4/6"
+    },
+    {
+      "timestamp": 1772798746.6645608,
+      "elapsed": 177.84345173835754,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_06 (Tank Slalom) with quorum 4/6"
+    },
+    {
+      "timestamp": 1772798904.657451,
+      "elapsed": 335.83634209632874,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_07 (Forest Ingress) with quorum 4/6"
+    },
+    {
+      "timestamp": 1772798910.7455559,
+      "elapsed": 341.92444705963135,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_08 (Canopy Skim) with quorum 4/6"
+    },
+    {
+      "timestamp": 1772798928.841543,
+      "elapsed": 360.0204339027405,
+      "source": "SYSTEM",
+      "level": "CRITICAL",
+      "message": "Mission TIMEOUT"
+    }
+  ]
+}

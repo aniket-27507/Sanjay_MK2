@@ -2,11 +2,12 @@
   "mcpServers": {
     "isaac-sim": {
       "type": "stdio",
-      "command": "IsaacMCP/.venv/bin/python",
-      "args": ["-m", "isaac_mcp.server", "--config", "IsaacMCP/config/mcp_server.yaml"],
+      "command": ".venv/Scripts/python.exe",
+      "args": ["-m", "isaac_mcp.server", "--config", "config/mcp_server.yaml"],
       "cwd": "IsaacMCP",
       "env": {
-        "PYTHONPATH": "IsaacMCP"
+        "PYTHONPATH": ".",
+        "ISAAC_MCP_LOCAL_LOG_PATH": "~/.nvidia-omniverse/logs/Kit"
       }
     }
   }

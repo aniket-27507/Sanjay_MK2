@@ -2,6 +2,7 @@ README.md
 create.md
 pyproject.toml
 isaac_mcp/__init__.py
+isaac_mcp/__main__.py
 isaac_mcp/auth.py
 isaac_mcp/config.py
 isaac_mcp/error_patterns.py

@@ -1,0 +1,108 @@
+{
+  "result": "TIMEOUT",
+  "duration_s": 240.02345490455627,
+  "min_inter_drone_distance_m": 49.5808606666802,
+  "hpl_overrides": 0,
+  "collisions": 0,
+  "drone_finals": {
+    "alpha_0": {
+      "position": [
+        532.3276565402233,
+        159.4039685468411,
+        -64.99998752018284
+      ],
+      "battery": 99.83463333332784
+    },
+    "alpha_1": {
+      "position": [
+        582.2366635041881,
+        156.15179902164107,
+        -64.99986228374452
+      ],
+      "battery": 99.83463333332784
+    },
+    "alpha_2": {
+      "position": [
+        558.1884832537809,
+        202.00893132740495,
+        -64.9998526494059
+      ],
+      "battery": 99.83463333332784
+    },
+    "alpha_3": {
+      "position": [
+        508.1527183266828,
+        203.16578489916026,
+        -64.99979416633295
+      ],
+      "battery": 99.83463333332784
+    },
+    "alpha_4": {
+      "position": [
+        482.3765734107652,
+        160.34664255972575,
+        -64.99954146367348
+      ],
+      "battery": 99.83463333332784
+    },
+    "alpha_5": {
+      "position": [
+        506.75771008222716,
+        116.53534463862944,
+        -65.00125908905078
+      ],
+      "battery": 99.83463333332784
+    }
+  },
+  "events": [
+    {
+      "timestamp": 1772797744.1401973,
+      "elapsed": 1.430511474609375e-06,
+      "source": "SYSTEM",
+      "level": "INFO",
+      "message": "Mission started"
+    },
+    {
+      "timestamp": 1772797851.4836416,
+      "elapsed": 107.34344506263733,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_01 (Downtown Entry)"
+    },
+    {
+      "timestamp": 1772797857.2139008,
+      "elapsed": 113.07370495796204,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_02 (Tower Gap)"
+    },
+    {
+      "timestamp": 1772797870.1827524,
+      "elapsed": 126.04255652427673,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_03 (U-Trap Test)"
+    },
+    {
+      "timestamp": 1772797962.1084874,
+      "elapsed": 217.96829175949097,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_04 (Industrial Entry)"
+    },
+    {
+      "timestamp": 1772797971.1765192,
+      "elapsed": 227.0363233089447,
+      "source": "SWARM",
+      "level": "SUCCESS",
+      "message": "Reached WP_05 (Pipe Corridor)"
+    },
+    {
+      "timestamp": 1772797984.1633544,
+      "elapsed": 240.02315855026245,
+      "source": "SYSTEM",
+      "level": "CRITICAL",
+      "message": "Mission TIMEOUT"
+    }
+  ]
+}

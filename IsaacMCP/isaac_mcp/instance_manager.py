@@ -8,7 +8,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from isaac_mcp.config import InstanceConfig, ServerConfig
-from isaac_mcp.connections import KitApiClient, Ros2Client, SSHLogReader, WebSocketClient
+from isaac_mcp.connections import (
+    KitApiClient,
+    LocalLogReader,
+    Ros2Client,
+    SSHLogReader,
+    WebSocketClient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +28,7 @@ class IsaacInstance:
     config: InstanceConfig
     ws_client: WebSocketClient
     kit_client: KitApiClient | None
-    ssh_client: SSHLogReader | None
+    ssh_client: SSHLogReader | LocalLogReader | None
     ros2_client: Ros2Client | None
 
     @property
@@ -58,6 +64,8 @@ class InstanceManager:
                     key_path=instance_cfg.logs.ssh.key_path,
                     remote_log_dir=instance_cfg.logs.remote_path,
                 )
+            elif instance_cfg.logs.method == "local":
+                ssh_client = LocalLogReader(local_log_dir=instance_cfg.logs.local_path)
 
             ros2_client = None
             if instance_cfg.ros2.enabled:

@@ -221,6 +221,7 @@ class AlphaRegimentCoordinator:
         self._desired_velocities: Dict[int, Vector3] = {}
         self._desired_goals: Dict[int, Vector3] = {}
         self._last_gossip_timestamps: Dict[int, float] = {}
+        self._forced_goal: Optional[Vector3] = None
 
     # ── Initialization ────────────────────────────────────────────
 
@@ -641,8 +642,26 @@ class AlphaRegimentCoordinator:
             sector_assignments=sectors,
             home_position=home,
         )
+        if self._forced_goal is not None:
+            direction = self._forced_goal - my_member.state.position
+            if direction.magnitude() > 1e-6:
+                distance_to_goal = direction.magnitude()
+                max_speed = max(0.1, float(self._flock_coordinator.config.boids.max_speed))
+                forced_velocity = direction.normalized() * min(direction.magnitude(), max_speed)
+                # Adaptive blending: stronger pull on long legs, gentler near goals.
+                if distance_to_goal > 180.0:
+                    forced_weight = 0.85
+                elif distance_to_goal > 100.0:
+                    forced_weight = 0.75
+                elif distance_to_goal > 50.0:
+                    forced_weight = 0.60
+                else:
+                    forced_weight = 0.45
+                desired = desired * (1.0 - forced_weight) + forced_velocity * forced_weight
         self._desired_velocities[self.my_drone_id] = desired
-        if self._flock_coordinator.current_goal is not None:
+        if self._forced_goal is not None:
+            self._desired_goals[self.my_drone_id] = self._forced_goal
+        elif self._flock_coordinator.current_goal is not None:
             self._desired_goals[self.my_drone_id] = self._flock_coordinator.current_goal
 
     # ── Dynamic Leader Election ───────────────────────────────────
@@ -856,6 +875,10 @@ class AlphaRegimentCoordinator:
         """Get most recent flocking task/slot goal for a drone."""
         query_id = self.my_drone_id if drone_id is None else drone_id
         return self._desired_goals.get(query_id)
+
+    def set_forced_goal(self, goal: Optional[Vector3]):
+        """Override the autonomous goal with a mission-level shared goal."""
+        self._forced_goal = goal
 
     # ── Telemetry ─────────────────────────────────────────────────
 

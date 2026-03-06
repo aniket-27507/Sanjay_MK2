@@ -45,7 +45,11 @@ class WaypointGuiPanel:
         self._x_model = ui.SimpleFloatModel(0.0)
         self._y_model = ui.SimpleFloatModel(0.0)
         self._z_model = ui.SimpleFloatModel(-65.0)
-        self._status_model = ui.SimpleStringModel(f"Ready (backend={backend})")
+        self._z_model.add_end_edit_fn(self._on_z_field_commit)
+        s = self.waypoint_controller.status
+        self._status_model = ui.SimpleStringModel(
+            f"Ready (backend={backend})\nRunner: {s.state.name} | WP: {s.current_index}/{s.total_waypoints}"
+        )
         self._waypoints_model = ui.SimpleStringModel("No waypoints")
         self._avoidance_model = ui.SimpleBoolModel(True)
         self._boids_model = ui.SimpleBoolModel(True)
@@ -58,16 +62,21 @@ class WaypointGuiPanel:
                 ui.Label("Waypoint Input (NED)", style={"font_size": 16})
                 with ui.HStack(height=26):
                     ui.Label("X", width=22)
-                    ui.FloatDrag(model=self._x_model)
+                    ui.FloatField(model=self._x_model, precision=2)
                     ui.Label("Y", width=22)
-                    ui.FloatDrag(model=self._y_model)
+                    ui.FloatField(model=self._y_model, precision=2)
                     ui.Label("Z", width=22)
-                    ui.FloatDrag(model=self._z_model)
+                    ui.FloatField(model=self._z_model, precision=2)
 
                 with ui.HStack(height=28):
                     ui.Button("Add Waypoint", clicked_fn=self._add_waypoint_from_inputs)
                     ui.Button("Add From Selected Prim", clicked_fn=self._add_waypoint_from_selected_prim)
                     ui.Button("Clear", clicked_fn=self._clear_waypoints)
+                ui.Spacer(height=2)
+                ui.Label(
+                    "Keyboard: Insert = Add waypoint | Delete = Clear list",
+                    style={"font_size": 11, "color": ui.color(0.55, 0.55, 0.55)},
+                )
 
                 ui.Label("Mission Controls", style={"font_size": 16})
                 with ui.HStack(height=28):
@@ -105,7 +114,9 @@ class WaypointGuiPanel:
         self._register_keyboard_handlers()
 
     def _set_status(self, text: str):
-        self._status_model.set_value(text)
+        s = self.waypoint_controller.status
+        full = f"{text}\nRunner: {s.state.name} | WP: {s.current_index}/{s.total_waypoints}"
+        self._status_model.set_value(full)
         self._refresh_waypoint_listing()
 
     def _refresh_waypoint_listing(self):
@@ -120,6 +131,10 @@ class WaypointGuiPanel:
                 f"spd={wp.speed:.1f} tol={wp.acceptance_radius:.1f}"
             )
         self._waypoints_model.set_value("\n".join(lines))
+
+    def _on_z_field_commit(self, *args):
+        """Add waypoint when user presses Enter in Z field."""
+        self._add_waypoint_from_inputs()
 
     def _add_waypoint_from_inputs(self):
         self.waypoint_controller.add_waypoint(
@@ -166,10 +181,49 @@ class WaypointGuiPanel:
         if self._execution_task and not self._execution_task.done():
             self._set_status("Mission already running")
             return
-        self._execution_task = self.waypoint_controller.execute_mission_background(
-            enable_avoidance=self.mode_manager.status.avoidance_enabled
-        )
-        self._set_status("Mission started")
+
+        if not self.waypoint_controller.waypoints:
+            self._set_status("Add at least one waypoint before starting")
+            return
+
+        enable_avoidance = self.mode_manager.status.avoidance_enabled
+
+        def _schedule(loop: asyncio.AbstractEventLoop | None = None):
+            """Schedule mission on event loop; runs when loop processes the queue."""
+            try:
+                coro = self.waypoint_controller.execute_mission(
+                    enable_avoidance=enable_avoidance,
+                    auto_arm_takeoff=True,
+                )
+                if loop is not None:
+                    self._execution_task = asyncio.ensure_future(coro, loop=loop)
+                else:
+                    self._execution_task = asyncio.ensure_future(coro)
+                self._set_status("Mission started")
+            except RuntimeError as e:
+                self._set_status(f"Cannot start: no event loop ({e})")
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.call_soon_threadsafe(lambda: _schedule(loop))
+            self._set_status("Mission starting...")
+        except RuntimeError:
+            try:
+                loop = asyncio.get_event_loop()
+                loop.call_soon_threadsafe(lambda: _schedule(loop))
+                self._set_status("Mission starting...")
+            except Exception as e:
+                # Defer to next frame; Isaac Sim may have loop available then
+                try:
+                    import omni.kit.app
+                    ev_loop = asyncio.get_event_loop()
+                    omni.kit.app.get_app().post_update_call(lambda: _schedule(ev_loop))
+                    self._set_status("Mission starting...")
+                except Exception:
+                    self._set_status(
+                        f"No event loop. Run create_surveillance_scene.py first, "
+                        f"then run_mission.py in Script Editor. ({e})"
+                    )
 
     def _pause_mission(self):
         self.waypoint_controller.pause()
@@ -261,16 +315,52 @@ class WaypointGuiPanel:
         try:
             import carb.input
 
+            pressed = event.type in (carb.input.KeyboardEventType.KEY_PRESS, carb.input.KeyboardEventType.KEY_REPEAT)
+            if not pressed:
+                # On release, only handle manual control
+                if self.manual_controller.enabled:
+                    released = event.type == carb.input.KeyboardEventType.KEY_RELEASE
+                    if released:
+                        key = event.input
+                        mapping = {
+                            carb.input.KeyboardInput.W: "forward",
+                            carb.input.KeyboardInput.S: "backward",
+                            carb.input.KeyboardInput.A: "left",
+                            carb.input.KeyboardInput.D: "right",
+                            carb.input.KeyboardInput.Q: "up",
+                            carb.input.KeyboardInput.E: "down",
+                            carb.input.KeyboardInput.LEFT: "yaw_left",
+                            carb.input.KeyboardInput.RIGHT: "yaw_right",
+                        }
+                        if key in mapping:
+                            self.manual_controller.set_input_state(**{mapping[key]: False})
+                return True
+
+            key = event.input
+
+            # Waypoint shortcuts (always active, editable via keyboard)
+            if key == carb.input.KeyboardInput.INSERT:
+                try:
+                    import omni.usd
+                    ctx = omni.usd.get_context()
+                    selected = ctx.get_selection().get_selected_prim_paths()
+                    if selected:
+                        self._add_waypoint_from_selected_prim()
+                    else:
+                        self._add_waypoint_from_inputs()
+                except Exception:
+                    self._add_waypoint_from_inputs()
+                return True
+
+            if key == carb.input.KeyboardInput.DEL:
+                self._clear_waypoints()
+                return True
+
+            # Manual control keys (only when manual mode enabled)
             if not self.manual_controller.enabled:
                 return True
 
-            pressed = event.type in (carb.input.KeyboardEventType.KEY_PRESS, carb.input.KeyboardEventType.KEY_REPEAT)
-            released = event.type == carb.input.KeyboardEventType.KEY_RELEASE
-            if not (pressed or released):
-                return True
-            state = pressed
-            key = event.input
-
+            state = True
             mapping = {
                 carb.input.KeyboardInput.W: "forward",
                 carb.input.KeyboardInput.S: "backward",

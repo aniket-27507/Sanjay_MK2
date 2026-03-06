@@ -42,7 +42,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -54,6 +54,13 @@ if PROJECT_ROOT not in sys.path:
 from src.core.types.drone_types import DroneConfig, DroneState, DroneType, FlightMode, Vector3, Waypoint
 from src.single_drone.flight_control.flight_controller import FlightController
 from src.single_drone.flight_control.waypoint_controller import WaypointController
+from src.simulation.surveillance_layout import (
+    ALPHA_ALTITUDE,
+    FORMATION_CENTER,
+    FORMATION_SPACING,
+    MISSION_WAYPOINTS,
+    build_obstacle_database,
+)
 from src.swarm.coordination import AlphaRegimentCoordinator, RegimentConfig
 
 logging.basicConfig(
@@ -64,92 +71,9 @@ logging.basicConfig(
 logger = logging.getLogger("MissionRunner")
 
 
-# ═══════════════════════════════════════════════════════════════════
-#  Obstacle Database (mirrors the scene builder definitions)
-# ═══════════════════════════════════════════════════════════════════
-#  Each obstacle is (x, y, z_center, width, depth, height).
-#  Keep in sync with create_surveillance_scene.py.
-
-
 def _load_obstacle_database() -> List[Dict]:
-    """Build the obstacle database matching the scene builder."""
-    obstacles = []
-
-    # ── Zone 1: Downtown ──
-    DOWNTOWN_CENTER = (200, 200)
-    dt_buildings = [
-        (0, 0, 18, 18, 55), (25, 0, 15, 22, 42), (48, -5, 20, 16, 60),
-        (0, 28, 12, 12, 38), (18, 25, 14, 20, 50),
-        (75, 0, 10, 40, 30), (88, 0, 10, 40, 28), (75, 45, 24, 10, 22),
-        (0, 60, 40, 8, 35), (0, 60, 8, 40, 35), (32, 60, 8, 40, 35),
-    ]
-    for ox, oy, w, d, h in dt_buildings:
-        x, y = DOWNTOWN_CENTER[0] + ox, DOWNTOWN_CENTER[1] + oy
-        obstacles.append({
-            "x": x, "y": y, "z": h / 2, "w": w, "d": d, "h": h,
-            "zone": "downtown",
-        })
-
-    # ── Zone 2: Industrial ──
-    IND_CENTER = (500, 150)
-    ind_objects = [
-        (0, 0, 12, 12, 20, 0), (18, 0, 10, 10, 25, 0), (32, 5, 14, 14, 18, 0),
-        (0, 18, 40, 1.5, 1.5, 12), (6, 0, 1.5, 30, 1.5, 15),
-        (20, 10, 25, 1.0, 1.0, 20), (-10, -15, 60, 5, 8, 0),
-        (-15, 10, 8, 6, 5, 0), (45, 20, 10, 8, 6, 0),
-    ]
-    for ox, oy, w, d, h, elev in ind_objects:
-        x, y = IND_CENTER[0] + ox, IND_CENTER[1] + oy
-        obstacles.append({
-            "x": x, "y": y, "z": elev + h / 2, "w": w, "d": d, "h": h,
-            "zone": "industrial",
-        })
-
-    # ── Zone 3: Residential ──
-    RES_BASE = (350, 450)
-    rng = np.random.RandomState(42)
-    templates = [(10, 8, 6), (12, 10, 8), (8, 8, 5), (14, 10, 10), (10, 12, 7)]
-    for row in range(5):
-        for col in range(5):
-            t = templates[rng.randint(len(templates))]
-            w, d, h = t[0] + rng.uniform(-2, 2), t[1] + rng.uniform(-2, 2), t[2] + rng.uniform(-1, 3)
-            x = RES_BASE[0] + col * 22
-            y = RES_BASE[1] + row * 22
-            obstacles.append({
-                "x": x, "y": y, "z": h / 2, "w": w, "d": d, "h": h,
-                "zone": "residential",
-            })
-
-    # ── Zone 4: Forest ──
-    FOREST_CENTER = (150, 600)
-    rng2 = np.random.RandomState(77)
-    for _ in range(80):
-        angle = rng2.uniform(0, 2 * math.pi)
-        radius = rng2.uniform(0, 120) ** 0.5 * 120 ** 0.5
-        x = FOREST_CENTER[0] + radius * math.cos(angle)
-        y = FOREST_CENTER[1] + radius * math.sin(angle)
-        trunk_h = rng2.uniform(8, 22)
-        canopy_r = rng2.uniform(4, 10)
-        # Tree trunk
-        obstacles.append({"x": x, "y": y, "z": trunk_h / 2, "w": 0.4, "d": 0.4, "h": trunk_h, "zone": "forest"})
-        # Canopy
-        obstacles.append({"x": x, "y": y, "z": trunk_h + canopy_r * 0.3,
-                          "w": canopy_r * 2, "d": canopy_r * 2, "h": canopy_r, "zone": "forest"})
-
-    # ── Zone 5: Powerlines ──
-    for i in range(8):
-        x = 600 + i * 40
-        obstacles.append({"x": x, "y": 400, "z": 75 / 2, "w": 2, "d": 2, "h": 75, "zone": "powerline"})
-
-    for ax, ay, ah, aw in [(700, 200, 80, 2.0), (720, 280, 70, 1.5), (680, 350, 85, 2.5)]:
-        obstacles.append({"x": ax, "y": ay, "z": ah / 2, "w": aw, "d": aw, "h": ah, "zone": "antenna"})
-
-    # Convert obstacle centers from Isaac/ENU-style altitude (+Z up) to
-    # the project's NED convention (negative Z is up) used by the runner.
-    for obs in obstacles:
-        obs["z"] = -float(obs["z"])
-
-    return obstacles
+    """Load obstacles from shared surveillance layout (NED frame)."""
+    return build_obstacle_database(ned_frame=True)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -246,6 +170,8 @@ class SyntheticLidar:
 
         hit_dirs = dirs[hit_mask]
         hit_t = best_t[hit_mask, np.newaxis]
+        # Return relative points so downstream drivers can transform
+        # into world frame exactly once.
         points = hit_dirs * hit_t
 
         return points.astype(np.float32)
@@ -293,25 +219,6 @@ class SimDrone:
 # ═══════════════════════════════════════════════════════════════════
 
 
-FORMATION_CENTER = (400, 350)
-FORMATION_SPACING = 80.0
-ALPHA_ALTITUDE = 65.0
-
-MISSION_WAYPOINTS = [
-    {"id": "WP_01", "pos": (200, 200, 65), "label": "Downtown Entry"},
-    {"id": "WP_02", "pos": (250, 200, 65), "label": "Tower Gap"},
-    {"id": "WP_03", "pos": (280, 260, 65), "label": "U-Trap Test"},
-    {"id": "WP_04", "pos": (500, 160, 65), "label": "Industrial Entry"},
-    {"id": "WP_05", "pos": (530, 170, 65), "label": "Pipe Corridor"},
-    {"id": "WP_06", "pos": (550, 140, 65), "label": "Tank Slalom"},
-    {"id": "WP_07", "pos": (150, 600, 55), "label": "Forest Ingress"},
-    {"id": "WP_08", "pos": (200, 620, 50), "label": "Canopy Skim"},
-    {"id": "WP_09", "pos": (620, 400, 65), "label": "Pylon Slalom"},
-    {"id": "WP_10", "pos": (700, 400, 65), "label": "Antenna Weave"},
-    {"id": "WP_11", "pos": (400, 350, 65), "label": "RTB"},
-]
-
-
 from src.core.utils.geometry import hex_positions as _hex_positions
 
 
@@ -341,11 +248,18 @@ class MissionRunner:
 
         # Spawn drones
         self._drones: Dict[int, SimDrone] = {}
+        self._formation_offsets: Dict[int, Vector3] = {}
+        self._formation_goal_scale = 0.55
         hex_pos = _hex_positions(*FORMATION_CENTER, FORMATION_SPACING)
         for i, (x, y) in enumerate(hex_pos):
             self._drones[i] = SimDrone(
                 drone_id=i,
                 position=Vector3(x=x, y=y, z=-ALPHA_ALTITUDE),  # NED
+            )
+            self._formation_offsets[i] = Vector3(
+                x=x - FORMATION_CENTER[0],
+                y=y - FORMATION_CENTER[1],
+                z=0.0,
             )
 
         # Avoidance managers (lazy import)
@@ -361,7 +275,9 @@ class MissionRunner:
             )
             for wp in MISSION_WAYPOINTS
         ]
-        self._mission_success_duration = 120.0
+        self._mission_waypoint_index = 0
+        self._waypoint_reached_radius = 36.0
+        self._waypoint_quorum_ratio = 0.60
 
         # Mission timing
         self._start_time = 0.0
@@ -379,6 +295,7 @@ class MissionRunner:
         self._sync_sub = None
         # Bridge reference for publishing velocity commands (Isaac Sim mode)
         self._bridge = None
+        self._bridge_ros_started = False
 
         # Optional controller-backed execution path.
         self._flight_controller: Optional[FlightController] = None
@@ -418,6 +335,7 @@ class MissionRunner:
             while True:
                 tick += 1
                 elapsed = time.time() - self._start_time
+                self._service_bridge_callbacks()
 
                 # ── Timeout check ──
                 if elapsed > self._max_mission_time:
@@ -453,6 +371,8 @@ class MissionRunner:
                         coordinator.ingest_gossip_payload(payload)
 
                 # ── One coordination tick per drone ──
+                for drone_id, coordinator in self._coordinators.items():
+                    coordinator.set_forced_goal(self._get_drone_waypoint_goal(drone_id))
                 for coordinator in self._coordinators.values():
                     coordinator.coordination_step()
 
@@ -513,7 +433,7 @@ class MissionRunner:
                     mission_result = "FAILED_SEPARATION"
                     break
 
-                if elapsed >= self._mission_success_duration:
+                if self._mission_waypoint_index >= len(self._mission_waypoints):
                     mission_result = "SUCCESS"
                     break
 
@@ -533,12 +453,14 @@ class MissionRunner:
                     closest = mgr.closest_obstacle_distance if mgr else float("inf")
                     logger.info(
                         f"[{elapsed:>6.1f}s] Decentralized swarm active | "
+                        f"WP: {self._mission_waypoint_index}/{len(self._mission_waypoints)} | "
                         f"State: {state_name} | "
                         f"Closest: {closest:.1f}m | "
                         f"MinSep: {self._min_inter_drone_distance:.1f}m | "
                         f"HPL: {self._hpl_override_count}"
                     )
 
+                self._update_waypoint_progress()
                 await asyncio.sleep(self._dt)
 
         except KeyboardInterrupt:
@@ -607,7 +529,59 @@ class MissionRunner:
             await coordinator.initialize()
             for peer_id in self._drones:
                 coordinator.register_drone(peer_id)
+            coordinator.set_forced_goal(self._get_drone_waypoint_goal(drone_id))
             self._coordinators[drone_id] = coordinator
+
+    def _get_current_waypoint_goal(self) -> Optional[Vector3]:
+        if self._mission_waypoint_index >= len(self._mission_waypoints):
+            return None
+        return self._mission_waypoints[self._mission_waypoint_index].position
+
+    def _get_drone_waypoint_goal(self, drone_id: int) -> Optional[Vector3]:
+        waypoint_center = self._get_current_waypoint_goal()
+        if waypoint_center is None:
+            return None
+        offset = self._formation_offsets.get(drone_id, Vector3())
+        return Vector3(
+            x=waypoint_center.x + offset.x * self._formation_goal_scale,
+            y=waypoint_center.y + offset.y * self._formation_goal_scale,
+            z=waypoint_center.z + offset.z,
+        )
+
+    def _update_waypoint_progress(self):
+        if self._get_current_waypoint_goal() is None:
+            return
+
+        active = [d for d in self._drones.values() if d.is_active]
+        if not active:
+            return
+
+        active_ids = [d.drone_id for d in active]
+        quorum = max(1, int(math.ceil(len(active_ids) * self._waypoint_quorum_ratio)))
+        reached = 0
+        for drone_id in active_ids:
+            drone_goal = self._get_drone_waypoint_goal(drone_id)
+            drone_state = self._drones.get(drone_id)
+            if drone_goal is None or drone_state is None:
+                continue
+            if drone_state.position.distance_to(drone_goal) <= self._waypoint_reached_radius:
+                reached += 1
+
+        if reached < quorum:
+            return
+
+        wp = MISSION_WAYPOINTS[self._mission_waypoint_index]
+        self._mission_waypoint_index += 1
+        self._log_event(
+            "SWARM",
+            f"Reached {wp['id']} ({wp['label']}) with quorum {reached}/{len(active_ids)}",
+            "SUCCESS",
+        )
+        if self._overlay:
+            try:
+                self._overlay.advance_waypoint("SWARM", wp["id"])
+            except Exception:
+                pass
 
     def _compute_min_inter_drone_distance(self) -> float:
         """Compute nearest pairwise spacing among active drones."""
@@ -646,6 +620,7 @@ class MissionRunner:
             import rclpy
             if not rclpy.ok():
                 rclpy.init()
+                self._bridge_ros_started = True
             self._bridge = IsaacSimBridgeNode(config)
 
             def _lidar_hook(drone_name: str, points: np.ndarray):
@@ -666,6 +641,16 @@ class MissionRunner:
         except Exception as e:
             logger.debug(f"Bridge init skipped: {e}")
             self._bridge = None
+            self._bridge_ros_started = False
+
+    def _service_bridge_callbacks(self):
+        if self._bridge is None:
+            return
+        try:
+            import rclpy
+            rclpy.spin_once(self._bridge, timeout_sec=0.0)
+        except Exception:
+            pass
 
     def _publish_velocity(self, drone_id: int, velocity: Vector3):
         """Publish velocity command to Isaac Sim via ROS 2 bridge."""
@@ -755,6 +740,21 @@ class MissionRunner:
             except Exception:
                 pass
             self._sync_sub = None
+
+        if self._bridge is not None:
+            try:
+                self._bridge.destroy_node()
+            except Exception:
+                pass
+            self._bridge = None
+        if self._bridge_ros_started:
+            try:
+                import rclpy
+                if rclpy.ok():
+                    rclpy.shutdown()
+            except Exception:
+                pass
+            self._bridge_ros_started = False
 
         elapsed = time.time() - self._start_time
 

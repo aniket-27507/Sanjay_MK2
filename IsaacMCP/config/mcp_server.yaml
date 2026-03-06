@@ -35,13 +35,17 @@ instances:
       enabled: true
       base_url: "http://localhost:8211"
     logs:
-      method: "ssh"
+      # Use "local" for Windows/local Isaac Sim; "ssh" for remote
+      method: "local"
       ssh:
-        host: "your-isaac-host"
-        user: "your-ssh-user"
+        host: "localhost"
+        user: "user"
         key_path: "~/.ssh/id_rsa"
       remote_path: "~/.local/share/ov/pkg/isaac-sim/kit/logs/"
-      local_path: ""
+      # Windows: use Kit parent dir so rglob finds kit_*.log in any subdir
+      # (e.g. Isaac-Sim, Isaac-Sim Full/5.1, etc.)
+      # %USERPROFILE%\.nvidia-omniverse\logs\Kit
+      local_path: "~/.nvidia-omniverse/logs/Kit"
       poll_interval_s: 2.0
       history_lines: 1000
     ros2:

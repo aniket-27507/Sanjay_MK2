@@ -80,9 +80,27 @@ class FlightController:
         FlightMode.ARMING: [FlightMode.ARMED, FlightMode.IDLE, FlightMode.EMERGENCY],
         FlightMode.ARMED: [FlightMode.TAKING_OFF, FlightMode.IDLE, FlightMode.EMERGENCY],
         FlightMode.TAKING_OFF: [FlightMode.HOVERING, FlightMode.EMERGENCY],
-        FlightMode.HOVERING: [FlightMode.NAVIGATING, FlightMode.MANUAL, FlightMode.LANDING, FlightMode.EMERGENCY],
-        FlightMode.NAVIGATING: [FlightMode.HOVERING, FlightMode.MANUAL, FlightMode.LANDING, FlightMode.EMERGENCY],
-        FlightMode.MANUAL: [FlightMode.HOVERING, FlightMode.NAVIGATING, FlightMode.LANDING, FlightMode.EMERGENCY],
+        FlightMode.HOVERING: [
+            FlightMode.NAVIGATING,
+            FlightMode.MANUAL,
+            FlightMode.LANDING,
+            FlightMode.RETURN_TO_LAUNCH,
+            FlightMode.EMERGENCY,
+        ],
+        FlightMode.NAVIGATING: [
+            FlightMode.HOVERING,
+            FlightMode.MANUAL,
+            FlightMode.LANDING,
+            FlightMode.RETURN_TO_LAUNCH,
+            FlightMode.EMERGENCY,
+        ],
+        FlightMode.MANUAL: [
+            FlightMode.HOVERING,
+            FlightMode.NAVIGATING,
+            FlightMode.LANDING,
+            FlightMode.RETURN_TO_LAUNCH,
+            FlightMode.EMERGENCY,
+        ],
         FlightMode.LANDING: [FlightMode.LANDED, FlightMode.EMERGENCY],
         FlightMode.LANDED: [FlightMode.IDLE, FlightMode.ARMING, FlightMode.EMERGENCY],
         FlightMode.EMERGENCY: [FlightMode.LANDED, FlightMode.IDLE],
@@ -526,6 +544,8 @@ class FlightController:
         Returns:
             True if RTL completed successfully
         """
+        if self._mode in (FlightMode.IDLE, FlightMode.ARMED, FlightMode.LANDED):
+            return False
         await self._transition_to(FlightMode.RETURN_TO_LAUNCH)
         
         if await self._interface.return_to_launch():
@@ -735,6 +755,9 @@ class FlightController:
     
     async def _check_geofence(self):
         """Check geofence boundaries."""
+        if self._mode in (FlightMode.IDLE, FlightMode.ARMED, FlightMode.LANDED):
+            return
+
         position = self.position
         
         # Check altitude

@@ -50,6 +50,13 @@ from collections import defaultdict
 
 from isaacsim.core.api import World
 from isaacsim.core.api.objects import VisualCuboid
+from src.simulation.surveillance_layout import (
+    ALPHA_ALTITUDE as SHARED_ALPHA_ALTITUDE,
+    FORMATION_CENTER as SHARED_FORMATION_CENTER,
+    FORMATION_SPACING as SHARED_FORMATION_SPACING,
+    MISSION_WAYPOINTS as SHARED_MISSION_WAYPOINTS,
+    build_obstacle_database,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -247,6 +254,9 @@ ROADS = [
 FORMATION_CENTER = (400, 350)
 FORMATION_SPACING = 80.0
 ALPHA_ALTITUDE = 65.0
+FORMATION_CENTER = SHARED_FORMATION_CENTER
+FORMATION_SPACING = SHARED_FORMATION_SPACING
+ALPHA_ALTITUDE = SHARED_ALPHA_ALTITUDE
 
 from src.core.utils.geometry import hex_positions as _hex_positions
 
@@ -289,6 +299,12 @@ MISSION_WAYPOINTS = [
     # Phase 5: return to base
     {"id": "WP_11", "pos": (400, 350, ALPHA_ALTITUDE), "label": "RTB"},
 ]
+MISSION_WAYPOINTS = SHARED_MISSION_WAYPOINTS
+SHARED_OBSTACLES = build_obstacle_database(ned_frame=False)
+
+
+def _obstacles_for_zone(zone: str):
+    return [o for o in SHARED_OBSTACLES if o.get("zone") == zone]
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -333,19 +349,18 @@ def create_scene():
 
 def _build_downtown(world):
     """Zone 1: Dense downtown core."""
-    cx, cy = DOWNTOWN_CENTER
     base_path = "/World/Zones/Downtown"
 
-    for i, (ox, oy, w, d, h) in enumerate(DOWNTOWN_BUILDINGS):
-        x, y = cx + ox, cy + oy
+    downtown = _obstacles_for_zone("downtown")
+    for i, obs in enumerate(downtown):
         # Alternate between concrete and glass facades
         color = CLR_CONCRETE if i % 3 != 0 else CLR_GLASS
         world.scene.add(VisualCuboid(
             prim_path=f"{base_path}/building_{i}",
             name=f"dt_bldg_{i}",
-            position=np.array([x, y, h / 2.0]),
+            position=np.array([obs["x"], obs["y"], obs["z"]]),
             size=1.0,
-            scale=np.array([w, d, h]),
+            scale=np.array([obs["w"], obs["d"], obs["h"]]),
             color=color,
         ))
 
@@ -371,124 +386,83 @@ def _build_downtown(world):
 
 def _build_industrial(world):
     """Zone 2: Industrial compound with pipes and tanks."""
-    cx, cy = INDUSTRIAL_CENTER
     base_path = "/World/Zones/Industrial"
 
-    for i, obj in enumerate(INDUSTRIAL_OBJECTS):
-        ox, oy = obj["offset"]
-        x, y = cx + ox, cy + oy
-        w, d, h = obj["w"], obj["d"], obj["h"]
-        elev = obj.get("elev", 0)
-
-        if obj["type"] == "tank":
-            color = CLR_TANK
-        elif obj["type"] == "pipe":
-            color = CLR_RUST
-        elif obj["type"] == "gantry":
-            color = CLR_METAL
-        else:
+    for i, obs in enumerate(_obstacles_for_zone("industrial")):
+        if obs["h"] <= 6.0:
             color = CLR_CONCRETE
+        elif obs["h"] <= 12.0:
+            color = CLR_METAL
+        elif obs["w"] <= 2.0 or obs["d"] <= 2.0:
+            color = CLR_RUST
+        else:
+            color = CLR_TANK
 
         world.scene.add(VisualCuboid(
-            prim_path=f"{base_path}/{obj['type']}_{i}",
-            name=f"ind_{obj['type']}_{i}",
-            position=np.array([x, y, elev + h / 2.0]),
+            prim_path=f"{base_path}/object_{i}",
+            name=f"ind_object_{i}",
+            position=np.array([obs["x"], obs["y"], obs["z"]]),
             size=1.0,
-            scale=np.array([w, d, h]),
+            scale=np.array([obs["w"], obs["d"], obs["h"]]),
             color=color,
         ))
 
-    print(f"[Zone 2] Industrial: {len(INDUSTRIAL_OBJECTS)} objects "
+    print(f"[Zone 2] Industrial: {len(_obstacles_for_zone('industrial'))} objects "
           f"(tanks, pipes, gantry)")
 
 
 def _build_residential(world):
     """Zone 3: Residential blocks with varied rooftops."""
-    cx, cy = RESIDENTIAL_CENTER
     base_path = "/World/Zones/Residential"
 
-    rng = np.random.RandomState(42)
+    houses = _obstacles_for_zone("residential")
     count = 0
-
-    for row in range(RESIDENTIAL_GRID):
-        for col in range(RESIDENTIAL_GRID):
-            template = HOUSE_TEMPLATES[rng.randint(len(HOUSE_TEMPLATES))]
-            w, d, h = template
-
-            # Randomize slightly
-            w += rng.uniform(-2, 2)
-            d += rng.uniform(-2, 2)
-            h += rng.uniform(-1, 3)
-
-            x = cx + col * RESIDENTIAL_SPACING
-            y = cy + row * RESIDENTIAL_SPACING
-
-            # House body
-            world.scene.add(VisualCuboid(
-                prim_path=f"{base_path}/house_{row}_{col}",
-                name=f"res_house_{row}_{col}",
-                position=np.array([x, y, h / 2.0]),
-                size=1.0,
-                scale=np.array([w, d, h]),
-                color=CLR_CONCRETE if (row + col) % 2 == 0 else CLR_BRICK,
-            ))
-
-            # Pitched roof (thin cuboid on top at angle ≈ flat)
-            world.scene.add(VisualCuboid(
-                prim_path=f"{base_path}/roof_{row}_{col}",
-                name=f"res_roof_{row}_{col}",
-                position=np.array([x, y, h + 0.4]),
-                size=1.0,
-                scale=np.array([w + 1, d + 1, 0.8]),
-                color=CLR_ROOF_TILE,
-            ))
-            count += 1
+    for idx, obs in enumerate(houses):
+        row = idx // RESIDENTIAL_GRID
+        col = idx % RESIDENTIAL_GRID
+        world.scene.add(VisualCuboid(
+            prim_path=f"{base_path}/house_{row}_{col}",
+            name=f"res_house_{row}_{col}",
+            position=np.array([obs["x"], obs["y"], obs["z"]]),
+            size=1.0,
+            scale=np.array([obs["w"], obs["d"], obs["h"]]),
+            color=CLR_CONCRETE if (row + col) % 2 == 0 else CLR_BRICK,
+        ))
+        world.scene.add(VisualCuboid(
+            prim_path=f"{base_path}/roof_{row}_{col}",
+            name=f"res_roof_{row}_{col}",
+            position=np.array([obs["x"], obs["y"], obs["h"] + 0.4]),
+            size=1.0,
+            scale=np.array([obs["w"] + 1.0, obs["d"] + 1.0, 0.8]),
+            color=CLR_ROOF_TILE,
+        ))
+        count += 1
 
     print(f"[Zone 3] Residential: {count} houses with rooftops")
 
 
 def _build_forest(world):
     """Zone 4: Dense forest canopy."""
-    cx, cy = FOREST_CENTER
     base_path = "/World/Zones/Forest"
 
-    rng = np.random.RandomState(77)
-
-    for i in range(FOREST_NUM_TREES):
-        # Random position within circular patch
-        angle = rng.uniform(0, 2 * math.pi)
-        radius = rng.uniform(0, FOREST_RADIUS) ** 0.5 * FOREST_RADIUS ** 0.5
-        x = cx + radius * math.cos(angle)
-        y = cy + radius * math.sin(angle)
-
-        trunk_h = rng.uniform(*TREE_HEIGHT_RANGE)
-        canopy_r = rng.uniform(*TREE_CANOPY_RANGE)
-
-        # Trunk (thin tall cuboid)
+    forest_obs = _obstacles_for_zone("forest")
+    for i, obs in enumerate(forest_obs):
+        is_trunk = obs["w"] <= 0.5 and obs["d"] <= 0.5
+        prim_name = "trunk" if is_trunk else "canopy"
         world.scene.add(VisualCuboid(
-            prim_path=f"{base_path}/trunk_{i}",
-            name=f"tree_trunk_{i}",
-            position=np.array([x, y, trunk_h / 2.0]),
+            prim_path=f"{base_path}/{prim_name}_{i}",
+            name=f"tree_{prim_name}_{i}",
+            position=np.array([obs["x"], obs["y"], obs["z"]]),
             size=1.0,
-            scale=np.array([0.4, 0.4, trunk_h]),
-            color=CLR_TREE_TRUNK,
-        ))
-
-        # Canopy (wide short cuboid on top)
-        world.scene.add(VisualCuboid(
-            prim_path=f"{base_path}/canopy_{i}",
-            name=f"tree_canopy_{i}",
-            position=np.array([x, y, trunk_h + canopy_r * 0.3]),
-            size=1.0,
-            scale=np.array([canopy_r * 2, canopy_r * 2, canopy_r]),
-            color=CLR_CANOPY,
+            scale=np.array([obs["w"], obs["d"], obs["h"]]),
+            color=CLR_TREE_TRUNK if is_trunk else CLR_CANOPY,
         ))
 
     # Dense underbrush patches
     for j in range(6):
         angle = j * (2 * math.pi / 6)
-        bx = cx + FOREST_RADIUS * 0.5 * math.cos(angle)
-        by = cy + FOREST_RADIUS * 0.5 * math.sin(angle)
+        bx = FOREST_CENTER[0] + FOREST_RADIUS * 0.5 * math.cos(angle)
+        by = FOREST_CENTER[1] + FOREST_RADIUS * 0.5 * math.sin(angle)
         world.scene.add(VisualCuboid(
             prim_path=f"{base_path}/brush_{j}",
             name=f"brush_{j}",
@@ -498,25 +472,27 @@ def _build_forest(world):
             color=CLR_VEGETATION,
         ))
 
-    print(f"[Zone 4] Forest: {FOREST_NUM_TREES} trees + 6 brush patches")
+    print(f"[Zone 4] Forest: {len(forest_obs)} primitives + 6 brush patches")
 
 
 def _build_powerline_corridor(world):
     """Zone 5: Powerline pylons & antenna towers stretching above altitude."""
     base_path = "/World/Zones/Powerlines"
-    sx, sy = CORRIDOR_START
+    pylons = _obstacles_for_zone("powerline")
+    antennas = _obstacles_for_zone("antenna")
 
-    for i in range(CORRIDOR_NUM_PYLONS):
-        x = sx + i * CORRIDOR_SPACING
-        y = sy
+    for i, obs in enumerate(pylons):
+        x = obs["x"]
+        y = obs["y"]
+        h = obs["h"]
 
         # Pylon base (lattice tower → tall thin cuboid)
         world.scene.add(VisualCuboid(
             prim_path=f"{base_path}/pylon_{i}",
             name=f"pylon_{i}",
-            position=np.array([x, y, PYLON_HEIGHT / 2.0]),
+            position=np.array([x, y, obs["z"]]),
             size=1.0,
-            scale=np.array([2.0, 2.0, PYLON_HEIGHT]),
+            scale=np.array([obs["w"], obs["d"], h]),
             color=CLR_METAL,
         ))
 
@@ -524,42 +500,43 @@ def _build_powerline_corridor(world):
         world.scene.add(VisualCuboid(
             prim_path=f"{base_path}/arm_{i}",
             name=f"pylon_arm_{i}",
-            position=np.array([x, y, PYLON_HEIGHT - 2]),
+            position=np.array([x, y, h - 2]),
             size=1.0,
             scale=np.array([0.5, 20, 0.5]),
             color=CLR_METAL,
         ))
 
         # Wires between pylons (thin horizontal bars)
-        if i < CORRIDOR_NUM_PYLONS - 1:
-            next_x = sx + (i + 1) * CORRIDOR_SPACING
+        if i < len(pylons) - 1:
+            next_x = pylons[i + 1]["x"]
             mid_x = (x + next_x) / 2.0
-            wire_len = CORRIDOR_SPACING
+            wire_len = float(next_x - x)
 
             # Use a clean index for prim/name to avoid invalid SdfPath components
             for wire_idx, wire_offset in enumerate([-8, -4, 0, 4, 8]):
                 world.scene.add(VisualCuboid(
                     prim_path=f"{base_path}/wire_{i}_{wire_idx}",
                     name=f"wire_{i}_{wire_idx}",
-                    position=np.array([mid_x, y + wire_offset, PYLON_HEIGHT - 3]),
+                    position=np.array([mid_x, y + wire_offset, h - 3]),
                     size=1.0,
                     scale=np.array([wire_len, 0.08, 0.08]),
                     color=CLR_WIRE,
                 ))
 
     # Standalone antenna towers
-    for k, (ax, ay, ah, aw) in enumerate(ANTENNAS):
+    for k, obs in enumerate(antennas):
         world.scene.add(VisualCuboid(
             prim_path=f"{base_path}/antenna_{k}",
             name=f"antenna_{k}",
-            position=np.array([ax, ay, ah / 2.0]),
+            position=np.array([obs["x"], obs["y"], obs["z"]]),
             size=1.0,
-            scale=np.array([aw, aw, ah]),
+            scale=np.array([obs["w"], obs["d"], obs["h"]]),
             color=CLR_WIRE,
         ))
 
-    print(f"[Zone 5] Powerlines: {CORRIDOR_NUM_PYLONS} pylons + "
-          f"{len(ANTENNAS)} antennas (height up to {PYLON_HEIGHT}m)")
+    max_h = max([obs["h"] for obs in pylons], default=0.0)
+    print(f"[Zone 5] Powerlines: {len(pylons)} pylons + "
+          f"{len(antennas)} antennas (height up to {max_h:.0f}m)")
 
 
 def _build_roads(world):

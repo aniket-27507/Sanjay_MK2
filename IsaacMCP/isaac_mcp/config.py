@@ -415,6 +415,9 @@ def _apply_env_overrides(config: ServerConfig) -> None:
         if log_path := os.environ.get("ISAAC_MCP_LOG_PATH"):
             primary.logs.remote_path = log_path
 
+        if local_log_path := os.environ.get("ISAAC_MCP_LOCAL_LOG_PATH"):
+            primary.logs.local_path = local_log_path
+
         if ssh_host := os.environ.get("ISAAC_MCP_SSH_HOST"):
             primary.logs.ssh.host = ssh_host
 
