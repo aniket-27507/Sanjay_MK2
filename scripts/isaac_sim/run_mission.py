@@ -252,7 +252,7 @@ class MissionRunner:
         self._drones: Dict[int, SimDrone] = {}
         self._formation_offsets: Dict[int, Vector3] = {}
         self._formation_goal_scale = 0.55
-        hex_pos = _hex_positions(*FORMATION_CENTER, FORMATION_SPACING)
+        hex_pos = _hex_positions(*FORMATION_CENTER, FORMATION_SPACING, n=6, include_center=False)
         for i, (x, y) in enumerate(hex_pos):
             self._drones[i] = SimDrone(
                 drone_id=i,
