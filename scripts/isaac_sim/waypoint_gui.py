@@ -1,7 +1,10 @@
 """
 Project Sanjay Mk2 - Waypoint GUI
 =================================
-Isaac Sim viewport panel for waypoint and mode management.
+Isaac Sim viewport panel for swarm waypoint and mode management.
+
+Drives a 7-drone regiment (6 alphas + 1 beta) through checkpoint
+waypoints using SwarmWaypointRunner.
 """
 
 from __future__ import annotations
@@ -18,27 +21,19 @@ if PROJECT_ROOT not in sys.path:
 from pxr import UsdGeom
 
 from src.core.types.drone_types import Vector3
-from src.single_drone.flight_control.flight_controller import FlightController
-from src.single_drone.flight_control.manual_controller import ManualController
 from src.single_drone.flight_control.mode_manager import ModeManager
-from src.single_drone.flight_control.waypoint_controller import WaypointController
-from src.swarm.flock_coordinator import FlockCoordinator
+from src.swarm.swarm_waypoint_runner import SwarmWaypointRunner
 
 
 class WaypointGuiPanel:
-    """Simple Isaac Sim GUI for adding waypoints and controlling autonomy."""
+    """Isaac Sim GUI for swarm checkpoint navigation and mode management."""
 
-    def __init__(self, flight_controller: Optional[FlightController] = None, backend: str = "isaac_sim"):
+    def __init__(self, backend: str = "isaac_sim"):
         import omni.ui as ui
 
         self.ui = ui
-        self.flight_controller = flight_controller or FlightController(drone_id=0, backend=backend)
-        self.waypoint_controller = WaypointController(self.flight_controller)
-        self.manual_controller = ManualController(self.flight_controller)
-        self.waypoint_controller.attach_manual_controller(self.manual_controller)
-        self.flock_coordinator = FlockCoordinator(drone_id=0)
-        self.flight_controller.attach_flock_coordinator(self.flock_coordinator)
-        self.mode_manager = ModeManager(self.flight_controller, flock_coordinator=self.flock_coordinator)
+        self.swarm_runner = SwarmWaypointRunner(backend=backend)
+        self.mode_manager = ModeManager(swarm_runner=self.swarm_runner)
         self._execution_task: Optional[asyncio.Task] = None
         self._key_sub = None
 
@@ -46,20 +41,22 @@ class WaypointGuiPanel:
         self._y_model = ui.SimpleFloatModel(0.0)
         self._z_model = ui.SimpleFloatModel(-65.0)
         self._z_model.add_end_edit_fn(self._on_z_field_commit)
-        s = self.waypoint_controller.status
+        s = self.swarm_runner.status
         self._status_model = ui.SimpleStringModel(
-            f"Ready (backend={backend})\nRunner: {s.state.name} | WP: {s.current_index}/{s.total_waypoints}"
+            f"Ready (backend={backend})\n"
+            f"Swarm: {s.state.name} | CP: {s.current_index}/{s.total_checkpoints}"
         )
-        self._waypoints_model = ui.SimpleStringModel("No waypoints")
+        self._waypoints_model = ui.SimpleStringModel("No checkpoints")
         self._avoidance_model = ui.SimpleBoolModel(True)
         self._boids_model = ui.SimpleBoolModel(True)
         self._cbba_model = ui.SimpleBoolModel(True)
         self._formation_model = ui.SimpleBoolModel(True)
+        self._spacing_model = ui.SimpleFloatModel(80.0)
 
-        self._window = ui.Window("Sanjay MK2 Waypoint Controller", width=480, height=560)
+        self._window = ui.Window("Sanjay MK2 Swarm Controller", width=480, height=620)
         with self._window.frame:
             with ui.VStack(spacing=8):
-                ui.Label("Waypoint Input (NED)", style={"font_size": 16})
+                ui.Label("Checkpoint Input (NED)", style={"font_size": 16})
                 with ui.HStack(height=26):
                     ui.Label("X", width=22)
                     ui.FloatField(model=self._x_model, precision=2)
@@ -69,12 +66,12 @@ class WaypointGuiPanel:
                     ui.FloatField(model=self._z_model, precision=2)
 
                 with ui.HStack(height=28):
-                    ui.Button("Add Waypoint", clicked_fn=self._add_waypoint_from_inputs)
+                    ui.Button("Add Checkpoint", clicked_fn=self._add_waypoint_from_inputs)
                     ui.Button("Add From Selected Prim", clicked_fn=self._add_waypoint_from_selected_prim)
                     ui.Button("Clear", clicked_fn=self._clear_waypoints)
                 ui.Spacer(height=2)
                 ui.Label(
-                    "Keyboard: Insert = Add waypoint | Delete = Clear list",
+                    "Keyboard: Insert = Add checkpoint | Delete = Clear list",
                     style={"font_size": 11, "color": ui.color(0.55, 0.55, 0.55)},
                 )
 
@@ -84,9 +81,6 @@ class WaypointGuiPanel:
                     ui.Button("Pause", clicked_fn=self._pause_mission)
                     ui.Button("Resume", clicked_fn=self._resume_mission)
                     ui.Button("Stop", clicked_fn=self._stop_mission)
-                with ui.HStack(height=28):
-                    ui.Button("Manual Overtake ON", clicked_fn=self._manual_on)
-                    ui.Button("Manual Overtake OFF", clicked_fn=self._manual_off)
 
                 ui.Label("Runtime Toggles", style={"font_size": 16})
                 with ui.HStack(height=26):
@@ -106,51 +100,69 @@ class WaypointGuiPanel:
                     ui.Label("Formation", width=170)
                     ui.Button("Apply", width=70, clicked_fn=self._apply_formation)
 
-                ui.Label("Waypoint List", style={"font_size": 16})
-                ui.StringField(model=self._waypoints_model, multiline=True, height=190)
+                with ui.HStack(height=26):
+                    ui.Label("Formation Spacing (m):", width=170)
+                    ui.FloatSlider(
+                        model=self._spacing_model, min=30.0, max=150.0, step=5.0,
+                    )
+                    ui.Button("Apply", width=70, clicked_fn=self._apply_spacing)
+
+                ui.Label("Checkpoint List", style={"font_size": 16})
+                ui.StringField(model=self._waypoints_model, multiline=True, height=160)
                 ui.Label("Status", style={"font_size": 16})
-                ui.StringField(model=self._status_model, multiline=True, height=60)
+                ui.StringField(model=self._status_model, multiline=True, height=80)
 
         self._register_keyboard_handlers()
 
     def _set_status(self, text: str):
-        s = self.waypoint_controller.status
-        full = f"{text}\nRunner: {s.state.name} | WP: {s.current_index}/{s.total_waypoints}"
+        s = self.swarm_runner.status
+        phase_name = s.phase.name if hasattr(s.phase, "name") else str(s.phase)
+        quality_pct = s.formation_quality * 100
+        full = (
+            f"{text}\n"
+            f"Swarm: {s.state.name} | CP: {s.current_index}/{s.total_checkpoints} "
+            f"| Phase: {phase_name}\n"
+            f"Formation: {quality_pct:.0f}% | "
+            f"Beta alt: {s.beta_altitude:.1f}m | "
+            f"Min dist: {s.min_inter_drone_distance:.1f}m"
+        )
         self._status_model.set_value(full)
         self._refresh_waypoint_listing()
 
     def _refresh_waypoint_listing(self):
-        waypoints = self.waypoint_controller.waypoints
-        if not waypoints:
-            self._waypoints_model.set_value("No waypoints")
+        checkpoints = self.swarm_runner.checkpoints
+        if not checkpoints:
+            self._waypoints_model.set_value("No checkpoints")
             return
         lines = []
-        for idx, wp in enumerate(waypoints):
+        current = self.swarm_runner.status.current_index
+        for idx, wp in enumerate(checkpoints):
+            marker = " <<" if idx == current else ""
             lines.append(
                 f"{idx}: ({wp.position.x:.1f}, {wp.position.y:.1f}, {wp.position.z:.1f}) "
-                f"spd={wp.speed:.1f} tol={wp.acceptance_radius:.1f}"
+                f"spd={wp.speed:.1f}{marker}"
             )
         self._waypoints_model.set_value("\n".join(lines))
 
     def _on_z_field_commit(self, *args):
-        """Add waypoint when user presses Enter in Z field."""
+        """Add checkpoint when user presses Enter in Z field."""
         self._add_waypoint_from_inputs()
 
     def _add_waypoint_from_inputs(self):
-        self.waypoint_controller.add_waypoint(
+        self.swarm_runner.add_checkpoint(
             position=Vector3(
                 x=self._x_model.as_float,
                 y=self._y_model.as_float,
                 z=self._z_model.as_float,
             )
         )
-        self._set_status("Waypoint added from numeric input")
+        self._set_status("Checkpoint added from numeric input")
 
     def _add_waypoint_from_selected_prim(self):
         """
         Visual workflow:
         1) Click/select a prim in Isaac viewport.
-        2) Press this button to capture its world translation as waypoint.
+        2) Press this button to capture its world translation as checkpoint.
         """
         try:
             import omni.usd
@@ -168,57 +180,52 @@ class WaypointGuiPanel:
             translate = local_transform.ExtractTranslation()
             # Stage is +Z up; convert to NED z.
             pos = Vector3(x=float(translate[0]), y=float(translate[1]), z=-float(translate[2]))
-            self.waypoint_controller.add_waypoint(position=pos)
-            self._set_status(f"Waypoint added from selected prim: {selected[0]}")
+            self.swarm_runner.add_checkpoint(position=pos)
+            self._set_status(f"Checkpoint added from prim: {selected[0]}")
         except Exception as e:
             self._set_status(f"Failed to read selected prim: {e}")
 
     def _clear_waypoints(self):
-        self.waypoint_controller.clear_waypoints()
-        self._set_status("Waypoint list cleared")
+        self.swarm_runner.clear_checkpoints()
+        self._set_status("Checkpoint list cleared")
 
     def _start_mission(self):
         if self._execution_task and not self._execution_task.done():
             self._set_status("Mission already running")
             return
 
-        if not self.waypoint_controller.waypoints:
-            self._set_status("Add at least one waypoint before starting")
+        if not self.swarm_runner.checkpoints:
+            self._set_status("Add at least one checkpoint before starting")
             return
 
-        enable_avoidance = self.mode_manager.status.avoidance_enabled
-
         def _schedule(loop: asyncio.AbstractEventLoop | None = None):
-            """Schedule mission on event loop; runs when loop processes the queue."""
+            """Schedule swarm mission on event loop."""
             try:
-                coro = self.waypoint_controller.execute_mission(
-                    enable_avoidance=enable_avoidance,
-                    auto_arm_takeoff=True,
-                )
+                coro = self.swarm_runner.execute()
                 if loop is not None:
                     self._execution_task = asyncio.ensure_future(coro, loop=loop)
                 else:
                     self._execution_task = asyncio.ensure_future(coro)
-                self._set_status("Mission started")
+                self._set_status("Swarm mission started (7 drones)")
             except RuntimeError as e:
                 self._set_status(f"Cannot start: no event loop ({e})")
 
         try:
             loop = asyncio.get_running_loop()
             loop.call_soon_threadsafe(lambda: _schedule(loop))
-            self._set_status("Mission starting...")
+            self._set_status("Swarm mission starting...")
         except RuntimeError:
             try:
                 loop = asyncio.get_event_loop()
                 loop.call_soon_threadsafe(lambda: _schedule(loop))
-                self._set_status("Mission starting...")
+                self._set_status("Swarm mission starting...")
             except Exception as e:
                 # Defer to next frame; Isaac Sim may have loop available then
                 try:
                     import omni.kit.app
                     ev_loop = asyncio.get_event_loop()
                     omni.kit.app.get_app().post_update_call(lambda: _schedule(ev_loop))
-                    self._set_status("Mission starting...")
+                    self._set_status("Swarm mission starting...")
                 except Exception:
                     self._set_status(
                         f"No event loop. Run create_surveillance_scene.py first, "
@@ -226,16 +233,16 @@ class WaypointGuiPanel:
                     )
 
     def _pause_mission(self):
-        self.waypoint_controller.pause()
-        self._set_status("Mission paused")
+        self.swarm_runner.pause()
+        self._set_status("Swarm mission paused")
 
     def _resume_mission(self):
-        self.waypoint_controller.resume()
-        self._set_status("Mission resumed")
+        self.swarm_runner.resume()
+        self._set_status("Swarm mission resumed")
 
     def _stop_mission(self):
-        self.waypoint_controller.stop()
-        self._set_status("Mission stop requested")
+        self.swarm_runner.stop()
+        self._set_status("Swarm mission stop requested")
 
     def _apply_avoidance(self):
         self.mode_manager.set_avoidance(self._avoidance_model.as_bool)
@@ -253,44 +260,13 @@ class WaypointGuiPanel:
         self.mode_manager.set_formation(self._formation_model.as_bool)
         self._set_status(f"Formation set to {self._formation_model.as_bool}")
 
-    def _manual_on(self):
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._manual_on_async())
-        except RuntimeError:
-            pass
-
-    def _manual_off(self):
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._manual_off_async())
-        except RuntimeError:
-            pass
-
-    async def _manual_on_async(self):
-        ok = await self.waypoint_controller.enable_manual_overtake()
-        self.mode_manager.set_manual_override(ok)
-        try:
-            from scripts.isaac_sim.create_surveillance_scene import get_mission_overlay
-            get_mission_overlay().set_manual_override(ok)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).debug("Overlay update skipped: %s", e)
-        self._set_status("Manual overtake enabled" if ok else "Manual overtake failed")
-
-    async def _manual_off_async(self):
-        ok = await self.waypoint_controller.disable_manual_overtake()
-        self.mode_manager.set_manual_override(not ok)
-        try:
-            from scripts.isaac_sim.create_surveillance_scene import get_mission_overlay
-            get_mission_overlay().set_manual_override(not ok)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).debug("Overlay update skipped: %s", e)
-        self._set_status("Manual overtake disabled" if ok else "Manual overtake disable failed")
+    def _apply_spacing(self):
+        spacing = self._spacing_model.as_float
+        self.swarm_runner.set_formation_spacing(spacing)
+        self._set_status(f"Formation spacing set to {spacing:.0f}m")
 
     def _register_keyboard_handlers(self):
-        """Bind WASD/QE and arrow keys for manual control."""
+        """Bind Insert/Delete for checkpoint shortcuts."""
         try:
             import carb.input
             import omni.appwindow
@@ -317,28 +293,11 @@ class WaypointGuiPanel:
 
             pressed = event.type in (carb.input.KeyboardEventType.KEY_PRESS, carb.input.KeyboardEventType.KEY_REPEAT)
             if not pressed:
-                # On release, only handle manual control
-                if self.manual_controller.enabled:
-                    released = event.type == carb.input.KeyboardEventType.KEY_RELEASE
-                    if released:
-                        key = event.input
-                        mapping = {
-                            carb.input.KeyboardInput.W: "forward",
-                            carb.input.KeyboardInput.S: "backward",
-                            carb.input.KeyboardInput.A: "left",
-                            carb.input.KeyboardInput.D: "right",
-                            carb.input.KeyboardInput.Q: "up",
-                            carb.input.KeyboardInput.E: "down",
-                            carb.input.KeyboardInput.LEFT: "yaw_left",
-                            carb.input.KeyboardInput.RIGHT: "yaw_right",
-                        }
-                        if key in mapping:
-                            self.manual_controller.set_input_state(**{mapping[key]: False})
                 return True
 
             key = event.input
 
-            # Waypoint shortcuts (always active, editable via keyboard)
+            # Checkpoint shortcuts (always active)
             if key == carb.input.KeyboardInput.INSERT:
                 try:
                     import omni.usd
@@ -356,23 +315,6 @@ class WaypointGuiPanel:
                 self._clear_waypoints()
                 return True
 
-            # Manual control keys (only when manual mode enabled)
-            if not self.manual_controller.enabled:
-                return True
-
-            state = True
-            mapping = {
-                carb.input.KeyboardInput.W: "forward",
-                carb.input.KeyboardInput.S: "backward",
-                carb.input.KeyboardInput.A: "left",
-                carb.input.KeyboardInput.D: "right",
-                carb.input.KeyboardInput.Q: "up",
-                carb.input.KeyboardInput.E: "down",
-                carb.input.KeyboardInput.LEFT: "yaw_left",
-                carb.input.KeyboardInput.RIGHT: "yaw_right",
-            }
-            if key in mapping:
-                self.manual_controller.set_input_state(**{mapping[key]: state})
             return True
         except Exception as e:
             import logging
@@ -383,12 +325,9 @@ class WaypointGuiPanel:
 _PANEL: Optional[WaypointGuiPanel] = None
 
 
-def launch_waypoint_gui(
-    flight_controller: Optional[FlightController] = None,
-    backend: str = "isaac_sim",
-) -> WaypointGuiPanel:
+def launch_waypoint_gui(backend: str = "isaac_sim") -> WaypointGuiPanel:
     global _PANEL
-    _PANEL = WaypointGuiPanel(flight_controller=flight_controller, backend=backend)
+    _PANEL = WaypointGuiPanel(backend=backend)
     return _PANEL
 
 

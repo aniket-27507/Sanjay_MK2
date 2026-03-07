@@ -12,6 +12,8 @@ import numpy as np
 FORMATION_CENTER = (400.0, 350.0)
 FORMATION_SPACING = 80.0
 ALPHA_ALTITUDE = 65.0
+BETA_ALTITUDE = 25.0
+BETA_ID = 100  # Sentinel ID to distinguish beta from alpha drone IDs (0-5)
 
 MISSION_WAYPOINTS = [
     {"id": "WP_01", "pos": (200.0, 200.0, 65.0), "label": "Downtown Entry"},

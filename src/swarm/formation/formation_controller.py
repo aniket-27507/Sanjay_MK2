@@ -90,6 +90,11 @@ class FormationController:
 
         self._generate_slots()
 
+    @property
+    def center(self) -> Vector3:
+        """Get the formation center position."""
+        return self._center
+
     def set_center(self, center: Vector3):
         """Set the formation center position."""
         self._center = center

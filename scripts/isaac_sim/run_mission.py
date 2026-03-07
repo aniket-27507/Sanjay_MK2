@@ -56,6 +56,8 @@ from src.single_drone.flight_control.flight_controller import FlightController
 from src.single_drone.flight_control.waypoint_controller import WaypointController
 from src.simulation.surveillance_layout import (
     ALPHA_ALTITUDE,
+    BETA_ALTITUDE,
+    BETA_ID,
     FORMATION_CENTER,
     FORMATION_SPACING,
     MISSION_WAYPOINTS,
@@ -656,7 +658,7 @@ class MissionRunner:
         """Publish velocity command to Isaac Sim via ROS 2 bridge."""
         if self._bridge is None:
             return
-        drone_name = f"alpha_{drone_id}"
+        drone_name = "beta_0" if drone_id == BETA_ID else f"alpha_{drone_id}"
         self._bridge.send_velocity(
             drone_name, vx=velocity.x, vy=velocity.y, vz=velocity.z
         )
@@ -688,7 +690,7 @@ class MissionRunner:
             for drone_id, drone in self._drones.items():
                 if not drone.is_active:
                     continue
-                prim_path = f"/World/Drones/Alpha_{drone_id}"
+                prim_path = "/World/Drones/Beta_0" if drone_id == BETA_ID else f"/World/Drones/Alpha_{drone_id}"
                 prim = stage.GetPrimAtPath(prim_path)
                 if not prim.IsValid():
                     continue
