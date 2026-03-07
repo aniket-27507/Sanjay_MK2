@@ -261,7 +261,9 @@ ALPHA_ALTITUDE = SHARED_ALPHA_ALTITUDE
 from src.core.utils.geometry import hex_positions as _hex_positions
 
 ALPHA_DRONES = []
-for idx, (ax, ay) in enumerate(_hex_positions(*FORMATION_CENTER, FORMATION_SPACING)):
+for idx, (ax, ay) in enumerate(_hex_positions(
+    *FORMATION_CENTER, FORMATION_SPACING, n=6, include_center=False
+)):
     ALPHA_DRONES.append({
         "name": f"Alpha_{idx}",
         "position": [ax, ay, ALPHA_ALTITUDE],
