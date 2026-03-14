@@ -35,25 +35,31 @@ _config_instance: Optional[ConfigManager] = None
 class SwarmConfig:
     """
     Swarm-wide configuration settings.
+
+    Spec reference: §10.2 Drone Manifest — 6 Alpha + 1 Beta per regiment.
     """
-    # Swarm composition
-    num_alpha_drones: int = 3
-    num_beta_drones: int = 7
-    total_drones: int = 10
-    
-    # Communication
+    # Swarm composition (spec §10.2)
+    num_alpha_drones: int = 6
+    num_beta_drones: int = 1
+    total_drones: int = 7
+
+    # Communication (spec §4.4 — gossip at 10 Hz to 2 nearest neighbours)
     mesh_port_base: int = 14550
     broadcast_port: int = 14551
-    gossip_interval: float = 0.2  # 5Hz (adaptive: increase to 0.1 during task changes)
-    heartbeat_interval: float = 0.2
+    gossip_interval: float = 0.1  # 10 Hz (spec §4.4)
+    heartbeat_interval: float = 0.1
     peer_timeout: float = 3.0
-    
+    gossip_neighbour_count: int = 2  # spec §4.4 — each Alpha gossips to 2 nearest
+
     # Formation
     default_formation: str = "hexagonal"
-    formation_spacing: float = 20.0  # m between drones
-    
+    formation_spacing: float = 80.0  # m — inter-drone hex radius (spec §4.1)
+
     # Coordination
     cbba_max_bundle_size: int = 3
+
+    # Threat scoring (spec §5.3)
+    threat_score_threshold: float = 0.65
 
 
 @dataclass
@@ -146,25 +152,31 @@ class ConfigManager:
         logger.info("ConfigManager initialized")
     
     def _initialize_default_drone_configs(self):
-        """Create default configurations for all drones."""
-        # Alpha drones (IDs 0-2)
+        """Create default configurations for all drones.
+
+        Regiment layout (spec §10.2):
+            Alpha IDs: 0 .. num_alpha-1  (6 drones, 65m AGL)
+            Beta  IDs: 100 .. 100+num_beta-1  (1 drone, 25m AGL)
+        """
+        # Alpha drones (IDs 0-5)
         for i in range(self.swarm.num_alpha_drones):
             self._drone_configs[i] = DroneConfig(
                 drone_id=i,
                 drone_type=DroneType.ALPHA,
                 nominal_altitude=65.0,
                 max_altitude=70.0,
-                max_horizontal_speed=8.0
+                max_horizontal_speed=8.0,
             )
-        
-        # Beta drones (IDs 3-9)
-        for i in range(self.swarm.num_alpha_drones, self.swarm.total_drones):
-            self._drone_configs[i] = DroneConfig(
-                drone_id=i,
+
+        # Beta drones (IDs 100+)
+        for i in range(self.swarm.num_beta_drones):
+            beta_id = 100 + i
+            self._drone_configs[beta_id] = DroneConfig(
+                drone_id=beta_id,
                 drone_type=DroneType.BETA,
                 nominal_altitude=25.0,
                 max_altitude=30.0,
-                max_horizontal_speed=12.0
+                max_horizontal_speed=12.0,
             )
     
     def get_drone_config(self, drone_id: int) -> DroneConfig:

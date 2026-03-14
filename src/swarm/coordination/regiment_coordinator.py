@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 import uuid
 from collections import deque
@@ -52,6 +53,7 @@ from src.core.types.drone_types import (
     Vector3,
     Waypoint,
 )
+from src.core.utils.geometry import hex_positions
 from src.swarm.flock_coordinator import FlockCoordinator, FlockCoordinatorConfig
 from src.swarm.formation import FormationConfig
 
@@ -94,6 +96,21 @@ class SectorAssignment:
     waypoints: List[Waypoint] = field(default_factory=list)
     coverage_percent: float = 0.0
     start_time: float = field(default_factory=time.time)
+
+
+@dataclass
+class TriangleSector(SectorAssignment):
+    """Equilateral triangle sector per spec §3.4 (Method A).
+
+    Each triangle has vertices at: hex_center, V_i (this drone's vertex),
+    bounded by adjacent hex vertices V_{i-1} and V_{i+1}.
+    """
+    vertex: Vector3 = field(default_factory=Vector3)           # V_i position
+    hex_center: Vector3 = field(default_factory=Vector3)       # Shared hex centre
+    vertex_index: int = 0                                       # 0-5 clockwise from north
+    left_neighbour_vertex: Vector3 = field(default_factory=Vector3)  # V_{(i-1) % 6}
+    right_neighbour_vertex: Vector3 = field(default_factory=Vector3) # V_{(i+1) % 6}
+    hex_radius: float = 80.0                                    # R — center to vertex
 
 
 @dataclass
@@ -205,6 +222,7 @@ class AlphaRegimentCoordinator:
         # ── FANET Threat Relay ──
         self._threat_queue: List[Dict] = []
         self._relayed_threat_ids: set = set()
+        self._relayed_threat_order: Deque[str] = deque(maxlen=500)  # eviction order for bounded set
 
         # ── State ──
         self._running = False
@@ -222,6 +240,9 @@ class AlphaRegimentCoordinator:
         self._desired_goals: Dict[int, Vector3] = {}
         self._last_gossip_timestamps: Dict[int, float] = {}
         self._forced_goal: Optional[Vector3] = None
+
+        # ── Gossip Crypto (anti-hostile-takeover — stub until keys available) ──
+        self._gossip_crypto: Optional[Any] = None  # GossipCryptoEngine instance
 
     # ── Initialization ────────────────────────────────────────────
 
@@ -276,17 +297,73 @@ class AlphaRegimentCoordinator:
             self._assign_sectors()
 
     def unregister_drone(self, drone_id: int):
-        """Remove a drone from the regiment."""
+        """Remove a drone from the regiment.
+
+        When the failed drone held a ``TriangleSector``, its orphaned
+        waypoints are distributed to the two adjacent Alpha drones
+        (vertex_index ± 1 mod 6) instead of triggering a full
+        sector reassignment.
+        """
         if drone_id in self._members:
+            failed_member = self._members[drone_id]
+            failed_sector = failed_member.sector
+
             del self._members[drone_id]
             self._desired_velocities.pop(drone_id, None)
             self._desired_goals.pop(drone_id, None)
             logger.warning(f"Alpha_{drone_id} removed from regiment")
+
             if self.config.use_boids_flocking and self._flock_coordinator is not None:
                 self._flock_coordinator.update_membership(self._members.keys())
-            # Redistribute sectors
+
+            # Triangle sector failure recovery
+            if isinstance(failed_sector, TriangleSector) and self._members:
+                vidx = failed_sector.vertex_index
+                orphaned_wps = list(failed_sector.waypoints)
+                left_idx = (vidx - 1) % 6
+                right_idx = (vidx + 1) % 6
+
+                # Find adjacent Alphas by their vertex_index
+                left_id = right_id = None
+                for m in self._members.values():
+                    if isinstance(m.sector, TriangleSector):
+                        if m.sector.vertex_index == left_idx:
+                            left_id = m.drone_id
+                        elif m.sector.vertex_index == right_idx:
+                            right_id = m.drone_id
+
+                # Split orphaned waypoints between the two neighbours
+                mid = len(orphaned_wps) // 2
+                if left_id is not None:
+                    self._expand_sector_for_adjacent(
+                        left_id, orphaned_wps[:mid]
+                    )
+                if right_id is not None:
+                    self._expand_sector_for_adjacent(
+                        right_id, orphaned_wps[mid:]
+                    )
+
+                logger.warning(
+                    f"Triangle failure recovery: V{vidx} orphaned waypoints "
+                    f"distributed to neighbours V{left_idx} / V{right_idx}"
+                )
+                return
+
+            # Fallback: redistribute all sectors
             if self._members:
                 self._assign_sectors()
+
+    def _expand_sector_for_adjacent(
+        self, alpha_id: int, orphaned_waypoints: List[Waypoint]
+    ):
+        """Expand an adjacent Alpha's sector to absorb orphaned waypoints."""
+        member = self._members.get(alpha_id)
+        if member and member.sector:
+            member.sector.waypoints.extend(orphaned_waypoints)
+            member.sector.coverage_percent = 0.0  # reset — needs re-sweep
+            logger.warning(
+                f"Alpha_{alpha_id} sector expanded to cover orphaned area"
+            )
 
     # ── Main Loop ─────────────────────────────────────────────────
 
@@ -340,6 +417,11 @@ class AlphaRegimentCoordinator:
 
         area = self.config.total_coverage_area
         formation = self.config.formation
+
+        # Triangle sector model for full hexagonal regiment
+        if formation == RegimentFormation.HEXAGONAL and n == REGIMENT_SIZE:
+            self._assign_triangle_sectors(active_members)
+            return
 
         if formation == RegimentFormation.HEXAGONAL:
             positions = self._hexagonal_positions(n, area)
@@ -404,6 +486,184 @@ class AlphaRegimentCoordinator:
                 speed=5.0,
                 acceptance_radius=3.0,
             ))
+
+        return waypoints
+
+    def _assign_triangle_sectors(
+        self, active_members: List[DroneRegimentMember]
+    ):
+        """Assign equilateral triangle sectors using hex vertex positions.
+
+        Uses ``hex_positions`` from the geometry module to obtain the 6
+        vertices V_0..V_5 (no center), then greedily matches each active
+        member to the closest available vertex (mimics CBBA sector auction).
+        """
+        spacing = self.config.formation_spacing
+
+        # Use override center if set (from reassign_sectors_for_radius)
+        if hasattr(self, '_sector_center_override') and self._sector_center_override is not None:
+            center = self._sector_center_override
+            cx, cy = center.x, center.y
+        else:
+            area = self.config.total_coverage_area
+            cx = area / 2.0
+            cy = area / 2.0
+            center = Vector3(x=cx, y=cy, z=-self.config.formation_altitude)
+
+        vertices_xy = hex_positions(
+            cx, cy, spacing, n=6, include_center=False
+        )  # List[(x, y)]
+
+        # Build Vector3 list for the 6 hex vertices
+        vertices = [
+            Vector3(x=vx, y=vy, z=-self.config.formation_altitude)
+            for vx, vy in vertices_xy
+        ]
+
+        # Greedy closest-vertex assignment
+        available_indices = list(range(6))
+        assignments: List[Tuple[DroneRegimentMember, int]] = []
+
+        for member in active_members:
+            best_idx = min(
+                available_indices,
+                key=lambda idx: (
+                    (member.state.position.x - vertices[idx].x) ** 2
+                    + (member.state.position.y - vertices[idx].y) ** 2
+                ),
+            )
+            assignments.append((member, best_idx))
+            available_indices.remove(best_idx)
+
+        for member, vidx in assignments:
+            v = vertices[vidx]
+            left_v = vertices[(vidx - 1) % 6]
+            right_v = vertices[(vidx + 1) % 6]
+
+            waypoints = self._generate_radial_lawnmower(
+                vertex=v,
+                hex_center=center,
+                left_v=left_v,
+                right_v=right_v,
+                hex_radius=spacing,
+            )
+
+            sector = TriangleSector(
+                sector_id=f"tri_sector_{member.drone_id}",
+                drone_id=member.drone_id,
+                center=center,
+                radius=spacing,
+                waypoints=waypoints,
+                vertex=v,
+                hex_center=center,
+                vertex_index=vidx,
+                left_neighbour_vertex=left_v,
+                right_neighbour_vertex=right_v,
+                hex_radius=spacing,
+            )
+            member.sector = sector
+            logger.info(
+                f"Alpha_{member.drone_id} → TriangleSector V{vidx} "
+                f"at ({v.x:.0f}, {v.y:.0f}), "
+                f"{len(waypoints)} radial waypoints"
+            )
+
+        if self._on_sector_assigned:
+            self._on_sector_assigned()
+
+    def reassign_sectors_for_radius(
+        self, hex_center: Vector3, hex_radius: float,
+    ):
+        """Re-assign triangle sectors scaled to a new hex radius.
+
+        Called by the swarm runner when entering HOLD_FOR_CLIMB at each
+        checkpoint to scale the survey area to the checkpoint's survey_radius.
+        """
+        # Temporarily override spacing for sector assignment
+        original_spacing = self.config.formation_spacing
+        self.config.formation_spacing = hex_radius
+
+        active = [m for m in self._members.values() if m.state is not None]
+        if active:
+            # Use hex_center directly (not derived from total_coverage_area)
+            self._sector_center_override = hex_center
+            self._assign_triangle_sectors(active)
+            self._sector_center_override = None
+
+        # Restore original config
+        self.config.formation_spacing = original_spacing
+
+    def _generate_radial_lawnmower(
+        self,
+        vertex: Vector3,
+        hex_center: Vector3,
+        left_v: Vector3,
+        right_v: Vector3,
+        hex_radius: float,
+        sensor_footprint: float = 40.0,  # Livox Mid-360 at 65m
+    ) -> List[Waypoint]:
+        """Generate a boustrophedon sweep inside a triangle sector.
+
+        Strips run perpendicular to the vertex → center radial.  The
+        triangle half-width at each depth *d* is derived from the 60°
+        central angle of the hexagonal sector.
+        """
+        altitude = -self.config.formation_altitude  # NED
+
+        # Radial direction: vertex → center
+        dx = hex_center.x - vertex.x
+        dy = hex_center.y - vertex.y
+        mag = math.sqrt(dx * dx + dy * dy)
+        if mag < 1e-6:
+            return []
+        radial_x = dx / mag
+        radial_y = dy / mag
+
+        # Perpendicular direction: 90° clockwise rotation of radial
+        perp_x = radial_y
+        perp_y = -radial_x
+
+        sin60 = math.sqrt(3.0) / 2.0
+        n_strips = math.ceil(hex_radius / sensor_footprint)
+
+        waypoints: List[Waypoint] = []
+
+        for i in range(n_strips):
+            d = (i + 0.5) * sensor_footprint  # depth along radial from vertex
+            if d > hex_radius:
+                d = hex_radius
+
+            half_w = (d / hex_radius) * hex_radius * sin60
+
+            lx = vertex.x + radial_x * d - perp_x * half_w
+            ly = vertex.y + radial_y * d - perp_y * half_w
+            rx = vertex.x + radial_x * d + perp_x * half_w
+            ry = vertex.y + radial_y * d + perp_y * half_w
+
+            if i % 2 == 0:
+                first_x, first_y = lx, ly
+                second_x, second_y = rx, ry
+            else:
+                first_x, first_y = rx, ry
+                second_x, second_y = lx, ly
+
+            waypoints.append(Waypoint(
+                position=Vector3(x=first_x, y=first_y, z=altitude),
+                speed=5.0,
+                acceptance_radius=3.0,
+            ))
+            waypoints.append(Waypoint(
+                position=Vector3(x=second_x, y=second_y, z=altitude),
+                speed=5.0,
+                acceptance_radius=3.0,
+            ))
+
+        # Phase 4: Reset — return to vertex
+        waypoints.append(Waypoint(
+            position=Vector3(x=vertex.x, y=vertex.y, z=altitude),
+            speed=5.0,
+            acceptance_radius=3.0,
+        ))
 
         return waypoints
 
@@ -565,7 +825,7 @@ class AlphaRegimentCoordinator:
         threat_data["origin_drone"] = self.my_drone_id
 
         self._threat_queue.append(threat_data)
-        self._relayed_threat_ids.add(threat_id)
+        self._track_relayed_threat(threat_id)
 
     def receive_threat_relay(self, threat_data: Dict):
         """Receive a relayed threat from the FANET mesh."""
@@ -575,7 +835,7 @@ class AlphaRegimentCoordinator:
         if threat_id in self._relayed_threat_ids:
             return
 
-        self._relayed_threat_ids.add(threat_id)
+        self._track_relayed_threat(threat_id)
 
         # Process the threat
         if self._on_threat_received:
@@ -586,6 +846,14 @@ class AlphaRegimentCoordinator:
         if hops > 0:
             threat_data["hops_remaining"] = hops - 1
             self._threat_queue.append(threat_data)
+
+    def _track_relayed_threat(self, threat_id: str):
+        """Add threat_id to bounded dedup set, evicting oldest if full."""
+        if len(self._relayed_threat_order) >= self._relayed_threat_order.maxlen:
+            evicted = self._relayed_threat_order[0]  # will be auto-evicted by deque
+            self._relayed_threat_ids.discard(evicted)
+        self._relayed_threat_ids.add(threat_id)
+        self._relayed_threat_order.append(threat_id)
 
     def _process_threat_queue(self):
         """Process and send queued threat broadcasts."""
@@ -629,11 +897,16 @@ class AlphaRegimentCoordinator:
             if m.drone_id != self.my_drone_id and m.is_active
         }
         sectors = [m.sector for m in self._members.values() if m.sector is not None]
-        home = Vector3(
-            x=self.config.total_coverage_area / 2.0,
-            y=self.config.total_coverage_area / 2.0,
-            z=-self.config.formation_altitude,
-        )
+        # Use forced goal as home position (aligns boids cohesion with
+        # formation target).  Fallback to area center if no goal set.
+        if self._forced_goal is not None:
+            home = self._forced_goal
+        else:
+            home = Vector3(
+                x=self.config.total_coverage_area / 2.0,
+                y=self.config.total_coverage_area / 2.0,
+                z=-self.config.formation_altitude,
+            )
 
         desired = self._flock_coordinator.tick(
             my_state=my_member.state,
@@ -817,33 +1090,97 @@ class AlphaRegimentCoordinator:
         """Register callback for incoming threat data."""
         self._on_threat_received = callback
 
+    def enable_gossip_crypto(self, crypto_engine: Any):
+        """Attach a GossipCryptoEngine for authenticated gossip.
+
+        Pass an instance of ``src.communication.gossip_crypto.GossipCryptoEngine``.
+        When set, all outgoing gossip is wrapped in an authenticated envelope
+        and all incoming gossip is verified before processing.
+        """
+        self._gossip_crypto = crypto_engine
+        logger.info(
+            "Gossip crypto enabled for drone %d (algo=%s)",
+            self.my_drone_id,
+            getattr(getattr(crypto_engine, 'config', None), 'algorithm', 'unknown'),
+        )
+
     # ── Gossip Payloads ──────────────────────────────────────────
 
+    def _get_nearest_neighbour_ids(self, count: int = 2) -> List[int]:
+        """Return the `count` nearest active neighbour drone IDs (spec §4.4)."""
+        my_member = self._members.get(self.my_drone_id)
+        if my_member is None:
+            return []
+        my_pos = my_member.state.position
+        candidates = [
+            (m.drone_id, my_pos.distance_to(m.state.position))
+            for m in self._members.values()
+            if m.drone_id != self.my_drone_id and m.is_active
+        ]
+        candidates.sort(key=lambda pair: pair[1])
+        return [cid for cid, _ in candidates[:count]]
+
     def prepare_gossip_payload(self) -> Dict:
-        """Build a compact state + CBBA gossip payload."""
+        """Build a compact state + CBBA gossip payload.
+
+        Spec §4.4: each Alpha gossips to its 2 nearest neighbours at 10 Hz.
+        The payload includes patrol_progress for the state vector.
+        The optional crypto envelope wraps the payload if the engine is set.
+        """
         member = self._members.get(self.my_drone_id)
         if member is None:
             return {}
+
+        # Inject patrol_progress into state (spec §4.4 state vector)
+        sector = self.get_my_sector()
+        if sector:
+            member.state.patrol_progress = sector.coverage_percent
 
         cbba_payload = {}
         if self.config.use_boids_flocking and self._flock_coordinator is not None:
             cbba_payload = self._flock_coordinator.prepare_gossip_payload(member.state)
 
-        return {
+        target_ids = self._get_nearest_neighbour_ids(count=2)
+
+        inner = {
             "type": "swarm_gossip_v1",
             "drone_id": self.my_drone_id,
             "drone_state": member.state.to_dict(),
             "cbba": cbba_payload,
+            "target_ids": target_ids,
+            "patrol_progress": member.state.patrol_progress,
             "timestamp": time.time(),
         }
 
+        # Wrap with crypto envelope if engine is available
+        if self._gossip_crypto is not None:
+            return self._gossip_crypto.wrap_payload(inner)
+        return inner
+
     def ingest_gossip_payload(self, payload: Dict):
-        """Ingest state + CBBA gossip from a peer drone."""
+        """Ingest state + CBBA gossip from a peer drone.
+
+        Nearest-neighbour filtering: drops payloads not addressed to us
+        (unless target_ids is absent for backwards compatibility).
+        Crypto: unwraps authenticated envelope if engine is set.
+        """
+        # Unwrap crypto envelope if engine is present
+        if self._gossip_crypto is not None:
+            inner, is_valid = self._gossip_crypto.unwrap_payload(payload)
+            if not is_valid or inner is None:
+                return
+            payload = inner
+
         if payload.get("type") != "swarm_gossip_v1":
             return
 
         sender_id = int(payload.get("drone_id", -1))
         if sender_id < 0 or sender_id == self.my_drone_id:
+            return
+
+        # Nearest-neighbour filter (spec §4.4): drop if not addressed to us
+        target_ids = payload.get("target_ids")
+        if target_ids is not None and self.my_drone_id not in target_ids:
             return
 
         ts = float(payload.get("timestamp", 0.0))
@@ -854,7 +1191,12 @@ class AlphaRegimentCoordinator:
         state_payload = payload.get("drone_state")
         if state_payload:
             try:
-                self.update_member_state(sender_id, DroneState.from_dict(state_payload))
+                remote_state = DroneState.from_dict(state_payload)
+                # Also ingest patrol_progress from gossip
+                remote_state.patrol_progress = float(
+                    payload.get("patrol_progress", remote_state.patrol_progress)
+                )
+                self.update_member_state(sender_id, remote_state)
             except Exception as e:
                 logger.warning(f"Failed to ingest sender state from drone {sender_id}: {e}")
 

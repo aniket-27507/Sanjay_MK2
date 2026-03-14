@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 
 from src.core.types.drone_types import DroneState, Vector3
 
-from .task_types import SwarmTask
+from .task_types import SwarmTask, TaskType
 
 
 @dataclass
@@ -24,12 +24,21 @@ class CBBAConfig:
     formation_spacing: float = 80.0
     cruise_speed: float = 5.0
 
+    # Default weights for general tasks (sector coverage, patrol, etc.)
     weight_distance: float = 0.30
     weight_battery: float = 0.25
     weight_priority: float = 0.20
     weight_synergy: float = 0.10
     weight_urgency: float = 0.10
     weight_load_penalty: float = 0.05
+
+    # Threat-dispatch bid weights (spec §6.3)
+    threat_weight_distance: float = 0.35
+    threat_weight_battery: float = 0.25
+    threat_weight_sensor: float = 0.20
+    threat_weight_load: float = 0.10
+    threat_weight_alignment: float = 0.10
+    threat_battery_floor: float = 20.0  # <20% → ineligible (spec §6.3)
 
 
 class CBBAEngine:
@@ -88,6 +97,10 @@ class CBBAEngine:
         task: SwarmTask,
         current_bundle: List[SwarmTask],
     ) -> float:
+        # Delegate to threat-specific scorer for THREAT_INVESTIGATE tasks (spec §6.3)
+        if task.task_type == TaskType.THREAT_INVESTIGATE:
+            return self._score_threat_task(drone_state, task, current_bundle)
+
         dist = drone_state.position.distance_to(task.position)
         dist_score = max(0.0, 1.0 - dist / self.config.max_task_range)
 
@@ -123,6 +136,55 @@ class CBBAEngine:
             + self.config.weight_urgency * urgency
             - self.config.weight_load_penalty * load_penalty
         )
+
+    # ── Threat-specific bid calculation (spec §6.3) ──────────────
+
+    def _score_threat_task(
+        self,
+        drone_state: DroneState,
+        task: SwarmTask,
+        current_bundle: List[SwarmTask],
+    ) -> float:
+        """
+        Bid = 0.35*Dist + 0.25*Batt + 0.20*Sensor + 0.10*Load + 0.10*Alignment
+        Battery < 20% → ineligible (spec §6.3).
+        """
+        # Hard battery floor
+        if drone_state.battery < self.config.threat_battery_floor:
+            return -1.0
+
+        dist = drone_state.position.distance_to(task.position)
+        dist_score = max(0.0, 1.0 - dist / self.config.max_task_range)
+
+        batt_score = max(0.0, min(drone_state.battery / 100.0, 1.0))
+
+        sensor_score = getattr(drone_state, 'sensor_capability', 1.0)
+
+        load_score = max(0.0, 1.0 - len(current_bundle) * 0.25)
+
+        alignment_score = self._compute_alignment(drone_state, task.position)
+
+        return (
+            self.config.threat_weight_distance * dist_score
+            + self.config.threat_weight_battery * batt_score
+            + self.config.threat_weight_sensor * sensor_score
+            + self.config.threat_weight_load * load_score
+            + self.config.threat_weight_alignment * alignment_score
+        )
+
+    @staticmethod
+    def _compute_alignment(drone_state: DroneState, target: Vector3) -> float:
+        """Score [0-1] — how well the drone's current heading matches the threat direction."""
+        vel = drone_state.velocity
+        speed = vel.magnitude()
+        if speed < 0.5:
+            return 0.5  # stationary — neutral
+        direction = target - drone_state.position
+        if direction.magnitude() < 1e-6:
+            return 1.0  # already on top of it
+        cos_angle = vel.dot(direction) / (speed * direction.magnitude())
+        # Map [-1, 1] → [0, 1]
+        return max(0.0, min((cos_angle + 1.0) / 2.0, 1.0))
 
     def bundle_phase(self, drone_state: DroneState):
         """Greedy local bundle construction."""

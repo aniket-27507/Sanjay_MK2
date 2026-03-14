@@ -27,12 +27,14 @@ class TestSwarmConfig:
     """Tests for SwarmConfig."""
     
     def test_default_values(self):
-        """Test default swarm configuration."""
+        """Test default swarm configuration (spec §10.2: 6 Alpha + 1 Beta)."""
         config = SwarmConfig()
-        assert config.num_alpha_drones == 3
-        assert config.num_beta_drones == 7
-        assert config.total_drones == 10
-        assert config.gossip_interval == 0.2
+        assert config.num_alpha_drones == 6
+        assert config.num_beta_drones == 1
+        assert config.total_drones == 7
+        assert config.gossip_interval == 0.1  # 10 Hz (spec §4.4)
+        assert config.threat_score_threshold == 0.65  # spec §5.3
+        assert config.gossip_neighbour_count == 2
 
 
 class TestSimulationConfig:
@@ -79,11 +81,11 @@ class TestConfigManager:
         assert drone_cfg.nominal_altitude == 65.0
     
     def test_drone_config_beta(self):
-        """Test Beta drone configuration."""
+        """Test Beta drone configuration (Beta IDs start at 100)."""
         config = get_config()
-        drone_cfg = config.get_drone_config(5)  # Beta drone (ID 3-9)
-        
-        assert drone_cfg.drone_id == 5
+        drone_cfg = config.get_drone_config(100)  # Beta drone (ID 100+)
+
+        assert drone_cfg.drone_id == 100
         assert drone_cfg.drone_type == DroneType.BETA
         assert drone_cfg.nominal_altitude == 25.0
     
@@ -143,10 +145,10 @@ class TestConfigManager:
     def test_unknown_drone_config(self):
         """Test getting config for unknown drone ID."""
         config = get_config()
-        
+
         # Request config for drone beyond normal range
-        drone_cfg = config.get_drone_config(100)
-        
-        assert drone_cfg.drone_id == 100
+        drone_cfg = config.get_drone_config(999)
+
+        assert drone_cfg.drone_id == 999
         assert drone_cfg.drone_type == DroneType.ALPHA  # Default
 

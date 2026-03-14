@@ -219,9 +219,10 @@ class FormationController:
             ))
 
     def _hex_offsets(self, n: int, spacing: float) -> List[Vector3]:
-        offsets = [Vector3(0, 0, 0)]
+        """Hex vertex offsets starting from North, clockwise (spec §2.1)."""
+        offsets = [Vector3(0, 0, 0)]  # center slot
         for i in range(min(n - 1, 6)):
-            angle = i * (2 * math.pi / 6)
+            angle = math.pi / 2.0 - i * (2.0 * math.pi / 6.0)
             offsets.append(Vector3(
                 x=spacing * math.cos(angle),
                 y=spacing * math.sin(angle),

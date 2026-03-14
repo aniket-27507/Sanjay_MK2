@@ -41,6 +41,7 @@ isaac_mcp/cli/register.py
 isaac_mcp/cli/scaffold.py
 isaac_mcp/connections/__init__.py
 isaac_mcp/connections/kit_api_client.py
+isaac_mcp/connections/local_log_reader.py
 isaac_mcp/connections/ros2_client.py
 isaac_mcp/connections/ssh_client.py
 isaac_mcp/connections/websocket_client.py

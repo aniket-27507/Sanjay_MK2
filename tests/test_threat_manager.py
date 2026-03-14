@@ -5,7 +5,9 @@ from src.surveillance.change_detection import ChangeEvent
 from src.core.types.drone_types import Vector3, ThreatLevel, ThreatStatus
 
 
-def _make_change_event(event_id="chg_001", obj_type="person", confidence=0.7):
+def _make_change_event(event_id="chg_001", obj_type="person", confidence=0.7,
+                       spatial_score=0.5, temporal_score=0.3,
+                       behavioural_score=0.5, classification_score=0.5):
     return ChangeEvent(
         event_id=event_id,
         position=Vector3(x=50, y=50, z=0),
@@ -15,6 +17,10 @@ def _make_change_event(event_id="chg_001", obj_type="person", confidence=0.7):
         threat_level=ThreatLevel.HIGH,
         confidence=confidence,
         detected_by=0,
+        spatial_score=spatial_score,
+        temporal_score=temporal_score,
+        behavioural_score=behavioural_score,
+        classification_score=classification_score,
     )
 
 
@@ -27,23 +33,35 @@ class TestThreatCreation:
         assert threat.threat_level == ThreatLevel.HIGH
         assert threat.detected_by == 0
 
-    def test_high_confidence_auto_promotes(self):
-        tm = ThreatManager(confirmation_threshold=0.5)
-        event = _make_change_event(confidence=0.8)
+    def test_high_score_auto_promotes(self):
+        # Sub-scores that produce composite >= 0.65 trigger PENDING_CONFIRMATION
+        tm = ThreatManager(threat_score_threshold=0.65)
+        event = _make_change_event(
+            confidence=0.8,
+            spatial_score=0.8, temporal_score=0.7,
+            behavioural_score=0.8, classification_score=0.9,
+        )
         threat = tm.report_change(event, current_time=1.0)
         assert threat.status == ThreatStatus.PENDING_CONFIRMATION
+        assert threat.threat_score >= 0.65
 
-    def test_low_confidence_stays_detected(self):
-        tm = ThreatManager(confirmation_threshold=0.5)
+    def test_low_score_stays_detected(self):
+        # Default sub-scores produce composite = 0.46, below threshold
+        tm = ThreatManager(threat_score_threshold=0.65)
         event = _make_change_event(confidence=0.3)
         threat = tm.report_change(event, current_time=1.0)
         assert threat.status == ThreatStatus.DETECTED
+        assert threat.threat_score < 0.65
 
 
 class TestBetaDispatch:
     def test_request_confirmation_selects_nearest(self):
-        tm = ThreatManager(confirmation_threshold=0.5)
-        event = _make_change_event(confidence=0.8)
+        tm = ThreatManager(threat_score_threshold=0.65)
+        event = _make_change_event(
+            confidence=0.8,
+            spatial_score=0.8, temporal_score=0.7,
+            behavioural_score=0.8, classification_score=0.9,
+        )
         threat = tm.report_change(event, current_time=1.0)
 
         betas = [
@@ -56,8 +74,12 @@ class TestBetaDispatch:
         assert threat.assigned_beta == 4
 
     def test_no_betas_available(self):
-        tm = ThreatManager(confirmation_threshold=0.5)
-        event = _make_change_event(confidence=0.8)
+        tm = ThreatManager(threat_score_threshold=0.65)
+        event = _make_change_event(
+            confidence=0.8,
+            spatial_score=0.8, temporal_score=0.7,
+            behavioural_score=0.8, classification_score=0.9,
+        )
         threat = tm.report_change(event, current_time=1.0)
         selected = tm.request_confirmation(threat.threat_id, [])
         assert selected is None
@@ -65,8 +87,12 @@ class TestBetaDispatch:
 
 class TestThreatLifecycle:
     def test_confirm_threat(self):
-        tm = ThreatManager(confirmation_threshold=0.5)
-        event = _make_change_event(confidence=0.8)
+        tm = ThreatManager(threat_score_threshold=0.65)
+        event = _make_change_event(
+            confidence=0.8,
+            spatial_score=0.8, temporal_score=0.7,
+            behavioural_score=0.8, classification_score=0.9,
+        )
         threat = tm.report_change(event, current_time=1.0)
         tm.request_confirmation(threat.threat_id, [(4, Vector3(55, 55, 0))])
 
@@ -75,8 +101,12 @@ class TestThreatLifecycle:
         assert result.confirmation_time == 10.0
 
     def test_clear_false_positive(self):
-        tm = ThreatManager(confirmation_threshold=0.5)
-        event = _make_change_event(confidence=0.8)
+        tm = ThreatManager(threat_score_threshold=0.65)
+        event = _make_change_event(
+            confidence=0.8,
+            spatial_score=0.8, temporal_score=0.7,
+            behavioural_score=0.8, classification_score=0.9,
+        )
         threat = tm.report_change(event, current_time=1.0)
         tm.request_confirmation(threat.threat_id, [(4, Vector3(55, 55, 0))])
 

@@ -195,6 +195,7 @@ class TestSwarmWaypointRunnerPhaseLogic:
         cp = Vector3(x=400, y=350, z=-65)
         runner = self._make_runner_with_drones_at_checkpoint(cp)
         runner._formation.set_center(Vector3(x=cp.x, y=cp.y, z=-ALPHA_ALTITUDE))
+        runner._flock_center = Vector3(x=cp.x, y=cp.y, z=-ALPHA_ALTITUDE)
 
         wp = Waypoint(position=cp)
         assert runner._is_swarm_at_checkpoint_xy(wp)
@@ -328,3 +329,130 @@ class TestSwarmWaypointRunnerIntegration:
 
         assert result is False
         assert runner.status.state == SwarmExecutionState.STOPPED
+
+
+# ── Flock Center Tests ──────────────────────────────────────────
+
+class TestFlockCenter:
+    """Tests for the moving flock center mechanism."""
+
+    def _make_runner_with_flock(self, center_x=100.0, center_y=100.0):
+        """Create a runner with drones spawned at a known center."""
+        from src.core.utils.geometry import hex_positions
+        runner = SwarmWaypointRunner(
+            headless=True,
+            start_center=Vector3(x=center_x, y=center_y, z=0),
+            start_radius=80.0,
+        )
+        hex_pos = hex_positions(center_x, center_y, 80.0, n=7)
+        runner._drones[BETA_ID] = SimDrone(
+            drone_id=BETA_ID,
+            position=Vector3(x=center_x, y=center_y, z=-BETA_ALTITUDE),
+            drone_type=DroneType.BETA,
+        )
+        for i in range(6):
+            vx, vy = hex_pos[i + 1]
+            runner._drones[i] = SimDrone(
+                drone_id=i,
+                position=Vector3(x=vx, y=vy, z=-ALPHA_ALTITUDE),
+                drone_type=DroneType.ALPHA,
+            )
+        runner._flock_center = Vector3(x=center_x, y=center_y, z=-ALPHA_ALTITUDE)
+        runner._formation.set_center(runner._flock_center)
+        runner._current_hex_center = Vector3(x=center_x, y=center_y, z=0.0)
+        runner._current_hex_radius = 80.0
+        return runner
+
+    def test_flock_center_moves_toward_checkpoint(self):
+        runner = self._make_runner_with_flock(100.0, 100.0)
+        cp = Waypoint(position=Vector3(x=500.0, y=500.0, z=-65))
+
+        old_x = runner._flock_center.x
+        old_y = runner._flock_center.y
+        arrived = runner._advance_flock_center(cp)
+
+        assert not arrived, "Should not arrive in one step"
+        assert runner._flock_center.x > old_x, "Flock center should move toward checkpoint X"
+        assert runner._flock_center.y > old_y, "Flock center should move toward checkpoint Y"
+
+    def test_flock_center_speed_limit(self):
+        runner = self._make_runner_with_flock(100.0, 100.0)
+        cp = Waypoint(position=Vector3(x=10000.0, y=10000.0, z=-65))
+
+        old_fc = Vector3(x=runner._flock_center.x, y=runner._flock_center.y, z=0)
+        runner._advance_flock_center(cp)
+        new_fc = Vector3(x=runner._flock_center.x, y=runner._flock_center.y, z=0)
+
+        dx = new_fc.x - old_fc.x
+        dy = new_fc.y - old_fc.y
+        step_dist = math.sqrt(dx * dx + dy * dy)
+        max_step = runner.FLOCK_TRANSIT_SPEED * runner._dt + 0.01  # Small tolerance
+        assert step_dist <= max_step, f"Step {step_dist:.3f}m exceeds max {max_step:.3f}m"
+
+    def test_flock_center_arrives_at_checkpoint(self):
+        runner = self._make_runner_with_flock(100.0, 100.0)
+        # Checkpoint very close
+        cp = Waypoint(position=Vector3(x=100.5, y=100.5, z=-65))
+
+        arrived = runner._advance_flock_center(cp)
+        assert arrived, "Should arrive when within 1m"
+        assert abs(runner._flock_center.x - 100.5) < 0.01
+        assert abs(runner._flock_center.y - 100.5) < 0.01
+
+    def test_flock_center_pauses_when_drone_lags(self):
+        runner = self._make_runner_with_flock(100.0, 100.0)
+
+        # Move alpha_0 far away (simulate stuck on obstacle)
+        runner._drones[0].position = Vector3(x=0, y=0, z=-ALPHA_ALTITUDE)
+
+        assert runner._any_drone_lagging(), "Should detect lagging drone"
+
+        cp = Waypoint(position=Vector3(x=500.0, y=500.0, z=-65))
+        old_x = runner._flock_center.x
+        runner._advance_flock_center(cp)
+
+        assert runner._flock_center.x == old_x, "Flock center should NOT move when drone lags"
+        assert runner._flock_paused, "flock_paused flag should be True"
+
+    def test_flock_center_resumes_after_lag_resolved(self):
+        runner = self._make_runner_with_flock(100.0, 100.0)
+        cp = Waypoint(position=Vector3(x=500.0, y=500.0, z=-65))
+
+        # All drones at their slots — no lag
+        assert not runner._any_drone_lagging()
+
+        old_x = runner._flock_center.x
+        runner._advance_flock_center(cp)
+        assert runner._flock_center.x > old_x, "Should advance when no lag"
+        assert not runner._flock_paused
+
+    def test_formation_center_tracks_flock_center(self):
+        runner = self._make_runner_with_flock(100.0, 100.0)
+        cp = Waypoint(position=Vector3(x=500.0, y=500.0, z=-65))
+
+        runner._advance_flock_center(cp)
+
+        # Formation center should match flock center
+        fc = runner._formation._center  # Direct access to verify
+        assert abs(fc.x - runner._flock_center.x) < 0.01
+        assert abs(fc.y - runner._flock_center.y) < 0.01
+
+    def test_hex_boundary_not_applied_during_transit(self):
+        runner = self._make_runner_with_flock(100.0, 100.0)
+        runner._phase = CheckpointPhase.TRANSIT
+
+        # Place Beta far from hex center
+        runner._drones[BETA_ID] = SimDrone(
+            drone_id=BETA_ID,
+            position=Vector3(x=0, y=0, z=-BETA_ALTITUDE),
+            drone_type=DroneType.BETA,
+        )
+
+        # Goal is also far from hex center
+        goal = Vector3(x=500, y=500, z=-BETA_ALTITUDE)
+        runner._apply_beta_velocity(goal)
+
+        # Beta should move toward goal (not clamped to hex)
+        pos = runner._drones[BETA_ID].position
+        assert pos.x > 0, "Beta should move toward goal during TRANSIT"
+        assert pos.y > 0, "Beta should move toward goal during TRANSIT"

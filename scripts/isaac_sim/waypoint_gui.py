@@ -37,10 +37,18 @@ class WaypointGuiPanel:
         self._execution_task: Optional[asyncio.Task] = None
         self._key_sub = None
 
+        # ── Starting hex models ──
+        self._start_cx_model = ui.SimpleFloatModel(0.0)
+        self._start_cy_model = ui.SimpleFloatModel(0.0)
+        self._start_radius_model = ui.SimpleFloatModel(80.0)
+
+        # ── Checkpoint input models ──
         self._x_model = ui.SimpleFloatModel(0.0)
         self._y_model = ui.SimpleFloatModel(0.0)
         self._z_model = ui.SimpleFloatModel(-65.0)
         self._z_model.add_end_edit_fn(self._on_z_field_commit)
+        self._survey_radius_model = ui.SimpleFloatModel(0.0)
+
         s = self.swarm_runner.status
         self._status_model = ui.SimpleStringModel(
             f"Ready (backend={backend})\n"
@@ -53,9 +61,19 @@ class WaypointGuiPanel:
         self._formation_model = ui.SimpleBoolModel(True)
         self._spacing_model = ui.SimpleFloatModel(80.0)
 
-        self._window = ui.Window("Sanjay MK2 Swarm Controller", width=480, height=620)
+        self._window = ui.Window("Sanjay MK2 Swarm Controller", width=480, height=720)
         with self._window.frame:
             with ui.VStack(spacing=8):
+                ui.Label("Starting Hex (spawn area)", style={"font_size": 16})
+                with ui.HStack(height=26):
+                    ui.Label("Center X", width=65)
+                    ui.FloatField(model=self._start_cx_model, precision=2)
+                    ui.Label("Center Y", width=65)
+                    ui.FloatField(model=self._start_cy_model, precision=2)
+                    ui.Label("Radius", width=50)
+                    ui.FloatField(model=self._start_radius_model, precision=1)
+
+                ui.Spacer(height=4)
                 ui.Label("Checkpoint Input (NED)", style={"font_size": 16})
                 with ui.HStack(height=26):
                     ui.Label("X", width=22)
@@ -64,12 +82,18 @@ class WaypointGuiPanel:
                     ui.FloatField(model=self._y_model, precision=2)
                     ui.Label("Z", width=22)
                     ui.FloatField(model=self._z_model, precision=2)
+                    ui.Label("Survey R", width=60)
+                    ui.FloatField(model=self._survey_radius_model, precision=1)
 
                 with ui.HStack(height=28):
                     ui.Button("Add Checkpoint", clicked_fn=self._add_waypoint_from_inputs)
                     ui.Button("Add From Selected Prim", clicked_fn=self._add_waypoint_from_selected_prim)
                     ui.Button("Clear", clicked_fn=self._clear_waypoints)
                 ui.Spacer(height=2)
+                ui.Label(
+                    "Survey R = radius for alpha triangle sectors (0 = use formation spacing)",
+                    style={"font_size": 11, "color": ui.color(0.55, 0.55, 0.55)},
+                )
                 ui.Label(
                     "Keyboard: Insert = Add checkpoint | Delete = Clear list",
                     style={"font_size": 11, "color": ui.color(0.55, 0.55, 0.55)},
@@ -118,12 +142,13 @@ class WaypointGuiPanel:
         s = self.swarm_runner.status
         phase_name = s.phase.name if hasattr(s.phase, "name") else str(s.phase)
         quality_pct = s.formation_quality * 100
+        beta_state = "THREAT RESPONSE" if self.swarm_runner._beta_mission_interrupted else phase_name
         full = (
             f"{text}\n"
             f"Swarm: {s.state.name} | CP: {s.current_index}/{s.total_checkpoints} "
             f"| Phase: {phase_name}\n"
             f"Formation: {quality_pct:.0f}% | "
-            f"Beta alt: {s.beta_altitude:.1f}m | "
+            f"Beta: {beta_state} alt={s.beta_altitude:.1f}m | "
             f"Min dist: {s.min_inter_drone_distance:.1f}m"
         )
         self._status_model.set_value(full)
@@ -138,9 +163,11 @@ class WaypointGuiPanel:
         current = self.swarm_runner.status.current_index
         for idx, wp in enumerate(checkpoints):
             marker = " <<" if idx == current else ""
+            effective_r = wp.survey_radius if wp.survey_radius > 0 else self.swarm_runner._formation_spacing
+            r_label = f"r={wp.survey_radius:.0f}" if wp.survey_radius > 0 else f"r={effective_r:.0f}(auto)"
             lines.append(
                 f"{idx}: ({wp.position.x:.1f}, {wp.position.y:.1f}, {wp.position.z:.1f}) "
-                f"spd={wp.speed:.1f}{marker}"
+                f"{r_label}{marker}"
             )
         self._waypoints_model.set_value("\n".join(lines))
 
@@ -154,7 +181,8 @@ class WaypointGuiPanel:
                 x=self._x_model.as_float,
                 y=self._y_model.as_float,
                 z=self._z_model.as_float,
-            )
+            ),
+            survey_radius=self._survey_radius_model.as_float,
         )
         self._set_status("Checkpoint added from numeric input")
 
@@ -197,6 +225,16 @@ class WaypointGuiPanel:
         if not self.swarm_runner.checkpoints:
             self._set_status("Add at least one checkpoint before starting")
             return
+
+        # Apply starting hex configuration
+        start_cx = self._start_cx_model.as_float
+        start_cy = self._start_cy_model.as_float
+        start_r = self._start_radius_model.as_float
+        if start_cx != 0.0 or start_cy != 0.0:
+            self.swarm_runner.set_start_config(
+                center=Vector3(x=start_cx, y=start_cy, z=0.0),
+                radius=start_r,
+            )
 
         def _schedule(loop: asyncio.AbstractEventLoop | None = None):
             """Schedule swarm mission on event loop."""

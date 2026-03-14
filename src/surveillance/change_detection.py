@@ -46,6 +46,16 @@ THREAT_CLASSIFICATION = {
 # Minimum confidence to report a change
 MIN_CHANGE_CONFIDENCE = 0.35
 
+# Sub-score overrides by object type (spec §5.3)
+# Keys: (classification_score, spatial_score, behavioural_score)
+_OBJECT_SUB_SCORES = {
+    'person':          (0.8, 0.7, 0.6),
+    'vehicle':         (0.3, 0.5, 0.4),
+    'camp':            (0.5, 0.6, 0.3),
+    'equipment':       (0.4, 0.5, 0.3),
+    'thermal_contact': (0.6, 0.5, 0.5),
+}
+
 
 @dataclass
 class ChangeEvent:
@@ -60,6 +70,12 @@ class ChangeEvent:
     detected_by: int            # drone_id
     thermal_signature: float = 0.0
     timestamp: float = field(default_factory=time.time)
+
+    # Threat scoring sub-dimensions (spec §5.3)
+    spatial_score: float = 0.5       # proximity to restricted zones [0-1]
+    temporal_score: float = 0.3      # time-of-day anomaly [0-1]
+    behavioural_score: float = 0.5   # movement pattern analysis [0-1]
+    classification_score: float = 0.5 # object type weight [0-1]
 
     def to_dict(self) -> dict:
         return {
@@ -161,6 +177,14 @@ class ChangeDetector:
         else:
             desc = f"Anomaly at ({detection.position.x:.0f}, {detection.position.y:.0f})"
 
+        # Look up sub-scores for this object type (spec §5.3)
+        obj_key = detection.object_type.lower()
+        if obj_key in _OBJECT_SUB_SCORES:
+            cls_score, spat_score, behav_score = _OBJECT_SUB_SCORES[obj_key]
+        else:
+            # Default sub-scores
+            cls_score, spat_score, behav_score = 0.5, 0.5, 0.5
+
         return ChangeEvent(
             event_id=event_id,
             position=Vector3(
@@ -176,6 +200,9 @@ class ChangeDetector:
             detected_by=drone_id,
             thermal_signature=detection.thermal_signature,
             timestamp=current_time,
+            classification_score=cls_score,
+            spatial_score=spat_score,
+            behavioural_score=behav_score,
         )
 
     def _classify_threat(self, detection: DetectedObject) -> ThreatLevel:

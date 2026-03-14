@@ -42,6 +42,9 @@
             const [state, setState] = useState(null);
             const [selectedDrone, setSelectedDrone] = useState(0);
             const [viewMode, setViewMode] = useState('topdown');
+            const [threatFeed, setThreatFeed] = useState([]);
+            const [auditLog, setAuditLog] = useState([]);
+            const [telemetry, setTelemetry] = useState(null);
             const wsRef = useRef(null);
             const reconnectRef = useRef(null);
 
@@ -66,6 +69,14 @@
                         const data = JSON.parse(event.data);
                         if (data.type === 'state') {
                             setState(data);
+                        } else if (data.type === 'threat_event') {
+                            setThreatFeed(prev => [data, ...prev].slice(0, 50));
+                        } else if (data.type === 'telemetry') {
+                            setTelemetry(data);
+                        } else if (data.type === 'audit') {
+                            setAuditLog(prev => [data, ...prev].slice(0, 100));
+                        } else if (data.type === 'map_update') {
+                            setState(prev => prev ? {...prev, mapUpdate: data} : prev);
                         }
                     } catch (e) {
                         console.error('Failed to parse message:', e);
@@ -227,7 +238,7 @@
 
                     {/* View Tabs */}
                     <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                        {['topdown', '3d', 'stateMachine', 'faultTest'].map(mode => (
+                        {['topdown', '3d', 'stateMachine', 'faultTest', 'threats', 'audit'].map(mode => (
                             <button
                                 key={mode}
                                 onClick={() => setViewMode(mode)}
@@ -274,7 +285,7 @@
                             {viewMode === 'stateMachine' ? (
                                 <StateMachine currentMode={selectedDroneData.mode} getModeColor={getModeColor} />
                             ) : viewMode === 'faultTest' ? (
-                                <FaultTestPanel 
+                                <FaultTestPanel
                                     drones={drones}
                                     scenarios={scenarios || []}
                                     activeScenario={activeScenario}
@@ -282,6 +293,14 @@
                                     loadScenario={loadScenario}
                                     sendCommand={sendCommand}
                                 />
+                            ) : viewMode === 'threats' ? (
+                                <ThreatFeedPanel
+                                    threats={threatFeed}
+                                    activeThreats={state.threats || []}
+                                    sendCommand={sendCommand}
+                                />
+                            ) : viewMode === 'audit' ? (
+                                <AuditLogPanel entries={auditLog} />
                             ) : (
                                 <HexagonView
                                     drones={drones}
@@ -781,6 +800,84 @@
         };
 
         // Fault Test Panel Component
+        const ThreatFeedPanel = ({ threats, activeThreats, sendCommand }) => {
+            const getLevelColor = (level) => ({
+                'CRITICAL': '#ef4444', 'HIGH': '#f97316', 'MEDIUM': '#eab308', 'LOW': '#22c55e'
+            }[level] || '#6b7280');
+
+            const getStatusColor = (status) => ({
+                'DETECTED': '#3b82f6', 'PENDING_CONFIRMATION': '#f59e0b',
+                'CONFIRMING': '#a855f7', 'CONFIRMED': '#ef4444', 'CLEARED': '#22c55e'
+            }[status] || '#6b7280');
+
+            return (
+                <div style={{ background: '#111827', borderRadius: '12px', padding: '16px', border: '1px solid #374151', minHeight: '400px' }}>
+                    <h3 style={{ color: '#f87171', margin: '0 0 12px 0', fontSize: '16px' }}>Threat Feed</h3>
+                    {activeThreats.length > 0 && (
+                        <div style={{ marginBottom: '16px' }}>
+                            <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '6px', fontWeight: '600' }}>ACTIVE THREATS</div>
+                            {activeThreats.map((t, i) => (
+                                <div key={t.id || i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', background: '#1f2937', borderRadius: '8px', marginBottom: '4px', border: '1px solid #374151' }}>
+                                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: getLevelColor(t.level), flexShrink: 0 }}></span>
+                                    <span style={{ fontSize: '13px', fontWeight: '600', color: '#e5e7eb' }}>{t.id}</span>
+                                    <span style={{ fontSize: '11px', color: getLevelColor(t.level) }}>{t.level}</span>
+                                    <span style={{ fontSize: '11px', padding: '2px 6px', borderRadius: '4px', background: getStatusColor(t.status) + '22', color: getStatusColor(t.status) }}>{t.status}</span>
+                                    {t.score != null && <span style={{ fontSize: '11px', color: '#9ca3af', marginLeft: 'auto' }}>Score: {t.score.toFixed(2)}</span>}
+                                    {t.assigned != null && (
+                                        <button onClick={() => sendCommand('dispatch', { threat_id: t.id, target_drone: t.assigned })}
+                                            style={{ fontSize: '10px', padding: '2px 8px', borderRadius: '4px', border: '1px solid #6366f1', background: 'transparent', color: '#818cf8', cursor: 'pointer', marginLeft: '4px' }}>
+                                            Dispatch
+                                        </button>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '6px', fontWeight: '600' }}>RECENT EVENTS</div>
+                    <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                        {threats.length === 0 ? (
+                            <div style={{ color: '#4b5563', fontSize: '13px', padding: '20px', textAlign: 'center' }}>No threat events yet</div>
+                        ) : threats.map((t, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'center', padding: '6px 8px', borderBottom: '1px solid #1f2937', fontSize: '12px' }}>
+                                <span style={{ color: getLevelColor(t.level), fontWeight: '600' }}>{t.level}</span>
+                                <span style={{ color: '#9ca3af' }}>{t.threat_id}</span>
+                                <span style={{ color: getStatusColor(t.status), fontSize: '11px' }}>{t.status}</span>
+                                {t.assigned && <span style={{ color: '#818cf8', marginLeft: 'auto', fontSize: '11px' }}>{t.assigned}</span>}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const AuditLogPanel = ({ entries }) => {
+            const getEventColor = (event) => ({
+                'cbba_auction': '#a855f7', 'threat_detected': '#f87171', 'override': '#f59e0b',
+                'manual_dispatch': '#f97316', 'phase_change': '#3b82f6', 'init': '#22c55e'
+            }[event] || '#6b7280');
+
+            return (
+                <div style={{ background: '#111827', borderRadius: '12px', padding: '16px', border: '1px solid #374151', minHeight: '400px' }}>
+                    <h3 style={{ color: '#60a5fa', margin: '0 0 12px 0', fontSize: '16px' }}>Audit Log</h3>
+                    <div style={{ maxHeight: '500px', overflowY: 'auto' }}>
+                        {entries.length === 0 ? (
+                            <div style={{ color: '#4b5563', fontSize: '13px', padding: '20px', textAlign: 'center' }}>No audit entries yet</div>
+                        ) : entries.map((e, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', padding: '6px 8px', borderBottom: '1px solid #1f2937', fontSize: '12px' }}>
+                                <span style={{ color: '#4b5563', flexShrink: 0, fontFamily: 'monospace', fontSize: '11px' }}>
+                                    {new Date(e.ts * 1000).toLocaleTimeString()}
+                                </span>
+                                <span style={{ color: getEventColor(e.event), fontWeight: '600', flexShrink: 0, minWidth: '80px', fontSize: '11px' }}>
+                                    {e.event}
+                                </span>
+                                <span style={{ color: '#9ca3af', wordBreak: 'break-word' }}>{e.detail}</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
         const FaultTestPanel = ({ drones, scenarios, activeScenario, injectFault, loadScenario, sendCommand }) => {
             const faultTypes = [
                 { id: 'motor_failure', name: 'Motor Failure', icon: '⚙️', severity: 'fatal', desc: 'Drone motor fails, emergency landing' },

@@ -1,12 +1,33 @@
-.tmp.driveupload/
-.tmp.drivedownload/
+# OS metadata
+.DS_Store
+._*
+
+# Python
 venv/
 .venv/
 **/__pycache__/
 *.pyc
 *.pyo
-.DS_Store
-*.log
+
+# IDE / tools
 .claude/
-.dist/
+.cursor/
+.mcp.json
 .pytest_cache/
+
+# Build / dist
+.dist/
+
+# Temp / sync
+.tmp.driveupload/
+.tmp.drivedownload/
+
+# Runtime artifacts
+*.log
+simulation/logs/*.json
+test_report_*.txt
+test_results*.txt
+FINAL_TEST_REPORT.md
+
+# Binary documents
+*.docx

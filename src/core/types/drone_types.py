@@ -331,10 +331,15 @@ class DroneState:
     # Health
     is_healthy: bool = True
     error_code: int = 0
-    
+
+    # Sensor & patrol state (spec §4.4 state vector)
+    patrol_progress: float = 0.0        # % of sector covered [0-100]
+    sensor_health: float = 1.0          # 1.0 = nominal, <1.0 = degraded
+    sensor_capability: float = 1.0      # 1.0 = full suite, 0.0 = blind
+
     # Timing
     timestamp: float = field(default_factory=time.time)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary for network transmission."""
         return {
@@ -343,19 +348,22 @@ class DroneState:
             'position': [self.position.x, self.position.y, self.position.z],
             'velocity': [self.velocity.x, self.velocity.y, self.velocity.z],
             'acceleration': [self.acceleration.x, self.acceleration.y, self.acceleration.z],
-            'orientation': [self.orientation.w, self.orientation.x, 
+            'orientation': [self.orientation.w, self.orientation.x,
                            self.orientation.y, self.orientation.z],
             'yaw': self.yaw,
             'mode': self.mode.name,
             'battery': self.battery,
             'current_task': self.current_task,
-            'target_position': ([self.target_position.x, self.target_position.y, 
+            'target_position': ([self.target_position.x, self.target_position.y,
                                 self.target_position.z] if self.target_position else None),
             'is_healthy': self.is_healthy,
             'error_code': self.error_code,
-            'timestamp': self.timestamp
+            'patrol_progress': self.patrol_progress,
+            'sensor_health': self.sensor_health,
+            'sensor_capability': self.sensor_capability,
+            'timestamp': self.timestamp,
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> DroneState:
         """Deserialize from dictionary."""
@@ -363,12 +371,12 @@ class DroneState:
         if data.get('target_position'):
             tp = data['target_position']
             target_pos = Vector3(x=tp[0], y=tp[1], z=tp[2])
-        
+
         pos = data.get('position', [0, 0, 0])
         vel = data.get('velocity', [0, 0, 0])
         acc = data.get('acceleration', [0, 0, 0])
         orn = data.get('orientation', [1, 0, 0, 0])
-        
+
         return cls(
             drone_id=data.get('drone_id', 0),
             drone_type=DroneType[data.get('drone_type', 'ALPHA')],
@@ -383,7 +391,10 @@ class DroneState:
             target_position=target_pos,
             is_healthy=data.get('is_healthy', True),
             error_code=data.get('error_code', 0),
-            timestamp=data.get('timestamp', time.time())
+            patrol_progress=data.get('patrol_progress', 0.0),
+            sensor_health=data.get('sensor_health', 1.0),
+            sensor_capability=data.get('sensor_capability', 1.0),
+            timestamp=data.get('timestamp', time.time()),
         )
 
 
@@ -397,6 +408,7 @@ class Waypoint:
     acceptance_radius: float = 1.0  # m
     hold_time: float = 0.0          # s to hover at waypoint
     yaw: Optional[float] = None     # rad, None = maintain heading
+    survey_radius: float = 0.0      # m, 0 = use formation_spacing
 
 
 @dataclass
@@ -494,8 +506,11 @@ class FusedObservation:
 class Threat:
     """
     A tracked threat in the surveillance system.
-    
+
     Lifecycle: DETECTED → PENDING_CONFIRMATION → CONFIRMING → CONFIRMED/CLEARED → RESOLVED
+
+    threat_score uses the 4-dimension weighted formula from spec §5.3:
+        0.30*Spatial + 0.20*Temporal + 0.35*Behavioural + 0.15*Classification
     """
     threat_id: str
     position: Vector3
@@ -503,6 +518,7 @@ class Threat:
     status: ThreatStatus = ThreatStatus.DETECTED
     object_type: str = "unknown"
     confidence: float = 0.0
+    threat_score: float = 0.0     # spec §5.3 composite score [0.0-1.0]
     detected_by: int = -1         # Alpha drone_id
     confirmed_by: int = -1        # Beta drone_id
     assigned_beta: int = -1       # Beta drone dispatched
@@ -519,6 +535,7 @@ class Threat:
             'status': self.status.name,
             'object_type': self.object_type,
             'confidence': round(self.confidence, 3),
+            'threat_score': round(self.threat_score, 3),
             'detected_by': self.detected_by,
             'confirmed_by': self.confirmed_by,
             'assigned_beta': self.assigned_beta,
