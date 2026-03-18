@@ -67,6 +67,17 @@ WORLD_SIZE = 1000.0     # meters
 CELL_SIZE = 5.0
 QUADROTOR_USD = "/Isaac/Robots/Quadrotor/quadrotor.usd"
 
+# Quadcopter geometry constants (metres)
+QUAD_BODY_RADIUS = 0.12
+QUAD_BODY_HEIGHT = 0.06
+QUAD_ARM_LENGTH  = 0.22
+QUAD_ARM_WIDTH   = 0.025
+QUAD_ARM_HEIGHT  = 0.015
+QUAD_ROTOR_RADIUS = 0.10
+QUAD_ROTOR_HEIGHT = 0.008
+QUAD_LEG_RADIUS  = 0.008
+QUAD_LEG_HEIGHT  = 0.06
+
 # ── Color Palette ──
 CLR_CONCRETE    = np.array([0.58, 0.56, 0.53])
 CLR_GLASS       = np.array([0.55, 0.73, 0.88])
@@ -615,7 +626,13 @@ def _spawn_all_drones(world):
 
 
 def _spawn_drone(world, name: str, position: list, drone_type: str = "alpha"):
-    """Spawn a quadrotor with cameras + LiDAR (Alpha only)."""
+    """Spawn a quadrotor with cameras + LiDAR (Alpha only).
+
+    Strategy:
+        1. Try loading the built-in Isaac Sim quadrotor USD asset.
+        2. If that fails, build a procedural quadcopter from USD
+           cylinder/cube primitives (body + 4 arms + 4 rotors + landing gear).
+    """
     prim_path = f"/World/Drones/{name}"
 
     try:
@@ -627,22 +644,112 @@ def _spawn_drone(world, name: str, position: list, drone_type: str = "alpha"):
             position=np.array(position),
             orientation=np.array([1, 0, 0, 0]),
         ))
-        print(f"  ├─ {drone_type.upper()} '{name}' at "
+        print(f"  ├─ {drone_type.upper()} '{name}' [USD quadrotor] at "
               f"({position[0]:.0f}, {position[1]:.0f}, {position[2]:.0f})")
-    except Exception as e:
-        color = CLR_ALPHA_DRONE if drone_type == "alpha" else CLR_BETA_DRONE
-        world.scene.add(VisualCuboid(
-            prim_path=prim_path,
-            name=name.lower(),
-            position=np.array(position),
-            size=1.0,
-            scale=np.array([0.6, 0.6, 0.18]),
-            color=color,
-        ))
-        print(f"  ├─ {drone_type.upper()} '{name}' [placeholder] "
-              f"({position[0]:.0f}, {position[1]:.0f}, {position[2]:.0f})")
+    except Exception:
+        _build_procedural_quadcopter(world, prim_path, name, position, drone_type)
 
     _attach_sensors(name, prim_path, drone_type)
+
+
+def _build_procedural_quadcopter(world, prim_path: str, name: str,
+                                  position: list, drone_type: str):
+    """Build a recognisable quadcopter from USD geometric primitives.
+
+    Layout (top view):
+            rotor[0]
+              |
+        rotor[3] ── BODY ── rotor[1]
+              |
+            rotor[2]
+
+    Each arm is a thin cuboid extending from body centre to rotor disc.
+    Each rotor is a flat cylinder.  Two landing-gear legs sit underneath.
+    """
+    from pxr import UsdGeom, Gf, Sdf
+    import omni.usd
+
+    stage = omni.usd.get_context().get_stage()
+    color = CLR_ALPHA_DRONE if drone_type == "alpha" else CLR_BETA_DRONE
+    rotor_color = np.array([0.20, 0.20, 0.22])  # dark grey rotors
+    leg_color = np.array([0.30, 0.30, 0.32])
+
+    # Root Xform positioned at the drone spawn point
+    root_xform = UsdGeom.Xform.Define(stage, prim_path)
+    root_xform.AddTranslateOp().Set(Gf.Vec3d(float(position[0]),
+                                               float(position[1]),
+                                               float(position[2])))
+
+    # ── Central body (cylinder) ──
+    body_path = f"{prim_path}/body"
+    body = UsdGeom.Cylinder.Define(stage, body_path)
+    body.GetRadiusAttr().Set(QUAD_BODY_RADIUS)
+    body.GetHeightAttr().Set(QUAD_BODY_HEIGHT)
+    body.GetAxisAttr().Set("Z")
+    _set_prim_color(stage, body_path, color)
+
+    # ── Arms + Rotors (4 directions at 45° diagonals) ──
+    arm_angles = [45.0, 135.0, 225.0, 315.0]  # degrees
+    for i, angle_deg in enumerate(arm_angles):
+        angle_rad = math.radians(angle_deg)
+        dx = QUAD_ARM_LENGTH * math.cos(angle_rad)
+        dy = QUAD_ARM_LENGTH * math.sin(angle_rad)
+
+        # Arm (thin cuboid from centre toward rotor)
+        arm_path = f"{prim_path}/arm_{i}"
+        arm = UsdGeom.Cube.Define(stage, arm_path)
+        arm.GetSizeAttr().Set(1.0)
+        # Scale to arm dimensions: length along the arm direction, narrow cross-section
+        xf = UsdGeom.Xformable(arm.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(dx / 2.0, dy / 2.0, 0.0))
+        xf.AddRotateZOp().Set(angle_deg)
+        xf.AddScaleOp().Set(Gf.Vec3f(QUAD_ARM_LENGTH, QUAD_ARM_WIDTH, QUAD_ARM_HEIGHT))
+        _set_prim_color(stage, arm_path, color * 0.8)
+
+        # Rotor disc (flat cylinder at the end of the arm)
+        rotor_path = f"{prim_path}/rotor_{i}"
+        rotor = UsdGeom.Cylinder.Define(stage, rotor_path)
+        rotor.GetRadiusAttr().Set(QUAD_ROTOR_RADIUS)
+        rotor.GetHeightAttr().Set(QUAD_ROTOR_HEIGHT)
+        rotor.GetAxisAttr().Set("Z")
+        rxf = UsdGeom.Xformable(rotor.GetPrim())
+        rxf.AddTranslateOp().Set(Gf.Vec3d(dx, dy, QUAD_BODY_HEIGHT / 2.0 + 0.005))
+        _set_prim_color(stage, rotor_path, rotor_color)
+
+    # ── Landing gear (two legs under the body) ──
+    for i, y_off in enumerate([-0.08, 0.08]):
+        leg_path = f"{prim_path}/leg_{i}"
+        leg = UsdGeom.Cylinder.Define(stage, leg_path)
+        leg.GetRadiusAttr().Set(QUAD_LEG_RADIUS)
+        leg.GetHeightAttr().Set(QUAD_LEG_HEIGHT)
+        leg.GetAxisAttr().Set("Z")
+        lxf = UsdGeom.Xformable(leg.GetPrim())
+        lxf.AddTranslateOp().Set(Gf.Vec3d(0.0, y_off, -(QUAD_BODY_HEIGHT / 2.0 + QUAD_LEG_HEIGHT / 2.0)))
+        _set_prim_color(stage, leg_path, leg_color)
+
+    # ── Heading indicator (small forward-facing cone/cube) ──
+    nose_path = f"{prim_path}/nose"
+    nose = UsdGeom.Cube.Define(stage, nose_path)
+    nose.GetSizeAttr().Set(1.0)
+    nxf = UsdGeom.Xformable(nose.GetPrim())
+    nxf.AddTranslateOp().Set(Gf.Vec3d(QUAD_BODY_RADIUS + 0.02, 0.0, 0.0))
+    nxf.AddScaleOp().Set(Gf.Vec3f(0.04, 0.02, 0.01))
+    indicator_color = np.array([0.0, 0.95, 0.0]) if drone_type == "alpha" else np.array([0.95, 0.20, 0.0])
+    _set_prim_color(stage, nose_path, indicator_color)
+
+    print(f"  ├─ {drone_type.upper()} '{name}' [procedural quadcopter] at "
+          f"({position[0]:.0f}, {position[1]:.0f}, {position[2]:.0f})")
+
+
+def _set_prim_color(stage, prim_path: str, color: np.ndarray):
+    """Apply a display color to a UsdGeom prim."""
+    from pxr import UsdGeom, Gf
+    prim = stage.GetPrimAtPath(prim_path)
+    if prim.IsValid():
+        geom = UsdGeom.Gprim(prim)
+        geom.CreateDisplayColorAttr().Set([Gf.Vec3f(float(color[0]),
+                                                     float(color[1]),
+                                                     float(color[2]))])
 
 
 def _attach_sensors(drone_name: str, prim_path: str, drone_type: str):

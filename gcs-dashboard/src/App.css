@@ -1,0 +1,138 @@
+/* ─────────────────────────────────────────────────
+   Sanjay MK2 — GCS Police Dashboard · Dark Theme
+   ───────────────────────────────────────────────── */
+
+/* ── Reset ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0a0e1a;
+  color: #c8d0e0;
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── App shell layout ── */
+.app-shell {
+  display: flex;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.app-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  background: #0a0e1a;
+}
+
+/* ── Scrollbars ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e3a5f;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #2d4a6f;
+}
+
+/* ── Focus ── */
+*:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+/* ── Selection ── */
+::selection {
+  background: rgba(59, 130, 246, 0.35);
+  color: #f1f5f9;
+}
+
+/* ── Form elements ── */
+input, select, textarea, button {
+  font-family: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+select {
+  cursor: pointer;
+}
+
+/* ── Animations ── */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Utility: REC dot blink ── */
+.rec-dot-blink {
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+
+/* ── Sidebar hover effect (JS inline styles can't do :hover) ── */
+.app-shell aside button:hover {
+  background: rgba(59, 130, 246, 0.08) !important;
+  color: #93bbfd !important;
+}
+
+/* ── Table rows hover ── */
+table tbody tr:hover {
+  background: rgba(30, 58, 95, 0.15);
+}
+
+/* ── Canvas in stacking contexts ── */
+canvas {
+  image-rendering: auto;
+}
+
+/* ── Responsive guard (very small screens) ── */
+@media (max-width: 900px) {
+  .app-shell aside {
+    width: 56px !important;
+    min-width: 56px !important;
+  }
+  .app-shell aside .logo-text,
+  .app-shell aside .nav-label,
+  .app-shell aside .fleet-box {
+    display: none;
+  }
+}

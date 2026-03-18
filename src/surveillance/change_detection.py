@@ -41,6 +41,7 @@ THREAT_CLASSIFICATION = {
     'thermal_only': ThreatLevel.MEDIUM,
     'thermal_contact': ThreatLevel.MEDIUM,
     'unknown': ThreatLevel.MEDIUM,
+    'crowd': ThreatLevel.HIGH,
 }
 
 # Minimum confidence to report a change
@@ -54,6 +55,7 @@ _OBJECT_SUB_SCORES = {
     'camp':            (0.5, 0.6, 0.3),
     'equipment':       (0.4, 0.5, 0.3),
     'thermal_contact': (0.6, 0.5, 0.5),
+    'crowd':           (0.7, 0.8, 0.9),
 }
 
 

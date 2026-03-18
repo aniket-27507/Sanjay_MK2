@@ -20,6 +20,12 @@ class TaskType(Enum):
     PERIMETER_PATROL = auto()
     RELAY_STATION = auto()
     RTL = auto()
+    # Police deployment task types
+    CROWD_OVERWATCH = auto()      # Overhead crowd density monitoring
+    BUILDING_PATROL = auto()      # Building perimeter orbit
+    CORRIDOR_MONITOR = auto()     # Exit corridor flow monitoring
+    INCIDENT_RESPONSE = auto()    # Emergency incident area coverage
+    VIP_OVERWATCH = auto()        # VIP protection overwatch
 
 
 @dataclass

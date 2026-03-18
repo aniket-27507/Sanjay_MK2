@@ -9,6 +9,8 @@ This module provides:
 - State Transition Models for Drone Flight Control
 - Sensor type enumerations
 - Detected Object tracking states
+- Crowd Intelligence types (density, flow, stampede risk)
+- Urban operations types (building geometry)
 
 @author: Prathamesh Hiwarkar
 """
@@ -18,8 +20,9 @@ from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import time
+import uuid
 
 
 class FlightMode(Enum):
@@ -542,4 +545,238 @@ class Threat:
             'detection_time': self.detection_time,
             'confirmation_time': self.confirmation_time,
             'resolution_time': self.resolution_time,
+        }
+
+
+# ==============================================================
+# Crowd Intelligence Types (State Police Deployment)
+# ==============================================================
+
+class CrowdDensityLevel(Enum):
+    """
+    Crowd density classification based on Fruin's Level-of-Service.
+
+    Thresholds (persons/m2):
+        EMPTY:    < 0.5   — free movement
+        LOW:      0.5-2.0 — unrestricted walking
+        MODERATE: 2.0-4.0 — restricted movement
+        HIGH:     4.0-6.0 — severely restricted, contact likely
+        CRITICAL: > 6.0   — crush conditions (LOS F)
+    """
+    EMPTY = auto()
+    LOW = auto()
+    MODERATE = auto()
+    HIGH = auto()
+    CRITICAL = auto()
+
+
+# Density thresholds (persons/m2) for each level
+CROWD_DENSITY_THRESHOLDS: Dict[CrowdDensityLevel, float] = {
+    CrowdDensityLevel.EMPTY: 0.0,
+    CrowdDensityLevel.LOW: 0.5,
+    CrowdDensityLevel.MODERATE: 2.0,
+    CrowdDensityLevel.HIGH: 4.0,
+    CrowdDensityLevel.CRITICAL: 6.0,
+}
+
+
+class StampedeRiskLevel(Enum):
+    """
+    Stampede risk classification for crowd safety monitoring.
+
+    Risk score thresholds:
+        NONE:    < 0.20 — normal crowd behaviour
+        WATCH:   0.20-0.40 — early indicators observed
+        WARNING: 0.40-0.60 — developing risk, operator attention needed
+        ALERT:   0.60-0.80 — imminent danger, intervention recommended
+        ACTIVE:  >= 0.80 — stampede in progress, emergency response
+    """
+    NONE = auto()
+    WATCH = auto()
+    WARNING = auto()
+    ALERT = auto()
+    ACTIVE = auto()
+
+
+# Risk score thresholds for each level
+STAMPEDE_RISK_THRESHOLDS: Dict[StampedeRiskLevel, float] = {
+    StampedeRiskLevel.NONE: 0.0,
+    StampedeRiskLevel.WATCH: 0.20,
+    StampedeRiskLevel.WARNING: 0.40,
+    StampedeRiskLevel.ALERT: 0.60,
+    StampedeRiskLevel.ACTIVE: 0.80,
+}
+
+
+def classify_density(density: float) -> CrowdDensityLevel:
+    """Classify a density value (persons/m2) into a CrowdDensityLevel."""
+    if density >= 6.0:
+        return CrowdDensityLevel.CRITICAL
+    elif density >= 4.0:
+        return CrowdDensityLevel.HIGH
+    elif density >= 2.0:
+        return CrowdDensityLevel.MODERATE
+    elif density >= 0.5:
+        return CrowdDensityLevel.LOW
+    return CrowdDensityLevel.EMPTY
+
+
+def classify_stampede_risk(risk_score: float) -> StampedeRiskLevel:
+    """Classify a risk score [0.0-1.0] into a StampedeRiskLevel."""
+    if risk_score >= 0.80:
+        return StampedeRiskLevel.ACTIVE
+    elif risk_score >= 0.60:
+        return StampedeRiskLevel.ALERT
+    elif risk_score >= 0.40:
+        return StampedeRiskLevel.WARNING
+    elif risk_score >= 0.20:
+        return StampedeRiskLevel.WATCH
+    return StampedeRiskLevel.NONE
+
+
+@dataclass
+class CrowdCell:
+    """
+    Grid cell for crowd density mapping.
+
+    Each cell represents a cell_size x cell_size area in the world grid.
+    Density is measured in persons/m2.
+    """
+    row: int = 0
+    col: int = 0
+    density: float = 0.0
+    density_level: CrowdDensityLevel = CrowdDensityLevel.EMPTY
+    flow_vector: Vector3 = field(default_factory=Vector3)
+    flow_speed: float = 0.0
+    person_count: int = 0
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'row': self.row,
+            'col': self.col,
+            'density': round(self.density, 3),
+            'density_level': self.density_level.name,
+            'flow_vector': [self.flow_vector.x, self.flow_vector.y],
+            'flow_speed': round(self.flow_speed, 3),
+            'person_count': self.person_count,
+            'timestamp': self.timestamp,
+        }
+
+
+@dataclass
+class CrowdZone:
+    """
+    Aggregated crowd zone formed from a cluster of high-density cells.
+
+    Zones are created by connected-component labeling of adjacent
+    cells that exceed a density threshold.
+    """
+    zone_id: str = field(default_factory=lambda: f"cz_{uuid.uuid4().hex[:8]}")
+    center: Vector3 = field(default_factory=Vector3)
+    bounding_cells: List[Tuple[int, int]] = field(default_factory=list)
+    avg_density: float = 0.0
+    peak_density: float = 0.0
+    total_persons: int = 0
+    dominant_flow: Vector3 = field(default_factory=Vector3)
+    stampede_risk: float = 0.0
+    risk_level: StampedeRiskLevel = StampedeRiskLevel.NONE
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'zone_id': self.zone_id,
+            'center': [self.center.x, self.center.y, self.center.z],
+            'cell_count': len(self.bounding_cells),
+            'avg_density': round(self.avg_density, 3),
+            'peak_density': round(self.peak_density, 3),
+            'total_persons': self.total_persons,
+            'dominant_flow': [self.dominant_flow.x, self.dominant_flow.y],
+            'stampede_risk': round(self.stampede_risk, 3),
+            'risk_level': self.risk_level.name,
+            'timestamp': self.timestamp,
+        }
+
+
+@dataclass
+class StampedeIndicator:
+    """
+    Individual stampede risk indicator detected by crowd flow analysis.
+
+    Indicator types:
+        density_spike:     Rapid density increase in a short time window
+        counter_flow:      Opposing crowd flow vectors in the same area
+        compression_wave:  Density gradient increasing along flow direction
+        velocity_anomaly:  Crowd speed significantly deviating from normal
+        crowd_turbulence:  High variance in flow direction within a zone
+    """
+    indicator_type: str = "unknown"
+    position: Vector3 = field(default_factory=Vector3)
+    severity: float = 0.0
+    description: str = ""
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'indicator_type': self.indicator_type,
+            'position': [self.position.x, self.position.y, self.position.z],
+            'severity': round(self.severity, 3),
+            'description': self.description,
+            'timestamp': self.timestamp,
+        }
+
+
+# ==============================================================
+# Urban Operations Types (State Police Deployment)
+# ==============================================================
+
+@dataclass
+class BuildingGeometry:
+    """
+    3D building definition for urban operations.
+
+    Used for building-aware geofencing, perimeter patrol patterns,
+    and vertical scan waypoint generation.
+
+    Coordinate system: NED — center is at ground level (z=0),
+    building extends upward (negative z in NED).
+    """
+    building_id: str = field(default_factory=lambda: f"bldg_{uuid.uuid4().hex[:8]}")
+    center: Vector3 = field(default_factory=Vector3)
+    width: float = 20.0         # m (East-West extent)
+    depth: float = 20.0         # m (North-South extent)
+    height: float = 50.0        # m above ground
+    is_high_rise: bool = False   # True if height > 30m
+    rooftop_accessible: bool = False
+    standoff_distance: float = 30.0  # m minimum drone distance from facade
+
+    def __post_init__(self):
+        if self.height > 30.0:
+            self.is_high_rise = True
+
+    @property
+    def top_altitude_ned(self) -> float:
+        """Building top in NED z (negative)."""
+        return -self.height
+
+    @property
+    def half_extents(self) -> Tuple[float, float]:
+        """Half-width and half-depth for bounding box."""
+        return (self.width / 2.0, self.depth / 2.0)
+
+    def contains_xy(self, x: float, y: float, margin: float = 0.0) -> bool:
+        """Check if an (x, y) position is within building footprint + margin."""
+        hw, hd = self.half_extents
+        return (abs(x - self.center.x) <= hw + margin and
+                abs(y - self.center.y) <= hd + margin)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'building_id': self.building_id,
+            'center': [self.center.x, self.center.y, self.center.z],
+            'width': self.width,
+            'depth': self.depth,
+            'height': self.height,
+            'is_high_rise': self.is_high_rise,
+            'standoff_distance': self.standoff_distance,
         }

@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Tuple, Set
 
 from src.core.types.drone_types import (
     Vector3, ThreatLevel, ThreatStatus, Threat,
+    CrowdZone, StampedeIndicator, StampedeRiskLevel,
 )
 from src.surveillance.beta_shepherd import BetaShepherdProtocol
 from src.surveillance.change_detection import ChangeEvent
@@ -96,6 +97,110 @@ class ThreatManager:
 
         # Active shepherd protocols (threat_id -> BetaShepherdProtocol)
         self._shepherds: Dict[str, BetaShepherdProtocol] = {}
+
+        # Map: crowd zone_id -> threat_id (prevent duplicate crowd threats)
+        self._crowd_zone_to_threat: Dict[str, str] = {}
+
+    # ==================== CROWD RISK REPORTING ====================
+
+    # StampedeRiskLevel -> ThreatLevel mapping
+    _RISK_TO_THREAT_LEVEL = {
+        StampedeRiskLevel.WATCH: ThreatLevel.MEDIUM,
+        StampedeRiskLevel.WARNING: ThreatLevel.MEDIUM,
+        StampedeRiskLevel.ALERT: ThreatLevel.HIGH,
+        StampedeRiskLevel.ACTIVE: ThreatLevel.CRITICAL,
+    }
+
+    def report_crowd_risk(
+        self,
+        zone: CrowdZone,
+        indicators: List[StampedeIndicator],
+        current_time: Optional[float] = None,
+    ) -> Optional[Threat]:
+        """
+        Report a crowd zone as a threat based on stampede risk analysis.
+
+        Creates or updates a Threat for the zone. Only zones at WARNING
+        or above should be reported.
+
+        Args:
+            zone: CrowdZone with stampede_risk and risk_level populated
+            indicators: StampedeIndicators associated with this zone
+            current_time: Current simulation time
+
+        Returns:
+            Created/updated Threat, or None if risk level too low.
+        """
+        current_time = current_time or time.time()
+
+        # Only report if risk level warrants a threat
+        if zone.risk_level in (StampedeRiskLevel.NONE, StampedeRiskLevel.WATCH):
+            return None
+
+        threat_level = self._RISK_TO_THREAT_LEVEL.get(
+            zone.risk_level, ThreatLevel.MEDIUM
+        )
+
+        # Check if we already have a threat for this zone
+        existing_id = self._crowd_zone_to_threat.get(zone.zone_id)
+        if existing_id and existing_id in self._threats:
+            threat = self._threats[existing_id]
+            threat.threat_level = threat_level
+            threat.confidence = min(1.0, zone.stampede_risk)
+            threat.threat_score = zone.stampede_risk
+            threat.position = zone.center
+            # Upgrade status if risk escalated
+            if (zone.risk_level == StampedeRiskLevel.ACTIVE
+                    and threat.status == ThreatStatus.DETECTED):
+                threat.status = ThreatStatus.PENDING_CONFIRMATION
+            return threat
+
+        # Create new crowd threat
+        self._threat_counter += 1
+        threat_id = f"thr_{self._threat_counter:04d}"
+
+        # Use stampede risk as the behavioural dimension (weight=0.35)
+        # and derive a composite score
+        max_indicator_sev = max(
+            (i.severity for i in indicators), default=0.0
+        )
+        score = self.scorer.compute(
+            spatial_score=0.7,  # crowds near infrastructure = high spatial
+            temporal_score=0.5,
+            behavioural_score=zone.stampede_risk,
+            classification_score=0.7,
+        )
+
+        status = ThreatStatus.DETECTED
+        if score >= self.threat_score_threshold:
+            status = ThreatStatus.PENDING_CONFIRMATION
+
+        threat = Threat(
+            threat_id=threat_id,
+            position=zone.center,
+            threat_level=threat_level,
+            status=status,
+            object_type="crowd_risk",
+            confidence=min(1.0, zone.stampede_risk),
+            detected_by=-1,  # crowd detection is multi-drone
+            detection_time=current_time,
+        )
+        threat.threat_score = score
+
+        self._threats[threat_id] = threat
+        self._crowd_zone_to_threat[zone.zone_id] = threat_id
+
+        indicator_summary = ", ".join(
+            f"{i.indicator_type}({i.severity:.2f})" for i in indicators[:3]
+        )
+        logger.warning(
+            "CROWD THREAT created: %s [%s] risk=%.2f density=%.1f/m2 "
+            "persons=%d indicators=[%s]",
+            threat_id, threat_level.name, zone.stampede_risk,
+            zone.peak_density, zone.total_persons, indicator_summary,
+        )
+
+        return threat
 
     def report_change(self, event: ChangeEvent, current_time: Optional[float] = None) -> Threat:
         """

@@ -1,0 +1,61 @@
+# ============================================================
+# Sanjay MK2 - State Police Deployment Configuration
+# ============================================================
+# Target: High-rise building surveillance, crowd control,
+#         stampede prevention for state police operations.
+# ============================================================
+
+deployment:
+  name: "State Police High-Rise Surveillance"
+  operator: "State Police Aviation Unit"
+  version: "1.0"
+
+swarm:
+  num_alpha_drones: 6
+  num_beta_drones: 1
+  total_drones: 7
+  formation_spacing: 60.0   # tighter for urban operations
+  default_formation: "hexagonal"
+  gossip_interval: 0.1
+  threat_score_threshold: 0.65
+
+crowd:
+  density_cell_size: 5.0
+  smoothing_alpha: 0.7
+  zone_density_threshold: 2.0
+  density_watch: 2.0
+  density_warning: 4.0
+  density_alert: 6.0
+  density_critical: 7.0
+  stampede_risk_watch: 0.20
+  stampede_risk_warning: 0.40
+  stampede_risk_alert: 0.60
+  stampede_risk_active: 0.80
+  model_weights_path: ""   # Set to path when CSRNet weights available
+
+urban:
+  geofence_buffer: 10.0
+  min_altitude_urban: 30.0
+  default_standoff: 30.0
+  tight_spacing: 40.0
+
+mission:
+  default_profile: "crowd_event"
+  auto_record_on_alert: true
+  evidence_retention_hours: 72
+  gcs_port: 8765
+
+network:
+  mavsdk_server_port: 50051
+  px4_sitl_port_base: 14540
+  mesh_port_base: 14550
+  broadcast_port: 14551
+  connection_timeout: 30.0
+  command_timeout: 5.0
+
+simulation:
+  use_mujoco: true
+  physics_timestep: 0.004167   # 240 Hz
+  control_timestep: 0.02       # 50 Hz
+  realtime_factor: 1.0
+  gui_enabled: true

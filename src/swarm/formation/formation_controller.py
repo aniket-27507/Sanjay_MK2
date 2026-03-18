@@ -41,6 +41,10 @@ class FormationType(Enum):
     RING = auto()
     DIAMOND = auto()
     CUSTOM = auto()
+    # Urban operations (State Police deployment)
+    URBAN_TIGHT = auto()      # Hex at half-spacing for urban canyons
+    BUILDING_ORBIT = auto()   # Ring around a building perimeter
+    VERTICAL_STACK = auto()   # Drones at staggered altitudes
 
 
 @dataclass
@@ -198,6 +202,12 @@ class FormationController:
             offsets = self._ring_offsets(n, spacing)
         elif ft == FormationType.DIAMOND:
             offsets = self._diamond_offsets(n, spacing)
+        elif ft == FormationType.URBAN_TIGHT:
+            offsets = self._hex_offsets(n, spacing / 2.0)
+        elif ft == FormationType.BUILDING_ORBIT:
+            offsets = self._ring_offsets(n, spacing)
+        elif ft == FormationType.VERTICAL_STACK:
+            offsets = self._vertical_stack_offsets(n, spacing)
         else:
             offsets = self._hex_offsets(n, spacing)
 
@@ -268,6 +278,22 @@ class FormationController:
         offsets.append(Vector3(-spacing / 2, -spacing, 0))
         offsets.append(Vector3(-spacing / 2, spacing, 0))
         return offsets[:n]
+
+    def _vertical_stack_offsets(self, n: int, spacing: float) -> List[Vector3]:
+        """Staggered altitude offsets for vertical coverage."""
+        # Drones at same XY but different altitudes: -65, -55, -45, ...
+        base_alt = -self.config.altitude
+        alt_step = 10.0  # 10m between altitude layers
+        offsets = []
+        for i in range(n):
+            layer = i % 3  # 3 altitude layers
+            angle = (i // 3) * (2 * math.pi / max(1, (n + 2) // 3))
+            offsets.append(Vector3(
+                x=spacing * 0.3 * math.cos(angle) if i >= 3 else 0,
+                y=spacing * 0.3 * math.sin(angle) if i >= 3 else 0,
+                z=layer * alt_step,  # relative offset from formation altitude
+            ))
+        return offsets
 
     # ── Helpers ───────────────────────────────────────────────────
 

@@ -109,6 +109,41 @@ class NetworkConfig:
     telemetry_timeout: float = 1.0
 
 
+@dataclass
+class CrowdConfig:
+    """Crowd intelligence configuration for police deployment."""
+    density_cell_size: float = 5.0       # m per grid cell
+    smoothing_alpha: float = 0.7         # temporal smoothing
+    zone_density_threshold: float = 2.0  # persons/m2 for zone detection
+    density_watch: float = 2.0           # persons/m2 — WATCH alert
+    density_warning: float = 4.0         # persons/m2 — WARNING alert
+    density_alert: float = 6.0           # persons/m2 — ALERT
+    density_critical: float = 7.0        # persons/m2 — CRITICAL (LOS F)
+    stampede_risk_watch: float = 0.20
+    stampede_risk_warning: float = 0.40
+    stampede_risk_alert: float = 0.60
+    stampede_risk_active: float = 0.80
+    model_weights_path: str = ""         # Path to CSRNet weights (empty = disabled)
+
+
+@dataclass
+class UrbanConfig:
+    """Urban operations configuration for police deployment."""
+    geofence_buffer: float = 10.0        # m from building facade
+    min_altitude_urban: float = 30.0     # m minimum altitude in urban areas
+    default_standoff: float = 30.0       # m default building standoff
+    tight_spacing: float = 40.0          # m for URBAN_TIGHT formation
+
+
+@dataclass
+class MissionConfig:
+    """Mission configuration for police deployment."""
+    default_profile: str = "crowd_event"
+    auto_record_on_alert: bool = True
+    evidence_retention_hours: int = 72
+    gcs_port: int = 8765
+
+
 class ConfigManager:
     """
     Centralized configuration management.
@@ -142,6 +177,9 @@ class ConfigManager:
         self.swarm = SwarmConfig()
         self.simulation = SimulationConfig()
         self.network = NetworkConfig()
+        self.crowd = CrowdConfig()
+        self.urban = UrbanConfig()
+        self.mission = MissionConfig()
         
         # Per-drone configurations
         self._drone_configs: Dict[int, DroneConfig] = {}
@@ -241,6 +279,15 @@ class ConfigManager:
         if 'network' in data:
             self._update_dataclass(self.network, data['network'])
         
+        if 'crowd' in data:
+            self._update_dataclass(self.crowd, data['crowd'])
+
+        if 'urban' in data:
+            self._update_dataclass(self.urban, data['urban'])
+
+        if 'mission' in data:
+            self._update_dataclass(self.mission, data['mission'])
+
         if 'drones' in data:
             for drone_data in data['drones']:
                 drone_id = drone_data.get('drone_id', 0)

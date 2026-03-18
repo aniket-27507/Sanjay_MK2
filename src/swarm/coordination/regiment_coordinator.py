@@ -76,6 +76,9 @@ class RegimentFormation(Enum):
     WEDGE = auto()          # Forward-heavy formation
     RING = auto()           # Circular perimeter patrol
     ADAPTIVE = auto()       # Auto-select based on mission
+    # Urban operations (State Police deployment)
+    BUILDING_PERIMETER = auto()  # Orbit around a building
+    CROWD_EVENT = auto()         # Overhead coverage for crowd monitoring
 
 
 class LeaderElectionCriteria(Enum):

@@ -6,6 +6,79 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.9.0] - 2026-03-18
+
+### Added — State Police Deployment: Crowd Intelligence, Urban Surveillance & GCS
+
+First deployment build targeting state police operations for high-rise building
+surveillance, crowd control, and stampede prevention. Adds crowd intelligence
+pipeline, urban patrol patterns, 3D building-aware geofencing, police GCS
+dashboard, and mission profiles. **356 tests passing.**
+
+#### Phase 1: Crowd Intelligence Module
+
+| File | Purpose |
+|------|---------|
+| `src/surveillance/crowd_density.py` | Dual-mode density estimation: YOLO person-count at low density, CSRNet/DM-Count model at high density. Grid-based with temporal smoothing and connected-component zone clustering |
+| `src/surveillance/crowd_density_model.py` | CSRNet backbone wrapper for per-pixel density map inference. Graceful fallback when torch/weights unavailable |
+| `src/surveillance/crowd_flow.py` | Crowd flow vector analysis from sequential person tracking. Detects counter-flows, compression waves, crowd turbulence, and velocity anomalies |
+| `src/surveillance/stampede_risk.py` | Composite stampede risk scoring: `0.35*Density + 0.25*FlowAnomaly + 0.20*Compression + 0.20*TemporalTrend`. Five risk levels (NONE → ACTIVE) |
+| `src/surveillance/crowd_coordinator.py` | Orchestrator wiring density estimator + flow analyzer + risk analyzer + threat manager into a per-tick pipeline |
+| `tests/test_crowd_density.py` | 20 tests: density classification, grid estimation, temporal smoothing, zone clustering |
+| `tests/test_crowd_flow.py` | 13 tests: flow computation, counter-flow detection, compression waves, turbulence, velocity anomalies |
+| `tests/test_stampede_risk.py` | 19 tests: scoring dimensions, composite risk, risk classification, threat manager integration |
+
+#### Phase 2: Urban Surveillance Patterns
+
+| File | Purpose |
+|------|---------|
+| `src/swarm/formation/urban_formations.py` | Building-orbit, tight-hex, urban-canyon formation adapters. Multi-building coverage distribution |
+| `src/swarm/coordination/urban_patrol_patterns.py` | Four patrol patterns: building perimeter (8-waypoint orbit with yaw-to-center), vertical scan (descending zigzag for Beta), crowd overhead (sectored loiter), exit corridor monitoring |
+| `src/single_drone/obstacle_avoidance/urban_geofence.py` | 3D building-aware geofencing with position checks, altitude restrictions, nearest-safe-position projection, and path clearance validation |
+| `tests/test_urban_patrol_patterns.py` | 17 tests: formation types, orbit positions, patrol waypoints, altitude, yaw facing |
+| `tests/test_urban_geofence.py` | 17 tests: exclusion zones, altitude restrictions, safe position projection, path checking |
+
+#### Phase 3: GCS Module — Police Operations Dashboard
+
+| File | Purpose |
+|------|---------|
+| `src/gcs/zone_manager.py` | Operational zone CRUD (restricted, VIP, exit_corridor, choke_point, staging_area) with point-in-polygon queries |
+| `src/gcs/evidence_recorder.py` | Per-drone evidence recording session management with audit trail integration |
+| `gcs-dashboard/` | React + Vite police GCS frontend (~20 components). 7 tabs: situational map with crowd heatmap, camera feeds, crowd intel with stampede risk gauges, zone management, incident command, evidence recording, audit log. Dark theme. WebSocket auto-reconnect with Zustand state management |
+| `tests/test_zone_manager.py` | 12 tests: zone CRUD, point-in-zone, serialization |
+
+#### Phase 4: Mission Profiles & Deployment Config
+
+| File | Purpose |
+|------|---------|
+| `src/core/config/mission_profiles.py` | 5 pre-built profiles: BUILDING_PERIMETER, CROWD_EVENT, VIP_PROTECTION, EMERGENCY_RESPONSE, AREA_LOCKDOWN |
+| `config/police_deployment.yaml` | Full deployment config: fleet composition, crowd thresholds, stampede thresholds, urban parameters, GCS port |
+| `tests/test_police_scenarios.py` | 21 integration tests: density escalation, stampede detection, building perimeter + geofence, mission profiles, config loading, zone management + audit, task types, coordinator E2E |
+
+#### Modified Files
+
+| File | Changes |
+|------|---------|
+| `src/core/types/drone_types.py` | Added `CrowdDensityLevel`, `StampedeRiskLevel`, `CrowdCell`, `CrowdZone`, `StampedeIndicator`, `BuildingGeometry` types with classification helpers and serialization |
+| `src/core/config/config_manager.py` | Added `CrowdConfig`, `UrbanConfig`, `MissionConfig` dataclasses; wired into `ConfigManager` with YAML loading support |
+| `src/surveillance/change_detection.py` | Added `'crowd'` to `THREAT_CLASSIFICATION` (HIGH) and `_OBJECT_SUB_SCORES` (0.7, 0.8, 0.9) |
+| `src/surveillance/threat_manager.py` | Added `report_crowd_risk()` method mapping `StampedeRiskLevel` → `ThreatLevel` with zone-to-threat deduplication |
+| `src/swarm/formation/formation_controller.py` | Added `URBAN_TIGHT`, `BUILDING_ORBIT`, `VERTICAL_STACK` to `FormationType` with offset generators |
+| `src/swarm/coordination/regiment_coordinator.py` | Added `BUILDING_PERIMETER`, `CROWD_EVENT` to `RegimentFormation` enum |
+| `src/swarm/cbba/task_types.py` | Added `CROWD_OVERWATCH`, `BUILDING_PATROL`, `CORRIDOR_MONITOR`, `INCIDENT_RESPONSE`, `VIP_OVERWATCH` to `TaskType` |
+| `src/gcs/gcs_server.py` | Added `push_crowd_density()` (2 Hz), `push_stampede_risk()` (immediate), `push_camera_frame()`, `push_zone_update()` methods; new client message handlers for zone/recording/alert commands |
+| `scripts/isaac_sim/create_surveillance_scene.py` | Replaced `VisualCuboid` placeholder drones with procedural quadcopter builder (`_build_procedural_quadcopter`): body cylinder + 4 arms + 4 rotors + landing gear + heading indicator, built from USD geometric primitives |
+| `docs/SIMULATION_RUN_GUIDE.md` | Full rewrite: 4-terminal setup (Isaac Sim + Docker + Mission + GCS Dashboard), police deployment features, mission profiles, crowd intel verification, updated troubleshooting |
+
+#### Validation
+
+- Full test suite: **356 passed**, 3 skipped, 0 failures
+- All existing tests unaffected by new code
+- Python syntax verification passed on all new/modified files
+- Drone procedural quadcopter builder verified via syntax check (Isaac Sim runtime required for visual verification)
+
+---
+
 ## [0.8.1] - 2026-03-06
 
 ### Fixed — Simulation Mission Progression and Completion Path
@@ -389,59 +462,97 @@ Sanjay_MK2/
 ├── docker-compose.dev.yml                # Dev overrides
 ├── network/
 │   └── fastdds_profiles.xml              # DDS loopback profile
+├── gcs-dashboard/                        # React + Vite police GCS frontend
+│   ├── package.json
+│   ├── vite.config.js
+│   └── src/
+│       ├── App.jsx                       # 7-tab dashboard shell
+│       ├── hooks/useWebSocket.js         # WS connection to GCS server
+│       ├── hooks/useGCSState.js          # Zustand state store
+│       └── components/                   # Map, feeds, crowd, command, evidence, audit
 ├── src/
 │   ├── core/
-│   │   ├── types/drone_types.py          # Vector3, FlightMode, DroneConfig, etc.
-│   │   ├── config/config_manager.py      # Singleton config management
+│   │   ├── types/drone_types.py          # Vector3, FlightMode, DroneConfig, Crowd/Urban types
+│   │   ├── config/config_manager.py      # Singleton config (Swarm, Crowd, Urban, Mission)
+│   │   ├── config/mission_profiles.py    # 5 police mission profiles
 │   │   └── utils/
 │   ├── single_drone/
 │   │   ├── flight_control/
 │   │   │   ├── flight_controller.py      # Async flight state machine
 │   │   │   └── mavsdk_interface.py       # PX4/MAVSDK low-level interface
 │   │   ├── obstacle_avoidance/
+│   │   │   ├── avoidance_manager.py      # 3-tier APF+HPL+A* avoidance
+│   │   │   └── urban_geofence.py         # 3D building-aware geofencing
 │   │   └── sensors/
 │   ├── swarm/
 │   │   ├── boids/                        # Flocking algorithm
-│   │   ├── cbba/                         # Task allocation
-│   │   ├── formation/                    # Formation control
-│   │   ├── coordination/                 # Swarm coordination
+│   │   ├── cbba/                         # Task allocation (+ police task types)
+│   │   ├── formation/
+│   │   │   ├── formation_controller.py   # Hex/Linear/Wedge/Ring/UrbanTight/BuildingOrbit/VerticalStack
+│   │   │   └── urban_formations.py       # Building-aware formation adapters
+│   │   ├── coordination/
+│   │   │   ├── regiment_coordinator.py   # Alpha regiment + urban patrol modes
+│   │   │   └── urban_patrol_patterns.py  # 4 police patrol patterns
 │   │   └── fault_injection.py            # Fault injection + task redistribution
 │   ├── communication/
 │   │   ├── mesh_network/                 # Peer-to-peer mesh
 │   │   └── state_sync/                   # State synchronization
 │   ├── surveillance/
-│   │   └── coverage/                     # Area surveillance
+│   │   ├── sensor_fusion.py              # RGB + Thermal + Depth fusion
+│   │   ├── change_detection.py           # Baseline diff anomaly detection
+│   │   ├── threat_manager.py             # Threat lifecycle + crowd risk reporting
+│   │   ├── crowd_density.py              # Dual-mode crowd density estimation
+│   │   ├── crowd_density_model.py        # CSRNet inference wrapper
+│   │   ├── crowd_flow.py                 # Flow vectors + anomaly detection
+│   │   ├── stampede_risk.py              # Composite stampede risk scoring
+│   │   └── crowd_coordinator.py          # Crowd intelligence orchestrator
+│   ├── gcs/
+│   │   ├── gcs_server.py                 # WebSocket GCS server (crowd/zone/camera push)
+│   │   ├── zone_manager.py              # Operational zone CRUD
+│   │   └── evidence_recorder.py          # Evidence recording sessions
 │   ├── simulation/
 │   │   └── mujoco_sim.py                 # MuJoCo physics simulation
 │   └── integration/
 │       ├── coordinator/
-│       └── isaac_sim_bridge.py          # Isaac Sim ↔ ROS 2 bridge node
+│       └── isaac_sim_bridge.py           # Isaac Sim ↔ ROS 2 bridge node
 ├── scripts/
-│   ├── simulation_server.py              # WebSocket sim server (969 lines)
-│   ├── setup_macos.sh                    # macOS dev setup
+│   ├── simulation_server.py              # WebSocket sim server
+│   ├── setup_dev_env.ps1                 # Windows dev env setup
 │   ├── setup_isaac_env.ps1               # Windows Isaac Sim env setup
 │   ├── setup_wsl2_env.sh                 # WSL2 bashrc configuration
 │   ├── validate_setup.sh                 # WSL2 setup validator
-│   ├── install_ubuntu_wsl2.ps1           # Ubuntu WSL2 installer
 │   └── isaac_sim/
-│       ├── create_surveillance_scene.py  # Isaac Sim USD scene builder
-│       └── launch_bridge.py             # Bridge launcher
+│       ├── create_surveillance_scene.py  # Isaac Sim scene (procedural quadcopters)
+│       ├── run_mission.py                # Decentralized 6-drone mission runner
+│       ├── waypoint_gui.py               # Isaac Sim viewport waypoint panel
+│       └── waypoint_cli.py               # CLI waypoint control
 ├── tests/
+│   ├── test_crowd_density.py             # Crowd density estimation (20 tests)
+│   ├── test_crowd_flow.py                # Crowd flow analysis (13 tests)
+│   ├── test_stampede_risk.py             # Stampede risk scoring (19 tests)
+│   ├── test_urban_patrol_patterns.py     # Urban formations + patrols (17 tests)
+│   ├── test_urban_geofence.py            # Building geofencing (17 tests)
+│   ├── test_zone_manager.py              # GCS zone management (12 tests)
+│   ├── test_police_scenarios.py          # Integration scenarios (21 tests)
 │   ├── test_config_manager.py
 │   ├── test_drone_types.py
 │   ├── test_flight_controller.py
-│   ├── test_isaac_sim_bridge.py          # Isaac Sim bridge tests (15)
-│   ├── swarm_edge_cases.py
-│   └── swarm_test_scenarios.json
+│   ├── test_isaac_sim_bridge.py
+│   ├── test_boids_engine.py
+│   ├── test_cbba_engine.py
+│   └── ...
+├── config/
+│   ├── isaac_sim.yaml                    # Isaac Sim bridge configuration
+│   └── police_deployment.yaml            # State Police deployment config
 ├── simulation/
 │   ├── models/                           # Simulation 3D models
-│   └── worlds/                           # Simulation world files / USD scenes
-├── config/
-│   └── isaac_sim.yaml                    # Isaac Sim bridge configuration
+│   └── worlds/                           # USD scenes
 ├── docker/
 │   └── Dockerfile.autonomy               # ROS 2 autonomy container
 ├── docs/
+│   ├── SIMULATION_RUN_GUIDE.md           # Full simulation run guide (updated)
 │   ├── INSTALLATION_SUMMARY.md
-│   └── ISAAC_SIM_SETUP.md               # Isaac Sim setup guide
+│   ├── ISAAC_SIM_SETUP.md
+│   └── ARCHITECTURE.md
 └── examples/                             # Usage examples
 ```

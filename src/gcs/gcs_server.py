@@ -247,6 +247,86 @@ class GCSServer:
         msg = {"type": "audit", **entry.to_dict()}
         self._broadcast(msg)
 
+    # ── Crowd & Zone Push Methods (State Police Deployment) ──────
+
+    CROWD_DENSITY_HZ = 2.0
+
+    def push_crowd_density(
+        self,
+        density_grid,
+        zones: list,
+        timestamp: Optional[float] = None,
+    ):
+        """
+        Push crowd density heatmap data (rate-limited to 2 Hz).
+
+        Args:
+            density_grid: np.ndarray or list — density grid (persons/m2)
+            zones: List of CrowdZone.to_dict() results
+            timestamp: Current time
+        """
+        now = time.time()
+        if not hasattr(self, '_last_crowd_push'):
+            self._last_crowd_push = 0.0
+        if now - self._last_crowd_push < 1.0 / self.CROWD_DENSITY_HZ:
+            return
+        self._last_crowd_push = now
+
+        # Convert numpy array to list if needed
+        grid_data = density_grid
+        if hasattr(density_grid, 'tolist'):
+            grid_data = density_grid.tolist()
+
+        msg = {
+            "type": "crowd_density",
+            "grid": grid_data,
+            "zones": [z.to_dict() if hasattr(z, 'to_dict') else z for z in zones],
+            "timestamp": round(timestamp or now, 3),
+        }
+        self._broadcast(msg)
+
+    def push_stampede_risk(
+        self,
+        zones: list,
+        indicators: list,
+        timestamp: Optional[float] = None,
+    ):
+        """Push stampede risk data (immediate, not rate-limited)."""
+        now = timestamp or time.time()
+        msg = {
+            "type": "stampede_risk",
+            "zones": [z.to_dict() if hasattr(z, 'to_dict') else z for z in zones],
+            "indicators": [i.to_dict() if hasattr(i, 'to_dict') else i for i in indicators],
+            "timestamp": round(now, 3),
+        }
+        self._broadcast(msg)
+
+    def push_camera_frame(
+        self,
+        drone_id: int,
+        camera_type: str,
+        frame_url: str,
+        timestamp: Optional[float] = None,
+    ):
+        """Push a camera frame reference for the multi-camera viewer."""
+        msg = {
+            "type": "camera_frame",
+            "drone_id": drone_id,
+            "camera_type": camera_type,
+            "frame_url": frame_url,
+            "timestamp": round(timestamp or time.time(), 3),
+        }
+        self._broadcast(msg)
+
+    def push_zone_update(self, zones: list):
+        """Push operational zone definitions to all clients."""
+        msg = {
+            "type": "zone_update",
+            "zones": [z.to_dict() if hasattr(z, 'to_dict') else z for z in zones],
+            "timestamp": round(time.time(), 3),
+        }
+        self._broadcast(msg)
+
     # ── Override Handler ──────────────────────────────────────────
 
     def on_override(self, callback: Callable):
@@ -267,9 +347,36 @@ class GCSServer:
         if command == "override" and self._on_override:
             self._on_override(data)
             self.emit_audit("override", json.dumps(data))
-        elif command == "dispatch" and self._on_override:
-            self._on_override(data)
+        elif command == "dispatch" or command == "dispatch_drone":
+            if self._on_override:
+                self._on_override(data)
             self.emit_audit("manual_dispatch", json.dumps(data))
+        elif command == "define_zone":
+            if self._on_override:
+                self._on_override(data)
+            self.emit_audit("zone_created", data.get("label", ""))
+        elif command == "delete_zone":
+            if self._on_override:
+                self._on_override(data)
+            self.emit_audit("zone_deleted", data.get("zone_id", ""))
+        elif command == "set_alert_level":
+            if self._on_override:
+                self._on_override(data)
+            self.emit_audit("alert_level_change",
+                           f"{data.get('zone_id', '')} -> {data.get('level', '')}")
+        elif command == "start_recording":
+            if self._on_override:
+                self._on_override(data)
+            self.emit_audit("recording_request",
+                           f"drone={data.get('drone_id', '')} reason={data.get('reason', '')}")
+        elif command == "stop_recording":
+            if self._on_override:
+                self._on_override(data)
+            self.emit_audit("recording_stop_request", data.get("session_id", ""))
+        elif command == "acknowledge_alert":
+            if self._on_override:
+                self._on_override(data)
+            self.emit_audit("alert_acknowledged", data.get("zone_id", ""))
         else:
             # Forward other commands (start, pause, reset, inject_fault, etc.)
             if self._on_override:
