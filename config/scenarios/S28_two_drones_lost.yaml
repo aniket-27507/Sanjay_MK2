@@ -1,0 +1,54 @@
+# S28 — Two Drones Lost Simultaneously
+# Category: degraded
+# Tests: Dual motor failure, aggressive sector redistribution
+
+scenario:
+  id: S28
+  name: Two Drones Lost Simultaneously
+  category: degraded
+  duration_sec: 300
+  description: >
+    Alpha_1 and Alpha_3 both suffer motor failure at t=45s. Tests
+    system resilience with 33% Alpha fleet loss. Remaining drones
+    must cover vacated sectors. Coverage target drops to 65%.
+  split: train
+
+world:
+  terrain_seed: 42
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: false
+
+faults:
+  - time: 45
+    type: motor_failure
+    drone_id: 1
+    duration: 255
+  - time: 45
+    type: motor_failure
+    drone_id: 3
+    duration: 255
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: drone_inactive
+    drone_id: 1
+    max_latency_sec: 60
+  - type: drone_inactive
+    drone_id: 3
+    max_latency_sec: 60
+  - type: sector_redistributed
+    max_latency_sec: 90
+
+metrics:
+  max_detection_latency_sec: 999
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 65

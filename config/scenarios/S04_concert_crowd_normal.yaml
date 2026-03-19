@@ -1,0 +1,44 @@
+# S04 — Concert Crowd Normal
+# Category: crowd
+# Tests: Stable moderate crowd with ZERO false positives
+
+scenario:
+  id: S04
+  name: Concert Crowd Normal
+  category: crowd
+  duration_sec: 300
+  description: >
+    Stable concert crowd at 3.0 persons/m². No anomalies, no threats.
+    System should maintain WATCH or lower risk with zero false threat events.
+  split: train
+
+world:
+  terrain_seed: 200
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 80
+  initial_density: 3.0
+  density_curve:
+    - [0, 3.0]
+    - [300, 3.0]
+  flow_direction: [0.2, 0.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events: []
+
+metrics:
+  max_detection_latency_sec: 999
+  max_false_positive_rate: 0.0
+  min_coverage_pct: 85

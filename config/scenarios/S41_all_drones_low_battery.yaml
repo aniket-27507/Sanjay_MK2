@@ -1,0 +1,38 @@
+# S41 — All Drones Low Battery Simultaneously
+# Category: edge
+# Tests: Short mission duration, rapid coverage before RTL
+
+scenario:
+  id: S41
+  name: All Drones Low Battery Simultaneously
+  category: edge
+  duration_sec: 60
+  description: >
+    Ultra-short 60s mission simulating low battery on all drones. Tests
+    system behavior when mission time is critically limited. No faults
+    injected but drones must maximize coverage in minimal time.
+  split: test
+
+world:
+  terrain_seed: 170
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events: []
+
+metrics:
+  max_detection_latency_sec: 30
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 60

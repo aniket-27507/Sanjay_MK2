@@ -1,0 +1,46 @@
+# S36 — Hot Car Engine Misidentified
+# Category: false_alarm
+# Tests: False positive suppression for high-thermal vehicle (not a threat)
+
+scenario:
+  id: S36
+  name: Hot Car Engine Misidentified
+  category: false_alarm
+  duration_sec: 300
+  description: >
+    Parked vehicle with unusually high thermal signature (0.85) due to
+    hot engine. Not a threat. Tests false positive suppression for
+    benign vehicles with elevated thermal readings.
+  split: test
+
+world:
+  terrain_seed: 145
+  buildings: []
+
+spawn_schedule:
+  - time: 20
+    type: vehicle
+    position: [400, 400, 0.8]
+    is_threat: false
+    thermal_signature: 0.85
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: object_classified
+    object_type: vehicle
+    max_latency_sec: 60
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

@@ -1,0 +1,52 @@
+# S12 — Armed Person Near Building Entrance
+# Category: armed
+# Tests: Weapon detection near building, occlusion handling
+
+scenario:
+  id: S12
+  name: Armed Person Near Building Entrance
+  category: armed
+  duration_sec: 300
+  description: >
+    Armed person appears near a building entrance at (215,215) at t=25s.
+    Tests detection with partial building occlusion. Beta should be
+    dispatched for close-range confirmation.
+  split: train
+
+world:
+  terrain_seed: 50
+  buildings:
+    - center: [220, 220]
+      width: 30
+      depth: 30
+      height: 40
+
+spawn_schedule:
+  - time: 25
+    type: weapon_person
+    position: [215, 215, 0]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: threat_detected
+    object_type: weapon_person
+    max_latency_sec: 60
+  - type: beta_dispatched
+    max_latency_sec: 90
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

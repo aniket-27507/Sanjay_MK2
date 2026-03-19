@@ -1,0 +1,47 @@
+# S48 — 10000+ Simulated Crowd Persons
+# Category: stress
+# Tests: High density crowd processing, system performance under load
+
+scenario:
+  id: S48
+  name: 10000 Plus Simulated Crowd Persons
+  category: stress
+  duration_sec: 300
+  description: >
+    Massive crowd with density 8.0 over radius 150m, simulating 10000+
+    persons. Tests system performance and crowd analytics under extreme
+    crowd load without degradation.
+  split: test
+
+world:
+  terrain_seed: 205
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 150
+  initial_density: 8.0
+  density_curve:
+    - [0, 8.0]
+    - [300, 8.0]
+  flow_direction: [0.0, 0.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: crowd_risk_critical
+    max_latency_sec: 30
+
+metrics:
+  max_detection_latency_sec: 30
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 70

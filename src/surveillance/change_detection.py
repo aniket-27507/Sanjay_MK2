@@ -42,6 +42,10 @@ THREAT_CLASSIFICATION = {
     'thermal_contact': ThreatLevel.MEDIUM,
     'unknown': ThreatLevel.MEDIUM,
     'crowd': ThreatLevel.HIGH,
+    # Armed threat types — immediate CRITICAL escalation
+    'weapon_person': ThreatLevel.CRITICAL,
+    'fire': ThreatLevel.HIGH,
+    'explosive_device': ThreatLevel.CRITICAL,
 }
 
 # Minimum confidence to report a change
@@ -56,6 +60,10 @@ _OBJECT_SUB_SCORES = {
     'equipment':       (0.4, 0.5, 0.3),
     'thermal_contact': (0.6, 0.5, 0.5),
     'crowd':           (0.7, 0.8, 0.9),
+    # Armed threat types — highest urgency scores
+    'weapon_person':     (0.95, 0.8, 0.9),
+    'fire':              (0.7, 0.6, 0.8),
+    'explosive_device':  (0.95, 0.9, 0.95),
 }
 
 

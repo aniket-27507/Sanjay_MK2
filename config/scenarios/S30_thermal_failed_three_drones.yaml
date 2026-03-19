@@ -1,0 +1,56 @@
+# S30 — Thermal Camera Failed on 3 Drones
+# Category: degraded
+# Tests: Partial thermal sensor loss, RGB-only detection fallback
+
+scenario:
+  id: S30
+  name: Thermal Camera Failed on 3 Drones
+  category: degraded
+  duration_sec: 300
+  description: >
+    Thermal cameras fail on drones 0, 2, and 4 at t=30s. Tests system
+    ability to maintain detection using RGB-only on affected drones
+    while leveraging thermal from remaining drones.
+  split: train
+
+world:
+  terrain_seed: 42
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: false
+
+faults:
+  - time: 30
+    type: thermal_failed
+    drone_id: 0
+    duration: 270
+  - time: 30
+    type: thermal_failed
+    drone_id: 2
+    duration: 270
+  - time: 30
+    type: thermal_failed
+    drone_id: 4
+    duration: 270
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: sensor_degraded
+    drone_id: 0
+    max_latency_sec: 45
+  - type: sensor_degraded
+    drone_id: 2
+    max_latency_sec: 45
+
+metrics:
+  max_detection_latency_sec: 999
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 70

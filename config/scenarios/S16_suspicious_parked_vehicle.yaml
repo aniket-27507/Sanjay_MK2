@@ -1,0 +1,52 @@
+# S16 — Suspicious Parked Vehicle Near Building
+# Category: vehicle
+# Tests: Stationary vehicle detection near building, proximity-based escalation
+
+scenario:
+  id: S16
+  name: Suspicious Parked Vehicle Near Building
+  category: vehicle
+  duration_sec: 300
+  description: >
+    Suspicious vehicle parked near building at (225,225) at t=15s.
+    Proximity to building entrance raises threat level. Tests stationary
+    vehicle detection and proximity-aware threat scoring.
+  split: train
+
+world:
+  terrain_seed: 70
+  buildings:
+    - center: [220, 220]
+      width: 30
+      depth: 30
+      height: 40
+
+spawn_schedule:
+  - time: 15
+    type: vehicle
+    position: [225, 225, 0.8]
+    is_threat: true
+    thermal_signature: 0.80
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: threat_detected
+    object_type: vehicle
+    max_latency_sec: 45
+  - type: beta_dispatched
+    max_latency_sec: 75
+
+metrics:
+  max_detection_latency_sec: 45
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

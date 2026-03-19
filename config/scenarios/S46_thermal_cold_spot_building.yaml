@@ -1,0 +1,50 @@
+# S46 — Thermal Cold Spot Near Building
+# Category: edge
+# Tests: Very low thermal signature object classification
+
+scenario:
+  id: S46
+  name: Thermal Cold Spot Near Building
+  category: edge
+  duration_sec: 300
+  description: >
+    Equipment at (200,200) near building with very low thermal signature
+    (0.15). Not a threat. Tests system handling of anomalously cold
+    thermal objects and false positive suppression.
+  split: test
+
+world:
+  terrain_seed: 195
+  buildings:
+    - center: [200, 200]
+      width: 30
+      depth: 30
+      height: 40
+
+spawn_schedule:
+  - time: 20
+    type: equipment
+    position: [200, 200, 0]
+    is_threat: false
+    thermal_signature: 0.15
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: object_classified
+    object_type: equipment
+    max_latency_sec: 60
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

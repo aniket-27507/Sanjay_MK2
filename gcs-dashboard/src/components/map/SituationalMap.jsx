@@ -32,12 +32,14 @@ export default function SituationalMap() {
     return () => obs.disconnect();
   }, []);
 
-  /* World -> canvas coordinate */
+  /* World -> canvas coordinate.
+   * World coords are -500 to +500. Map display is 0 to 1000.
+   * Shift by WORLD_SIZE/2 to center the origin. */
   const scale = Math.min(canvasSize.w, canvasSize.h) / WORLD_SIZE;
   const toCanvas = useCallback(
     (wx, wy) => ({
-      cx: wx * scale,
-      cy: wy * scale,
+      cx: (wx + WORLD_SIZE / 2) * scale,
+      cy: (wy + WORLD_SIZE / 2) * scale,
     }),
     [scale],
   );

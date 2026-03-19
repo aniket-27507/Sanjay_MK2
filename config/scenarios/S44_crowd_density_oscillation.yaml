@@ -1,0 +1,52 @@
+# S44 — Crowd Density Oscillation
+# Category: edge
+# Tests: Oscillating density handling, risk level toggling
+
+scenario:
+  id: S44
+  name: Crowd Density Oscillation
+  category: edge
+  duration_sec: 300
+  description: >
+    Crowd density oscillates between 2.0 and 6.0 multiple times. Tests
+    system stability under rapidly changing density and whether risk
+    levels toggle correctly without false alarms.
+  split: test
+
+world:
+  terrain_seed: 185
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 60
+  initial_density: 2.0
+  density_curve:
+    - [0, 2.0]
+    - [60, 6.0]
+    - [120, 2.0]
+    - [180, 6.0]
+    - [240, 2.0]
+  flow_direction: [0.0, 0.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: crowd_risk_warning
+    max_latency_sec: 70
+  - type: crowd_risk_watch
+    max_latency_sec: 130
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.15
+  min_coverage_pct: 75

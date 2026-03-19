@@ -1,0 +1,53 @@
+# S27 — Beta Comms Loss During Confirmation
+# Category: degraded
+# Tests: Comms failure on Beta during threat confirmation, fallback handling
+
+scenario:
+  id: S27
+  name: Beta Comms Loss During Confirmation
+  category: degraded
+  duration_sec: 300
+  description: >
+    Person threat spawns at t=20s. Beta (drone 6) loses comms at t=50s
+    during confirmation flight. Tests comms-loss fallback and whether
+    system can still confirm threat via Alpha consensus.
+  split: train
+
+world:
+  terrain_seed: 120
+  buildings: []
+
+spawn_schedule:
+  - time: 20
+    type: person
+    position: [400, 400, 0]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: false
+
+faults:
+  - time: 50
+    type: comms_loss
+    drone_id: 6
+    duration: 120
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: threat_detected
+    object_type: person
+    max_latency_sec: 45
+  - type: drone_inactive
+    drone_id: 6
+    max_latency_sec: 65
+
+metrics:
+  max_detection_latency_sec: 45
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 70

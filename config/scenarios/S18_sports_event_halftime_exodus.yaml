@@ -1,0 +1,51 @@
+# S18 — Sports Event Halftime Exodus
+# Category: crowd
+# Tests: Rapid density spike and drop, crowd flow reversal detection
+
+scenario:
+  id: S18
+  name: Sports Event Halftime Exodus
+  category: crowd
+  duration_sec: 300
+  description: >
+    Sports event crowd at (500,500) surges during halftime. Density
+    rises from 4.0 to 7.0 then drops to 3.0. Tests handling of rapid
+    density changes and flow pattern transitions.
+  split: train
+
+world:
+  terrain_seed: 80
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 80
+  initial_density: 4.0
+  density_curve:
+    - [0, 4.0]
+    - [90, 7.0]
+    - [180, 7.0]
+    - [270, 3.0]
+  flow_direction: [0.0, 1.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: crowd_risk_warning
+    max_latency_sec: 100
+  - type: crowd_risk_watch
+    max_latency_sec: 200
+
+metrics:
+  max_detection_latency_sec: 90
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 75

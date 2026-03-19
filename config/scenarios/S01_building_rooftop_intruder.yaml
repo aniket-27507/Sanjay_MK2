@@ -1,0 +1,52 @@
+# S01 — Building Rooftop Intruder
+# Category: high_rise
+# Tests: Person detection on building rooftop, Beta dispatch for confirmation
+
+scenario:
+  id: S01
+  name: Building Rooftop Intruder
+  category: high_rise
+  duration_sec: 300
+  description: >
+    Single person appears on a 50m building rooftop at t=30s.
+    Alpha drones should detect via RGB+thermal within ~60s.
+    ThreatManager should escalate to HIGH and dispatch Beta for confirmation.
+  split: train
+
+world:
+  terrain_seed: 42
+  buildings:
+    - center: [220, 220]
+      width: 30
+      depth: 30
+      height: 50
+
+spawn_schedule:
+  - time: 30
+    type: person
+    position: [220, 220, 50]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: threat_detected
+    object_type: person
+    max_latency_sec: 60
+  - type: beta_dispatched
+    max_latency_sec: 90
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

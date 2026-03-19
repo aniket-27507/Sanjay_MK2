@@ -1,0 +1,55 @@
+# S13 — Armed Person Hidden in Crowd
+# Category: armed
+# Tests: Weapon detection within dense crowd, crowd-aware threat escalation
+
+scenario:
+  id: S13
+  name: Armed Person Hidden in Crowd
+  category: armed
+  duration_sec: 300
+  description: >
+    Armed person concealed within a dense crowd at (500,500) at t=60s.
+    Crowd density is 3.0 persons/m². Tests ability to detect weapon
+    through crowd clutter and thermal overlap.
+  split: train
+
+world:
+  terrain_seed: 55
+  buildings: []
+
+spawn_schedule:
+  - time: 60
+    type: weapon_person
+    position: [500, 500, 0]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 60
+  initial_density: 3.0
+  density_curve:
+    - [0, 3.0]
+    - [300, 3.0]
+  flow_direction: [0.0, 0.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: threat_detected
+    object_type: weapon_person
+    max_latency_sec: 90
+  - type: beta_dispatched
+    max_latency_sec: 120
+
+metrics:
+  max_detection_latency_sec: 90
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 75

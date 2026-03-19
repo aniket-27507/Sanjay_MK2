@@ -1,0 +1,61 @@
+# S05 — Chokepoint Compression Stampede
+# Category: stampede
+# Tests: Counter-flow + compression wave → ALERT risk
+
+scenario:
+  id: S05
+  name: Chokepoint Compression
+  category: stampede
+  duration_sec: 240
+  description: >
+    Two crowd streams converge at a narrow chokepoint at t=60s.
+    Counter-flow vectors and compression wave should trigger ALERT risk.
+    ThreatManager should create crowd_risk threat.
+  split: train
+
+world:
+  terrain_seed: 300
+  buildings:
+    - center: [490, 500]
+      width: 10
+      depth: 80
+      height: 20
+    - center: [510, 500]
+      width: 10
+      depth: 80
+      height: 20
+
+spawn_schedule: []
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 50
+  initial_density: 2.0
+  density_curve:
+    - [0, 2.0]
+    - [60, 6.0]
+    - [120, 8.0]
+  flow_direction: [1.0, 0.0]
+  anomaly_at: 60
+  anomaly_type: counter_flow
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: crowd_risk_alert
+    max_latency_sec: 90
+  - type: threat_detected
+    object_type: crowd_risk
+    max_latency_sec: 100
+
+metrics:
+  max_detection_latency_sec: 90
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 70

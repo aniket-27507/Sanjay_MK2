@@ -1,0 +1,61 @@
+# S22 — Crowd + Fire Alarm
+# Category: multi
+# Tests: Fire detection triggering crowd panic, multi-threat handling
+
+scenario:
+  id: S22
+  name: Crowd Plus Fire Alarm
+  category: multi
+  duration_sec: 300
+  description: >
+    Fire breaks out at (400,400,10) at t=60s near a crowd. Crowd density
+    spikes from 2.0 to 6.0 as panic sets in. Tests fire detection,
+    crowd density escalation, and multi-threat coordination.
+  split: train
+
+world:
+  terrain_seed: 100
+  buildings:
+    - center: [400, 400]
+      width: 30
+      depth: 30
+      height: 30
+
+spawn_schedule:
+  - time: 60
+    type: fire
+    position: [400, 400, 10]
+    is_threat: true
+    thermal_signature: 0.95
+
+crowd:
+  enabled: true
+  center: [420, 420]
+  radius: 60
+  initial_density: 2.0
+  density_curve:
+    - [0, 2.0]
+    - [60, 2.0]
+    - [90, 6.0]
+    - [180, 6.0]
+  flow_direction: [1.0, 1.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: threat_detected
+    object_type: fire
+    max_latency_sec: 30
+  - type: crowd_risk_warning
+    max_latency_sec: 100
+
+metrics:
+  max_detection_latency_sec: 30
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 75

@@ -113,7 +113,11 @@ class GCSServer:
         """Stop the server and background thread."""
         self._running = False
         if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            try:
+                if not self._loop.is_closed():
+                    self._loop.call_soon_threadsafe(self._loop.stop)
+            except RuntimeError:
+                pass  # loop already closed
         if self._thread is not None:
             self._thread.join(timeout=3.0)
             self._thread = None
@@ -411,7 +415,12 @@ class GCSServer:
 
         try:
             import websockets
-            import websockets.asyncio.server as ws_server
+            # websockets 13+ uses websockets.asyncio.server,
+            # websockets 12.x uses websockets.server.serve directly.
+            try:
+                import websockets.asyncio.server as ws_server
+            except (ImportError, AttributeError):
+                ws_server = None  # use legacy API below
         except ImportError:
             logger.error(
                 "websockets package not installed. Run: pip install websockets"
@@ -432,10 +441,19 @@ class GCSServer:
                 logger.info("GCS client disconnected (%d remaining)", len(self._clients))
 
         async def _serve():
-            async with ws_server.serve(_handler, "0.0.0.0", self._port):
-                logger.info("GCS WebSocket server listening on port %d", self._port)
-                while self._running:
-                    await asyncio.sleep(0.5)
+            if ws_server is not None:
+                # websockets 13+ API
+                async with ws_server.serve(_handler, "0.0.0.0", self._port):
+                    logger.info("GCS WebSocket server listening on port %d", self._port)
+                    while self._running:
+                        await asyncio.sleep(0.5)
+            else:
+                # websockets 12.x legacy API
+                from websockets.server import serve
+                async with serve(_handler, "0.0.0.0", self._port):
+                    logger.info("GCS WebSocket server listening on port %d", self._port)
+                    while self._running:
+                        await asyncio.sleep(0.5)
 
         try:
             self._loop.run_until_complete(_serve())

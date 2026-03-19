@@ -1,0 +1,57 @@
+# S23 — Armed Person Triggers Crowd Panic
+# Category: multi
+# Tests: Weapon detection causing crowd surge, cascading threat escalation
+
+scenario:
+  id: S23
+  name: Armed Person Triggers Crowd Panic
+  category: multi
+  duration_sec: 300
+  description: >
+    Armed person appears at t=30s. Crowd density escalates from 3.0 to
+    7.0 after t=45s as panic spreads. Tests weapon detection followed by
+    crowd stampede risk escalation.
+  split: train
+
+world:
+  terrain_seed: 105
+  buildings: []
+
+spawn_schedule:
+  - time: 30
+    type: weapon_person
+    position: [500, 480, 0]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 70
+  initial_density: 3.0
+  density_curve:
+    - [0, 3.0]
+    - [45, 3.0]
+    - [90, 7.0]
+    - [180, 7.0]
+  flow_direction: [0.0, -1.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: threat_detected
+    object_type: weapon_person
+    max_latency_sec: 60
+  - type: crowd_risk_critical
+    max_latency_sec: 120
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 75

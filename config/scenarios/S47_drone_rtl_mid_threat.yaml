@@ -1,0 +1,53 @@
+# S47 — Drone RTL Mid-Threat
+# Category: edge
+# Tests: Motor failure during active threat tracking
+
+scenario:
+  id: S47
+  name: Drone RTL Mid-Threat
+  category: edge
+  duration_sec: 300
+  description: >
+    Person threat at t=20s, then drone 0 motor failure at t=40s during
+    active threat tracking. Tests handoff of threat tracking to other
+    drones when tracking drone fails.
+  split: test
+
+world:
+  terrain_seed: 200
+  buildings: []
+
+spawn_schedule:
+  - time: 20
+    type: person
+    position: [450, 450, 0]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: false
+
+faults:
+  - time: 40
+    type: motor_failure
+    drone_id: 0
+    duration: 260
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: threat_detected
+    object_type: person
+    max_latency_sec: 45
+  - type: drone_inactive
+    drone_id: 0
+    max_latency_sec: 55
+
+metrics:
+  max_detection_latency_sec: 45
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 70

@@ -1,0 +1,54 @@
+# S20 — Panic Trigger in Dense Crowd
+# Category: stampede
+# Tests: Rapid density spike detection, velocity anomaly, stampede risk escalation
+
+scenario:
+  id: S20
+  name: Panic Trigger in Dense Crowd
+  category: stampede
+  duration_sec: 300
+  description: >
+    Dense crowd rapidly escalates from 3.0 to 8.0 persons/m² in 60s.
+    Velocity anomaly at t=60s indicates panic onset. Tests stampede
+    early warning and CRITICAL risk escalation.
+  split: train
+
+world:
+  terrain_seed: 90
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 60
+  initial_density: 3.0
+  density_curve:
+    - [0, 3.0]
+    - [60, 8.0]
+    - [120, 8.0]
+  flow_direction: [0.0, 0.0]
+  anomaly_at: 60
+  anomaly_type: velocity_spike
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: crowd_risk_warning
+    max_latency_sec: 50
+  - type: crowd_risk_critical
+    max_latency_sec: 70
+  - type: stampede_warning
+    max_latency_sec: 80
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

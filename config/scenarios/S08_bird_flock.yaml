@@ -1,0 +1,78 @@
+# S08 — Bird Flock (False Alarm)
+# Category: false_alarm
+# Tests: Multiple small fast objects should NOT escalate to threats
+
+scenario:
+  id: S08
+  name: Bird Flock
+  category: false_alarm
+  duration_sec: 240
+  description: >
+    A flock of 8 birds (small size, moderate thermal) passes through
+    the patrol area at t=30s. System should detect but NOT escalate
+    to HIGH/CRITICAL threats due to small size and low confidence.
+  split: test
+
+world:
+  terrain_seed: 42
+  buildings: []
+
+spawn_schedule:
+  - time: 30
+    type: animal
+    position: [450, 450, 40]
+    is_threat: false
+    thermal_signature: 0.40
+  - time: 31
+    type: animal
+    position: [452, 452, 41]
+    is_threat: false
+    thermal_signature: 0.38
+  - time: 32
+    type: animal
+    position: [448, 454, 39]
+    is_threat: false
+    thermal_signature: 0.42
+  - time: 33
+    type: animal
+    position: [455, 448, 42]
+    is_threat: false
+    thermal_signature: 0.37
+  - time: 34
+    type: animal
+    position: [446, 456, 38]
+    is_threat: false
+    thermal_signature: 0.41
+  - time: 35
+    type: animal
+    position: [458, 446, 40]
+    is_threat: false
+    thermal_signature: 0.39
+  - time: 36
+    type: animal
+    position: [444, 458, 41]
+    is_threat: false
+    thermal_signature: 0.36
+  - time: 37
+    type: animal
+    position: [460, 444, 39]
+    is_threat: false
+    thermal_signature: 0.43
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events: []
+
+metrics:
+  max_detection_latency_sec: 999
+  max_false_positive_rate: 0.0
+  min_coverage_pct: 80

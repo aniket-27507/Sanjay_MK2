@@ -1,0 +1,38 @@
+# S10 — Baseline Normal Patrol
+# Category: baseline
+# Tests: Clean 5-minute patrol, zero threats, full coverage metrics
+
+scenario:
+  id: S10
+  name: Normal Patrol No Threats
+  category: baseline
+  duration_sec: 300
+  description: >
+    Standard hexagonal patrol with no threats, no crowd, no faults.
+    Establishes baseline metrics: coverage %, patrol efficiency,
+    inter-drone separation, battery usage. Zero threats expected.
+  split: test
+
+world:
+  terrain_seed: 42
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events: []
+
+metrics:
+  max_detection_latency_sec: 999
+  max_false_positive_rate: 0.0
+  min_coverage_pct: 85

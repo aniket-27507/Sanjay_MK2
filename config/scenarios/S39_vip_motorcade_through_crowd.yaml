@@ -1,0 +1,56 @@
+# S39 — VIP Motorcade Through Crowd
+# Category: crowd
+# Tests: Vehicle in crowd context, crowd density monitoring during motorcade
+
+scenario:
+  id: S39
+  name: VIP Motorcade Through Crowd
+  category: crowd
+  duration_sec: 300
+  description: >
+    VIP motorcade vehicle at t=10s moves through crowd at (500,400)
+    with density 3.0. Tests vehicle classification in crowd context
+    and crowd density monitoring during motorcade passage.
+  split: test
+
+world:
+  terrain_seed: 160
+  buildings: []
+
+spawn_schedule:
+  - time: 10
+    type: vehicle
+    position: [500, 380, 0.8]
+    is_threat: false
+    thermal_signature: 0.75
+
+crowd:
+  enabled: true
+  center: [500, 400]
+  radius: 60
+  initial_density: 3.0
+  density_curve:
+    - [0, 3.0]
+    - [150, 3.5]
+    - [300, 3.0]
+  flow_direction: [0.0, 1.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: object_classified
+    object_type: vehicle
+    max_latency_sec: 45
+  - type: crowd_risk_watch
+    max_latency_sec: 120
+
+metrics:
+  max_detection_latency_sec: 45
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 75

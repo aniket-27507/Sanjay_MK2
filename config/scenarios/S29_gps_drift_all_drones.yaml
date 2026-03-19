@@ -1,0 +1,67 @@
+# S29 — GPS Drift on All Drones
+# Category: degraded
+# Tests: Fleet-wide GPS loss, formation degradation, recovery
+
+scenario:
+  id: S29
+  name: GPS Drift on All Drones
+  category: degraded
+  duration_sec: 300
+  description: >
+    All Alpha drones (0-5) lose GPS at t=30s for 60s. Tests formation
+    stability under fleet-wide GPS degradation and recovery behavior
+    once GPS returns at t=90s.
+  split: train
+
+world:
+  terrain_seed: 42
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: false
+
+faults:
+  - time: 30
+    type: gps_loss
+    drone_id: 0
+    duration: 60
+  - time: 30
+    type: gps_loss
+    drone_id: 1
+    duration: 60
+  - time: 30
+    type: gps_loss
+    drone_id: 2
+    duration: 60
+  - time: 30
+    type: gps_loss
+    drone_id: 3
+    duration: 60
+  - time: 30
+    type: gps_loss
+    drone_id: 4
+    duration: 60
+  - time: 30
+    type: gps_loss
+    drone_id: 5
+    duration: 60
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: drone_inactive
+    drone_id: 0
+    max_latency_sec: 45
+  - type: formation_degraded
+    max_latency_sec: 50
+
+metrics:
+  max_detection_latency_sec: 999
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 50

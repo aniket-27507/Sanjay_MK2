@@ -1,0 +1,48 @@
+# S11 — Single Armed Person in Open Field
+# Category: armed
+# Tests: Weapon detection in open terrain, Beta dispatch for confirmation
+
+scenario:
+  id: S11
+  name: Single Armed Person in Open Field
+  category: armed
+  duration_sec: 300
+  description: >
+    Single armed person appears in an open field at (300,300) at t=30s.
+    Alpha drones should detect weapon via RGB+thermal. ThreatManager
+    escalates to CRITICAL and dispatches Beta for confirmation.
+  split: train
+
+world:
+  terrain_seed: 42
+  buildings: []
+
+spawn_schedule:
+  - time: 30
+    type: weapon_person
+    position: [300, 300, 0]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: threat_detected
+    object_type: weapon_person
+    max_latency_sec: 60
+  - type: beta_dispatched
+    max_latency_sec: 90
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

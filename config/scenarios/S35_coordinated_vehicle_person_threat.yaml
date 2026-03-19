@@ -1,0 +1,61 @@
+# S35 — Coordinated Vehicle + Person Threat
+# Category: multi
+# Tests: Staggered multi-type threat detection and escalation
+
+scenario:
+  id: S35
+  name: Coordinated Vehicle Plus Person Threat
+  category: multi
+  duration_sec: 300
+  description: >
+    Vehicle at t=15s, person at t=20s, then weapon_person at t=40s.
+    Tests staggered multi-type threat detection and progressive
+    escalation through threat levels.
+  split: train
+
+world:
+  terrain_seed: 140
+  buildings: []
+
+spawn_schedule:
+  - time: 15
+    type: vehicle
+    position: [350, 500, 0.8]
+    is_threat: true
+    thermal_signature: 0.80
+  - time: 20
+    type: person
+    position: [450, 500, 0]
+    is_threat: true
+    thermal_signature: 0.85
+  - time: 40
+    type: weapon_person
+    position: [550, 500, 0]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: threat_detected
+    object_type: vehicle
+    max_latency_sec: 45
+  - type: threat_detected
+    object_type: weapon_person
+    max_latency_sec: 70
+  - type: beta_dispatched
+    max_latency_sec: 90
+
+metrics:
+  max_detection_latency_sec: 45
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 80

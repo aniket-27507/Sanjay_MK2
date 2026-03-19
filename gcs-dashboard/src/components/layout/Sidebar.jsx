@@ -10,6 +10,7 @@ const TABS = [
   { id: 'zones', icon: '\u2B21', label: 'Zone Editor' },
   { id: 'evidence', icon: '\u25CF', label: 'Evidence' },
   { id: 'audit', icon: '\u2263', label: 'Audit Log' },
+  { id: 'scenarios', icon: '\u25B6', label: 'Scenarios' },
 ];
 
 export default function Sidebar({ activeTab, onTabChange }) {

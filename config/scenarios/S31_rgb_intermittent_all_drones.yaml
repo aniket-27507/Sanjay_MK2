@@ -1,0 +1,65 @@
+# S31 — RGB Intermittent on All Drones
+# Category: degraded
+# Tests: Fleet-wide RGB intermittent, thermal-primary detection mode
+
+scenario:
+  id: S31
+  name: RGB Intermittent on All Drones
+  category: degraded
+  duration_sec: 300
+  description: >
+    All Alpha drones (0-5) experience RGB intermittent failures at t=20s.
+    Tests system ability to rely on thermal as primary sensor and handle
+    sporadic RGB availability across entire fleet.
+  split: train
+
+world:
+  terrain_seed: 42
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: false
+
+faults:
+  - time: 20
+    type: rgb_intermittent
+    drone_id: 0
+    duration: 280
+  - time: 20
+    type: rgb_intermittent
+    drone_id: 1
+    duration: 280
+  - time: 20
+    type: rgb_intermittent
+    drone_id: 2
+    duration: 280
+  - time: 20
+    type: rgb_intermittent
+    drone_id: 3
+    duration: 280
+  - time: 20
+    type: rgb_intermittent
+    drone_id: 4
+    duration: 280
+  - time: 20
+    type: rgb_intermittent
+    drone_id: 5
+    duration: 280
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: sensor_degraded
+    drone_id: 0
+    max_latency_sec: 35
+
+metrics:
+  max_detection_latency_sec: 999
+  max_false_positive_rate: 0.15
+  min_coverage_pct: 65

@@ -1,0 +1,62 @@
+# S33 — Building Fire + Crowd Evacuation
+# Category: multi
+# Tests: Fire detection triggering evacuation crowd surge
+
+scenario:
+  id: S33
+  name: Building Fire Plus Crowd Evacuation
+  category: multi
+  duration_sec: 300
+  description: >
+    Building fire at t=30s triggers crowd evacuation. Crowd density
+    surges from 3.0 to 8.0 after fire. Tests fire detection, crowd
+    density spike monitoring, and stampede risk assessment.
+  split: train
+
+world:
+  terrain_seed: 130
+  buildings:
+    - center: [450, 450]
+      width: 40
+      depth: 40
+      height: 35
+
+spawn_schedule:
+  - time: 30
+    type: fire
+    position: [450, 450, 15]
+    is_threat: true
+    thermal_signature: 0.95
+
+crowd:
+  enabled: true
+  center: [470, 470]
+  radius: 70
+  initial_density: 3.0
+  density_curve:
+    - [0, 3.0]
+    - [30, 3.0]
+    - [60, 6.0]
+    - [120, 8.0]
+    - [180, 8.0]
+  flow_direction: [1.0, 1.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: threat_detected
+    object_type: fire
+    max_latency_sec: 30
+  - type: crowd_risk_critical
+    max_latency_sec: 130
+
+metrics:
+  max_detection_latency_sec: 30
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 75

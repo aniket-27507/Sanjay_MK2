@@ -1,0 +1,50 @@
+# S17 — Protest March Along Road
+# Category: crowd
+# Tests: Moving crowd tracking, density escalation along flow direction
+
+scenario:
+  id: S17
+  name: Protest March Along Road
+  category: crowd
+  duration_sec: 300
+  description: >
+    Protest march moves along road with crowd centered at (500,250).
+    Density rises from 2.0 to 5.0 over duration. Flow direction is
+    eastward. Tests moving crowd tracking and density monitoring.
+  split: train
+
+world:
+  terrain_seed: 75
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: true
+  center: [500, 250]
+  radius: 80
+  initial_density: 2.0
+  density_curve:
+    - [0, 2.0]
+    - [120, 3.5]
+    - [240, 5.0]
+  flow_direction: [1.0, 0.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: crowd_risk_watch
+    max_latency_sec: 120
+  - type: crowd_risk_warning
+    max_latency_sec: 240
+
+metrics:
+  max_detection_latency_sec: 90
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 75

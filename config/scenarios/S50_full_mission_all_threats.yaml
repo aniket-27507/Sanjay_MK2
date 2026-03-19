@@ -1,0 +1,103 @@
+# S50 — Full 10-Min Mission All Threats
+# Category: stress
+# Tests: Extended mission with every threat type, faults, and crowd stampede
+
+scenario:
+  id: S50
+  name: Full 10-Min Mission All Threats
+  category: stress
+  duration_sec: 600
+  description: >
+    Full 10-minute mission combining weapon_person, fire, vehicle, crowd
+    with stampede-level density, and drone faults. Ultimate stress test
+    of the complete system pipeline.
+  split: test
+
+world:
+  terrain_seed: 215
+  buildings:
+    - center: [300, 300]
+      width: 30
+      depth: 30
+      height: 40
+    - center: [700, 700]
+      width: 30
+      depth: 30
+      height: 35
+
+spawn_schedule:
+  - time: 30
+    type: weapon_person
+    position: [350, 350, 0]
+    is_threat: true
+    thermal_signature: 0.85
+  - time: 60
+    type: vehicle
+    position: [600, 400, 0.8]
+    is_threat: true
+    thermal_signature: 0.80
+  - time: 120
+    type: fire
+    position: [300, 300, 20]
+    is_threat: true
+    thermal_signature: 0.95
+  - time: 300
+    type: weapon_person
+    position: [700, 700, 0]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 100
+  initial_density: 2.0
+  density_curve:
+    - [0, 2.0]
+    - [120, 4.0]
+    - [240, 7.0]
+    - [360, 9.0]
+    - [480, 5.0]
+  flow_direction: [0.0, -1.0]
+  anomaly_at: 300
+  anomaly_type: velocity_spike
+
+faults:
+  - time: 180
+    type: motor_failure
+    drone_id: 2
+    duration: 120
+  - time: 240
+    type: gps_loss
+    drone_id: 4
+    duration: 60
+  - time: 360
+    type: thermal_failed
+    drone_id: 0
+    duration: 240
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: threat_detected
+    object_type: weapon_person
+    max_latency_sec: 60
+  - type: threat_detected
+    object_type: vehicle
+    max_latency_sec: 60
+  - type: threat_detected
+    object_type: fire
+    max_latency_sec: 30
+  - type: crowd_risk_critical
+    max_latency_sec: 270
+  - type: stampede_warning
+    max_latency_sec: 330
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 65

@@ -9,6 +9,7 @@ import IncidentCommand from './components/command/IncidentCommand';
 import ZoneEditor from './components/command/ZoneEditor';
 import EvidencePanel from './components/evidence/EvidencePanel';
 import AuditLogViewer from './components/audit/AuditLogViewer';
+import ScenarioPanel from './components/scenarios/ScenarioPanel';
 
 export default function App() {
   const { connected, latencyMs, send } = useWebSocket();
@@ -30,6 +31,8 @@ export default function App() {
         return <EvidencePanel wsSend={send} />;
       case 'audit':
         return <AuditLogViewer />;
+      case 'scenarios':
+        return <ScenarioPanel wsSend={send} />;
       default:
         return <SituationalMap />;
     }

@@ -73,6 +73,10 @@ THERMAL_SIGNATURES = {
     'camp': 0.60,
     'equipment': 0.40,
     'animal': 0.75,
+    # Armed threat types (Phase 2)
+    'weapon_person': 0.88,       # Person carrying weapon — slightly higher (stress/exertion)
+    'fire': 0.95,                # Active fire — very high thermal
+    'explosive_device': 0.92,    # Explosive device — high thermal
 }
 
 # Default sizes by object type (meters)
@@ -82,6 +86,10 @@ OBJECT_SIZES = {
     'camp': 8.0,
     'equipment': 2.0,
     'animal': 1.0,
+    # Armed threat types (Phase 2)
+    'weapon_person': 1.8,        # Same size as person
+    'fire': 3.0,                 # Fire spread area
+    'explosive_device': 0.5,     # Small package
 }
 
 

@@ -1,0 +1,65 @@
+# S32 — Armed Person + Crowd Panic + Vehicle
+# Category: multi
+# Tests: Triple simultaneous threat handling, priority-based Beta dispatch
+
+scenario:
+  id: S32
+  name: Armed Person Plus Crowd Panic Plus Vehicle
+  category: multi
+  duration_sec: 300
+  description: >
+    Armed person at t=20s, vehicle at t=30s, crowd density rises from
+    2.0 to 6.0. Tests triple-threat prioritization, Beta dispatch to
+    highest-priority target, and crowd monitoring during active threats.
+  split: train
+
+world:
+  terrain_seed: 125
+  buildings: []
+
+spawn_schedule:
+  - time: 20
+    type: weapon_person
+    position: [400, 400, 0]
+    is_threat: true
+    thermal_signature: 0.85
+  - time: 30
+    type: vehicle
+    position: [600, 300, 0.8]
+    is_threat: true
+    thermal_signature: 0.80
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 70
+  initial_density: 2.0
+  density_curve:
+    - [0, 2.0]
+    - [30, 2.0]
+    - [90, 6.0]
+    - [180, 6.0]
+  flow_direction: [-1.0, 0.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: threat_detected
+    object_type: weapon_person
+    max_latency_sec: 45
+  - type: threat_detected
+    object_type: vehicle
+    max_latency_sec: 60
+  - type: crowd_risk_warning
+    max_latency_sec: 100
+
+metrics:
+  max_detection_latency_sec: 45
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 75

@@ -1,0 +1,55 @@
+# S03 — Religious Gathering Buildup
+# Category: crowd
+# Tests: Gradual density escalation NONE→WATCH→WARNING over 3 minutes
+
+scenario:
+  id: S03
+  name: Religious Gathering Buildup
+  category: crowd
+  duration_sec: 240
+  description: >
+    Crowd gathers gradually at a religious site. Density rises from 1.0 to 7.0
+    persons/m² over 3 minutes. Risk should transition through NONE→WATCH→WARNING.
+    Threat created at WARNING level.
+  split: train
+
+world:
+  terrain_seed: 100
+  buildings:
+    - center: [400, 400]
+      width: 40
+      depth: 40
+      height: 15
+
+spawn_schedule: []
+
+crowd:
+  enabled: true
+  center: [400, 400]
+  radius: 60
+  initial_density: 1.0
+  density_curve:
+    - [0, 1.0]
+    - [60, 3.0]
+    - [120, 5.0]
+    - [180, 7.0]
+  flow_direction: [0.0, 0.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: crowd_risk_watch
+    max_latency_sec: 90
+  - type: crowd_risk_warning
+    max_latency_sec: 150
+
+metrics:
+  max_detection_latency_sec: 90
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 75

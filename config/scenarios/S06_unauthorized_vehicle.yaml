@@ -1,0 +1,46 @@
+# S06 — Unauthorized Vehicle in Pedestrian Zone
+# Category: vehicle
+# Tests: Vehicle detection in restricted area, MEDIUM threat
+
+scenario:
+  id: S06
+  name: Unauthorized Vehicle in Pedestrian Zone
+  category: vehicle
+  duration_sec: 300
+  description: >
+    A vehicle enters a pedestrian-only zone at t=40s.
+    Detected via RGB+thermal (vehicle thermal sig 0.70).
+    Should trigger MEDIUM threat.
+  split: train
+
+world:
+  terrain_seed: 42
+  buildings: []
+
+spawn_schedule:
+  - time: 40
+    type: vehicle
+    position: [350, 450, 0.8]
+    is_threat: true
+    thermal_signature: 0.70
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: threat_detected
+    object_type: vehicle
+    max_latency_sec: 60
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

@@ -1,0 +1,53 @@
+# S14 — Two Armed Persons Coordinated
+# Category: armed
+# Tests: Multi-threat detection, simultaneous Beta tracking
+
+scenario:
+  id: S14
+  name: Two Armed Persons Coordinated
+  category: armed
+  duration_sec: 300
+  description: >
+    Two armed persons appear at separate locations at t=30s and t=35s.
+    Tests multi-threat detection and prioritization. Both threats must
+    be detected and Beta dispatched to higher-priority target.
+  split: train
+
+world:
+  terrain_seed: 60
+  buildings: []
+
+spawn_schedule:
+  - time: 30
+    type: weapon_person
+    position: [300, 400, 0]
+    is_threat: true
+    thermal_signature: 0.85
+  - time: 35
+    type: weapon_person
+    position: [600, 400, 0]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: threat_detected
+    object_type: weapon_person
+    max_latency_sec: 60
+  - type: beta_dispatched
+    max_latency_sec: 90
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

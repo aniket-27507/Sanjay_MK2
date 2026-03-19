@@ -1,0 +1,52 @@
+# S19 — Two Crowds Merging at Intersection
+# Category: crowd
+# Tests: Counter-flow anomaly detection at crowd merge point
+
+scenario:
+  id: S19
+  name: Two Crowds Merging at Intersection
+  category: crowd
+  duration_sec: 300
+  description: >
+    Two crowds merge at intersection centered at (500,500). Counter-flow
+    anomaly triggers at t=90s. Tests detection of opposing flow patterns
+    and anomaly-driven risk escalation.
+  split: train
+
+world:
+  terrain_seed: 85
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 70
+  initial_density: 2.0
+  density_curve:
+    - [0, 2.0]
+    - [60, 4.0]
+    - [120, 5.0]
+  flow_direction: [1.0, 0.0]
+  anomaly_at: 90
+  anomaly_type: counter_flow
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: crowd_risk_watch
+    max_latency_sec: 70
+  - type: crowd_anomaly_detected
+    max_latency_sec: 110
+
+metrics:
+  max_detection_latency_sec: 90
+  max_false_positive_rate: 0.10
+  min_coverage_pct: 75

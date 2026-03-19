@@ -194,13 +194,8 @@ services:
       # Scripts
       - ./scripts:/workspace/scripts
     network_mode: host
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # NOTE: GPU reservation removed — bridge is CPU-only (ROS 2 ↔ pipeline).
+    # Re-enable if the bridge ever runs inference on-container.
     restart: unless-stopped
     command: >
       bash -c "
@@ -312,7 +307,7 @@ services:
       - ISAAC_MCP_TRANSPORT=streamable-http
       - ISAAC_MCP_HOST=0.0.0.0
       - ISAAC_MCP_PORT=8000
-      - ISAAC_MCP_ENABLE_MUTATIONS=false
+      - ISAAC_MCP_ENABLE_MUTATIONS=true
       - ISAAC_MCP_ROS2_ENABLED=true
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-10}
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp

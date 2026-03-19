@@ -1,0 +1,73 @@
+# S37 — Large Group with Umbrellas
+# Category: false_alarm
+# Tests: False positive suppression for umbrella-like equipment near crowd
+
+scenario:
+  id: S37
+  name: Large Group with Umbrellas
+  category: false_alarm
+  duration_sec: 300
+  description: >
+    Five equipment objects (umbrellas) near a crowd. None are threats.
+    Tests false positive rejection for equipment that may resemble
+    concealment or weapon shapes in overhead view.
+  split: test
+
+world:
+  terrain_seed: 150
+  buildings: []
+
+spawn_schedule:
+  - time: 15
+    type: equipment
+    position: [490, 490, 0]
+    is_threat: false
+    thermal_signature: 0.30
+  - time: 16
+    type: equipment
+    position: [500, 495, 0]
+    is_threat: false
+    thermal_signature: 0.30
+  - time: 17
+    type: equipment
+    position: [510, 490, 0]
+    is_threat: false
+    thermal_signature: 0.30
+  - time: 18
+    type: equipment
+    position: [495, 505, 0]
+    is_threat: false
+    thermal_signature: 0.30
+  - time: 19
+    type: equipment
+    position: [505, 505, 0]
+    is_threat: false
+    thermal_signature: 0.30
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 40
+  initial_density: 2.0
+  density_curve:
+    - [0, 2.0]
+    - [300, 2.0]
+  flow_direction: [0.0, 0.0]
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: object_classified
+    object_type: equipment
+    max_latency_sec: 60
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

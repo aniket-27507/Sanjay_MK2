@@ -114,12 +114,27 @@ class SimulatedRGBCamera:
             coverage_cells=coverage_cells,
         )
 
+    # Detection probability modifiers by object type.
+    # weapon_person is harder to identify at Alpha altitude (weapon is small)
+    # but much easier at Beta altitude (close-up confirmation).
+    _TYPE_DETECTION_MODIFIERS = {
+        'weapon_person': 0.65,      # weapon detail hard to see from altitude
+        'fire': 1.2,               # fire is visually obvious
+        'explosive_device': 0.50,   # very small, hard to spot from above
+        'animal': 0.80,            # small, fast-moving
+    }
+
     def _detection_probability(self, obj: WorldObject, altitude: float) -> float:
         """Calculate probability of detecting an object."""
         # Base probability, reduced by altitude
         alt_factor = max(0.0, 1.0 - altitude / self.max_detection_range)
         size_bonus = obj.size * self.size_factor
         prob = self.base_detection_prob * alt_factor + size_bonus
+
+        # Apply type-specific modifier
+        modifier = self._TYPE_DETECTION_MODIFIERS.get(obj.object_type, 1.0)
+        prob *= modifier
+
         return min(1.0, max(0.0, prob))
 
     def _calculate_confidence(self, obj: WorldObject, altitude: float) -> float:

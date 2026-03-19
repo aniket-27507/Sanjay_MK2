@@ -1,0 +1,63 @@
+# S21 — Exit Bottleneck During Evacuation
+# Category: stampede
+# Tests: Compression detection at corridor bottleneck, stampede risk
+
+scenario:
+  id: S21
+  name: Exit Bottleneck During Evacuation
+  category: stampede
+  duration_sec: 300
+  description: >
+    Buildings form a corridor creating an exit bottleneck. Crowd density
+    escalates from 5.0 to 9.0 as people funnel through. Tests compression
+    detection and stampede warning at chokepoints.
+  split: train
+
+world:
+  terrain_seed: 95
+  buildings:
+    - center: [480, 500]
+      width: 10
+      depth: 80
+      height: 20
+    - center: [520, 500]
+      width: 10
+      depth: 80
+      height: 20
+
+spawn_schedule: []
+
+crowd:
+  enabled: true
+  center: [500, 500]
+  radius: 50
+  initial_density: 5.0
+  density_curve:
+    - [0, 5.0]
+    - [60, 7.0]
+    - [120, 9.0]
+    - [180, 9.0]
+  flow_direction: [0.0, 1.0]
+  anomaly_at: 100
+  anomaly_type: compression
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: crowd_overhead
+
+expected_events:
+  - type: crowd_risk_warning
+    max_latency_sec: 40
+  - type: crowd_risk_critical
+    max_latency_sec: 80
+  - type: stampede_warning
+    max_latency_sec: 120
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

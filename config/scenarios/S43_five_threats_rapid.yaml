@@ -1,0 +1,66 @@
+# S43 — 5 Threats Spawned in 30 Seconds
+# Category: edge
+# Tests: Rapid multi-threat detection under high spawn rate
+
+scenario:
+  id: S43
+  name: Five Threats Spawned in 30 Seconds
+  category: edge
+  duration_sec: 300
+  description: >
+    Five person threats spawn at t=30,35,40,45,50s across the patrol
+    area. Tests system ability to detect and track multiple rapidly
+    appearing threats without dropping detections.
+  split: test
+
+world:
+  terrain_seed: 180
+  buildings: []
+
+spawn_schedule:
+  - time: 30
+    type: person
+    position: [300, 300, 0]
+    is_threat: true
+    thermal_signature: 0.85
+  - time: 35
+    type: person
+    position: [700, 300, 0]
+    is_threat: true
+    thermal_signature: 0.85
+  - time: 40
+    type: person
+    position: [500, 500, 0]
+    is_threat: true
+    thermal_signature: 0.85
+  - time: 45
+    type: person
+    position: [300, 700, 0]
+    is_threat: true
+    thermal_signature: 0.85
+  - time: 50
+    type: person
+    position: [700, 700, 0]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: threat_detected
+    object_type: person
+    max_latency_sec: 60
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 80

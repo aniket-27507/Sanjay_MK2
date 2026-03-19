@@ -1,0 +1,47 @@
+# S09 — Drone GPS Loss
+# Category: degraded
+# Tests: GPS fault on one drone, formation adapts, coverage maintained
+
+scenario:
+  id: S09
+  name: Drone GPS Loss
+  category: degraded
+  duration_sec: 300
+  description: >
+    Alpha_2 loses GPS at t=60s for 120s. TaskRedistributor should detect
+    heartbeat loss, redistribute Alpha_2's sector to remaining drones.
+    Coverage should remain above 70%.
+  split: train
+
+world:
+  terrain_seed: 42
+  buildings: []
+
+spawn_schedule: []
+
+crowd:
+  enabled: false
+
+faults:
+  - time: 60
+    type: gps_loss
+    drone_id: 2
+    duration: 120
+
+fleet:
+  num_alpha: 6
+  num_beta: 1
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: drone_inactive
+    drone_id: 2
+    max_latency_sec: 75
+  - type: sector_redistributed
+    max_latency_sec: 90
+
+metrics:
+  max_detection_latency_sec: 999
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 70
