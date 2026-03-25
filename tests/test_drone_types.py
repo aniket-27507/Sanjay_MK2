@@ -15,6 +15,10 @@ import numpy as np
 import time
 
 from src.core.types.drone_types import (
+    AutonomyDecision,
+    AutonomyDecisionType,
+    CrowdRiskState,
+    DroneMissionState,
     Vector3,
     Quaternion,
     FlightMode,
@@ -22,7 +26,12 @@ from src.core.types.drone_types import (
     DroneConfig,
     DroneState,
     TelemetryData,
+    InspectionPlan,
+    InspectionRecommendation,
+    SectorCoverageState,
     SensorType,
+    ThreatLevel,
+    ThreatVector,
 )
 
 
@@ -189,6 +198,8 @@ class TestSensorType:
 
     def test_required_sensor_types_exist(self):
         assert SensorType.RGB_CAMERA is not None
+        assert SensorType.WIDE_RGB_CAMERA is not None
+        assert SensorType.ZOOM_EO_CAMERA is not None
         assert SensorType.THERMAL_CAMERA is not None
         assert SensorType.LIDAR_3D is not None
 
@@ -205,7 +216,7 @@ class TestDroneConfig:
         assert config.battery_critical == 15.0
     
     def test_beta_drone_config(self):
-        """Test Beta drone configuration adjustment."""
+        """Legacy Beta configuration remains available for compatibility."""
         config = DroneConfig(drone_type=DroneType.BETA)
         # __post_init__ should adjust values for Beta
         assert config.max_altitude == 30.0
@@ -257,7 +268,10 @@ class TestDroneState:
             drone_id=1,
             position=Vector3(x=100, y=200, z=-50),
             mode=FlightMode.NAVIGATING,
-            target_position=Vector3(x=150, y=250, z=-50)
+            target_position=Vector3(x=150, y=250, z=-50),
+            mission_state="DESCEND_CONFIRM",
+            inspection_state="ingress",
+            sector_backfill_state="degraded",
         )
         
         d = original.to_dict()
@@ -266,6 +280,9 @@ class TestDroneState:
         assert restored.drone_id == original.drone_id
         assert restored.position.x == original.position.x
         assert restored.target_position.x == original.target_position.x
+        assert restored.mission_state == "DESCEND_CONFIRM"
+        assert restored.inspection_state == "ingress"
+        assert restored.sector_backfill_state == "degraded"
 
 
 class TestTelemetryData:
@@ -285,3 +302,52 @@ class TestTelemetryData:
         after = time.time()
         
         assert before <= telem.timestamp <= after
+
+
+class TestAutonomyPolicyTypes:
+    def test_mission_state_enum_exists(self):
+        assert DroneMissionState.PATROL_HIGH is not None
+        assert DroneMissionState.FACADE_SCAN is not None
+
+    def test_threat_vector_dataclass(self):
+        vector = ThreatVector(
+            threat_id="thr_001",
+            threat_level=ThreatLevel.CRITICAL,
+            position=Vector3(1.0, 2.0, -10.0),
+            object_type="weapon_person",
+            confidence=0.9,
+            threat_score=0.88,
+            sensor_evidence=[SensorType.WIDE_RGB_CAMERA, SensorType.THERMAL_CAMERA],
+            inspection_recommendation=InspectionRecommendation.DESCEND_CONFIRM,
+        )
+        assert vector.object_type == "weapon_person"
+        assert len(vector.sensor_evidence) == 2
+
+    def test_plan_and_decision_dataclasses(self):
+        plan = InspectionPlan(
+            threat_id="thr_001",
+            inspector_id=2,
+            recommendation=InspectionRecommendation.FACADE_SCAN,
+            ingress_point=Vector3(),
+            target_point=Vector3(10.0, 20.0, -35.0),
+            safe_altitude=35.0,
+        )
+        decision = AutonomyDecision(
+            decision=AutonomyDecisionType.DESCEND,
+            mission_state=DroneMissionState.DESCEND_CONFIRM,
+            recommendation=InspectionRecommendation.DESCEND_CONFIRM,
+            should_descend=True,
+            score=0.91,
+            reason="critical_multi_sensor_inspection",
+        )
+        coverage = SectorCoverageState(drone_id=0, sector_id="sector_0")
+        crowd = CrowdRiskState(
+            zone_id="zone_1",
+            center=Vector3(),
+            density_level="HIGH",
+            stampede_risk=0.7,
+        )
+        assert plan.inspector_id == 2
+        assert decision.should_descend is True
+        assert coverage.degraded is False
+        assert crowd.recommended_action == InspectionRecommendation.CROWD_OVERWATCH

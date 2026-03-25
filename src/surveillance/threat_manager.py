@@ -2,16 +2,16 @@
 Project Sanjay Mk2 - Threat Manager
 =====================================
 Manages the lifecycle of detected threats and coordinates
-Beta drone dispatch for visual confirmation.
+inspector assignment for close confirmation.
 
 Threat Lifecycle:
     DETECTED -> PENDING -> CONFIRMING -> CONFIRMED | CLEARED -> RESOLVED
     
     - DETECTED: New anomaly from ChangeDetector
-    - PENDING: Queued for Beta inspection
-    - CONFIRMING: Beta is en route
-    - CONFIRMED: Beta verified threat
-    - CLEARED: Beta confirmed false positive
+    - PENDING: Queued for inspection
+    - CONFIRMING: Inspector is en route
+    - CONFIRMED: Inspector verified threat
+    - CLEARED: Inspector cleared false positive
 
 @author: Prathamesh Hiwarkar
 """
@@ -31,14 +31,14 @@ from src.surveillance.change_detection import ChangeEvent
 
 logger = logging.getLogger(__name__)
 
-# Confidence threshold to request Beta confirmation
+# Confidence threshold to request close inspection
 CONFIRMATION_THRESHOLD = 0.50
 
 # Time before a threat ages out (seconds)
 THREAT_TIMEOUT = 120.0
 
-# Distance threshold for Beta to be "on scene"
-BETA_ARRIVAL_RADIUS = 15.0
+# Distance threshold for inspector to be "on scene"
+INSPECTOR_ARRIVAL_RADIUS = 15.0
 
 
 class ThreatScorer:
@@ -68,10 +68,10 @@ class ThreatScorer:
 
 class ThreatManager:
     """
-    Manages threat lifecycle and coordinates Beta drone dispatch.
+    Manages threat lifecycle and coordinates inspector dispatch.
     
     Receives change events from the ChangeDetector, tracks threats
-    through their lifecycle, and assigns Beta drones for confirmation.
+    through their lifecycle, and assigns inspector drones for confirmation.
     """
 
     def __init__(
@@ -95,7 +95,8 @@ class ThreatManager:
         # Map: change_event object_id -> threat_id (prevent duplicate threats)
         self._object_to_threat: Dict[str, str] = {}
 
-        # Active shepherd protocols (threat_id -> BetaShepherdProtocol)
+        # Active shepherd protocols (threat_id -> BetaShepherdProtocol).
+        # The guidance primitive is still reused for legacy compatibility.
         self._shepherds: Dict[str, BetaShepherdProtocol] = {}
 
         # Map: crowd zone_id -> threat_id (prevent duplicate crowd threats)
@@ -267,14 +268,31 @@ class ThreatManager:
         available_betas: List[Tuple[int, Vector3]],
     ) -> Optional[int]:
         """
-        Request Beta drone confirmation for a threat.
+        Backwards-compatible wrapper for requesting close inspection.
         
         Args:
             threat_id: Threat to confirm
-            available_betas: List of (drone_id, position) for available Beta drones
+            available_betas: List of (drone_id, position) for available inspectors
             
         Returns:
-            Selected Beta drone_id, or None if no Beta available.
+            Selected inspector drone_id, or None if no drone available.
+        """
+        return self.request_inspection(threat_id, available_betas)
+
+    def request_inspection(
+        self,
+        threat_id: str,
+        available_drones: List[Tuple[int, Vector3]],
+    ) -> Optional[int]:
+        """
+        Request inspector confirmation for a threat.
+
+        Args:
+            threat_id: Threat to inspect.
+            available_drones: List of (drone_id, position) for available inspectors.
+
+        Returns:
+            Selected inspector drone_id, or None if no drone available.
         """
         threat = self._threats.get(threat_id)
         if threat is None:
@@ -283,30 +301,31 @@ class ThreatManager:
         if threat.status not in (ThreatStatus.DETECTED, ThreatStatus.PENDING_CONFIRMATION):
             return None
 
-        if not available_betas:
+        if not available_drones:
             return None
 
-        # Select nearest Beta drone
+        # Select nearest inspector drone
         best_id = None
         best_dist = float('inf')
-        for beta_id, beta_pos in available_betas:
-            dist = threat.position.distance_to(beta_pos)
+        for drone_id, drone_pos in available_drones:
+            dist = threat.position.distance_to(drone_pos)
             if dist < best_dist:
                 best_dist = dist
-                best_id = beta_id
+                best_id = drone_id
 
         if best_id is not None:
             threat.assigned_beta = best_id
+            threat.assigned_inspector = best_id
             threat.status = ThreatStatus.CONFIRMING
 
-            # Find the Beta's position for shepherd initialisation
-            beta_pos = None
-            for bid, bpos in available_betas:
-                if bid == best_id:
-                    beta_pos = bpos
+            # Find the inspector's position for guidance initialisation
+            inspector_pos = None
+            for did, dpos in available_drones:
+                if did == best_id:
+                    inspector_pos = dpos
                     break
 
-            # Start shepherd guidance (spec §7.2)
+            # Start guidance (spec §7.2 legacy primitive)
             shepherd = BetaShepherdProtocol(
                 threat_id=threat_id,
                 beta_id=best_id,
@@ -316,39 +335,45 @@ class ThreatManager:
             )
             shepherd.start_guidance(
                 initial_threat_pos=threat.position,
-                initial_beta_pos=beta_pos or self._hex_center,
+                initial_beta_pos=inspector_pos or self._hex_center,
             )
             self._shepherds[threat_id] = shepherd
 
-            logger.info("Beta %d dispatched to %s (dist=%.0fm) — shepherd started",
+            logger.info("Inspector %d dispatched to %s (dist=%.0fm) — guidance started",
                          best_id, threat_id, best_dist)
 
         return best_id
 
     def beta_arrived(self, threat_id: str, beta_drone_id: int) -> bool:
         """
-        Notify that a Beta drone has arrived at the threat location.
+        Backwards-compatible wrapper for inspector arrival.
         
-        Returns True if the Beta is on the correct threat.
+        Returns True if the inspector is on the correct threat.
         """
+        return self.inspector_arrived(threat_id, beta_drone_id)
+
+    def inspector_arrived(self, threat_id: str, inspector_drone_id: int) -> bool:
+        """Return True if the assigned inspector has reached the threat."""
         threat = self._threats.get(threat_id)
         if threat is None:
             return False
-        return threat.assigned_beta == beta_drone_id
+        return threat.assigned_inspector == inspector_drone_id or threat.assigned_beta == inspector_drone_id
 
     def confirm_threat(
         self,
         threat_id: str,
         is_confirmed: bool,
         current_time: Optional[float] = None,
+        confirming_drone_id: Optional[int] = None,
     ) -> Optional[Threat]:
         """
-        Record Beta drone's confirmation or clearing of a threat.
+        Record an inspector drone's confirmation or clearing of a threat.
         
         Args:
             threat_id: Threat to confirm/clear
             is_confirmed: True if threat is real, False if false positive
             current_time: Current simulation time
+            confirming_drone_id: Optional inspector drone_id
             
         Returns:
             Updated Threat, or None if not found.
@@ -361,7 +386,11 @@ class ThreatManager:
         if is_confirmed:
             threat.status = ThreatStatus.CONFIRMED
             threat.confidence = min(1.0, threat.confidence + 0.3)
-            threat.confirmed_by = threat.assigned_beta
+            threat.confirmed_by = (
+                confirming_drone_id
+                if confirming_drone_id is not None
+                else (threat.assigned_inspector if threat.assigned_inspector >= 0 else threat.assigned_beta)
+            )
             logger.warning("THREAT CONFIRMED: %s [%s] at (%.0f, %.0f)",
                           threat_id, threat.threat_level.name,
                           threat.position.x, threat.position.y)
@@ -372,7 +401,7 @@ class ThreatManager:
 
         threat.confirmation_time = current_time
 
-        # Stop shepherd guidance (spec §7.2)
+        # Stop guidance (spec §7.2 legacy primitive)
         shepherd = self._shepherds.pop(threat_id, None)
         if shepherd and shepherd.is_active:
             shepherd.stop_guidance(confirmed=is_confirmed)
@@ -434,7 +463,7 @@ class ThreatManager:
         ]
 
     def get_threats_needing_confirmation(self) -> List[Threat]:
-        """Get threats that need Beta drone confirmation."""
+        """Get threats that need close inspection."""
         return [
             t for t in self._threats.values()
             if t.status == ThreatStatus.PENDING_CONFIRMATION
@@ -465,8 +494,8 @@ class ThreatManager:
             beta_positions: beta_drone_id → current Beta position.
 
         Returns:
-            Dict of beta_drone_id → (target_position, target_speed) for each
-            Beta currently under shepherd guidance.
+            Dict of drone_id → (target_position, target_speed) for each
+            inspector currently under guidance.
         """
         targets: Dict[int, Tuple[Vector3, float]] = {}
         finished: List[str] = []
@@ -495,15 +524,15 @@ class ThreatManager:
         return {tid: s for tid, s in self._shepherds.items() if s.is_active}
 
     def set_hex_center(self, center: Vector3):
-        """Update the hex center (used for Beta RTL after confirmation)."""
+        """Update the hex center (used for post-confirmation rejoin guidance)."""
         self._hex_center = center
 
     def set_hex_radius(self, radius: float):
-        """Update the hex radius (used for Beta boundary enforcement)."""
+        """Update the hex radius (used for boundary enforcement)."""
         self._hex_radius = radius
 
     def has_active_threat_response(self) -> bool:
-        """Return True if any shepherd is actively guiding Beta to a threat."""
+        """Return True if any guidance path is actively driving an inspector to a threat."""
         return bool(self._shepherds)
 
     def reset(self):

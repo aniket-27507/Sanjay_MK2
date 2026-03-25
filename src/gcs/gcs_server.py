@@ -115,7 +115,7 @@ class GCSServer:
         if self._loop is not None:
             try:
                 if not self._loop.is_closed():
-                    self._loop.call_soon_threadsafe(self._loop.stop)
+                    self._loop.call_soon_threadsafe(lambda: None)
             except RuntimeError:
                 pass  # loop already closed
         if self._thread is not None:
@@ -217,6 +217,9 @@ class GCSServer:
                     ),
                     "patrol_pct": round(getattr(s, "patrol_progress", 0.0) * 100, 1),
                     "sensor_health": round(getattr(s, "sensor_health", 1.0), 2),
+                    "mission_state": getattr(s, "mission_state", "PATROL_HIGH"),
+                    "inspection_state": getattr(s, "inspection_state", "idle"),
+                    "sector_backfill_state": getattr(s, "sector_backfill_state", "normal"),
                 }
                 for s in drone_states.values()
             ],
@@ -232,7 +235,11 @@ class GCSServer:
             "score": round(getattr(threat, "threat_score", 0.0), 3),
             "level": threat.threat_level.name if threat.threat_level else "LOW",
             "pos": [round(threat.position.x, 1), round(threat.position.y, 1)],
-            "assigned": f"beta_{threat.assigned_beta}" if threat.assigned_beta else None,
+            "assigned": (
+                f"alpha_{threat.assigned_inspector}"
+                if getattr(threat, "assigned_inspector", -1) >= 0
+                else (f"drone_{threat.assigned_beta}" if threat.assigned_beta >= 0 else None)
+            ),
             "status": threat.status.name if threat.status else "DETECTED",
         }
         self._broadcast(msg)

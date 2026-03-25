@@ -3,7 +3,7 @@ Integration tests for State Police deployment scenarios.
 
 Tests the full pipeline:
     1. Crowd density escalation -> risk transitions -> threat creation
-    2. Counter-flow + compression -> ALERT risk -> Beta dispatch
+    2. Counter-flow + compression -> ALERT risk -> Alpha crowd overwatch
     3. Building perimeter waypoint generation + geofence enforcement
     4. Mission profile loading + config propagation
     5. Zone management + audit trail

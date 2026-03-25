@@ -2,20 +2,21 @@
 Project Sanjay Mk2 — Scenario Executor
 =======================================
 Thin orchestrator that sets up the world from a scenario YAML and ticks
-the existing autonomous pipelines. Contains ZERO drone decision logic.
+the police-autonomy pipelines for the Alpha-only swarm.
 
 The executor:
     1. Creates WorldModel with scenario-specific terrain + buildings
     2. Spawns objects on schedule (spawn_schedule from YAML)
     3. Ticks sensors → fusion → change detection → threat manager
     4. Ticks crowd intelligence pipeline (if enabled)
+    5. Runs deterministic mission policy for inspection/crowd response
     5. Pushes all pipeline output to GCS WebSocket
     6. Collects metrics (read-only observation)
 
-All drone behavior emerges from the existing decentralised algorithms:
+Motion execution still emerges from the existing decentralised algorithms:
     - Boids flocking + CBBA task allocation (AlphaRegimentCoordinator)
     - APF + HPL obstacle avoidance (AvoidanceManager)
-    - Beta dispatch (ThreatManager)
+    - Mission-policy gated Alpha inspection
     - Fault recovery (TaskRedistributor)
 
 @author: Claude Code
@@ -32,12 +33,20 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from src.core.types.drone_types import (
+    AutonomyDecisionType,
+    DroneMissionState,
     DroneConfig, DroneState, DroneType, FlightMode,
-    SensorType, ThreatLevel, Vector3,
+    InspectionPlan,
+    InspectionRecommendation,
+    SectorCoverageState,
+    SensorType,
+    ThreatLevel,
+    Vector3,
 )
 from src.surveillance.world_model import WorldModel, THERMAL_SIGNATURES, OBJECT_SIZES
 from src.single_drone.sensors.rgb_camera import SimulatedRGBCamera
 from src.single_drone.sensors.thermal_camera import SimulatedThermalCamera
+from src.single_drone.sensors.zoom_camera import SimulatedZoomEOCamera
 from src.surveillance.sensor_fusion import SensorFusionPipeline
 from src.surveillance.baseline_map import BaselineMap
 from src.surveillance.change_detection import ChangeDetector
@@ -50,13 +59,15 @@ from src.swarm.coordination.regiment_coordinator import (
 from src.simulation.scenario_loader import (
     ScenarioDefinition, SpawnEvent, FaultEvent, CrowdConfig,
 )
+from src.response.mission_policy import MissionPolicyConfig, MissionPolicyEngine
+from src.swarm.coordination.urban_patrol_patterns import UrbanPatrolPatternGenerator
 
 logger = logging.getLogger(__name__)
 
 # ─── Lightweight Drone Sim (kinematic, no physics) ───────────────
 
 ALPHA_ALTITUDE = 65.0
-BETA_ALTITUDE = 25.0
+ALPHA_INSPECTION_ALTITUDE = 35.0
 CRUISE_SPEED = 5.0  # m/s
 
 
@@ -172,7 +183,8 @@ def _hex_positions(cx: float, cy: float, spacing: float, n: int = 6):
 class ScenarioExecutor:
     """
     Thin orchestrator: sets up the world, ticks autonomous pipelines,
-    pushes to GCS. Contains ZERO drone control logic.
+    then applies deterministic Alpha-only mission policy before pushing
+    state to GCS.
     """
 
     TICK_HZ = 10.0  # simulation tick rate
@@ -207,12 +219,11 @@ class ScenarioExecutor:
                 drone_type=DroneType.ALPHA,
                 position=Vector3(hx, hy, -ALPHA_ALTITUDE),
             )
-        for j in range(scenario.fleet.num_beta):
-            beta_id = scenario.fleet.num_alpha + j
-            self.drones[beta_id] = SimDrone(
-                drone_id=beta_id,
-                drone_type=DroneType.BETA,
-                position=Vector3(cx, cy, -BETA_ALTITUDE),
+        if scenario.fleet.num_beta:
+            logger.info(
+                "Scenario %s requests %d legacy Beta drone(s); ignored by Alpha-only v1 executor",
+                scenario.id,
+                scenario.fleet.num_beta,
             )
 
         # ── Autonomous Coordination (Boids + CBBA) ──
@@ -274,11 +285,13 @@ class ScenarioExecutor:
         # ── Sensors (one per drone, existing classes) ──
         self._rgb_cameras: Dict[int, SimulatedRGBCamera] = {}
         self._thermal_cameras: Dict[int, SimulatedThermalCamera] = {}
+        self._zoom_cameras: Dict[int, SimulatedZoomEOCamera] = {}
         self._fusion_pipelines: Dict[int, SensorFusionPipeline] = {}
 
         for drone_id, drone in self.drones.items():
             self._rgb_cameras[drone_id] = SimulatedRGBCamera(drone_type=drone.drone_type)
             self._thermal_cameras[drone_id] = SimulatedThermalCamera()
+            self._zoom_cameras[drone_id] = SimulatedZoomEOCamera()
             self._fusion_pipelines[drone_id] = SensorFusionPipeline()
 
         # ── Detection pipeline (existing classes) ──
@@ -290,6 +303,13 @@ class ScenarioExecutor:
         self._baseline.build_from_world_model(self.world)
         self._change_detector = ChangeDetector(baseline=self._baseline)
         self._threat_manager = ThreatManager()
+        self._mission_policy = MissionPolicyEngine(
+            MissionPolicyConfig(
+                patrol_altitude=ALPHA_ALTITUDE,
+                inspection_altitude=ALPHA_INSPECTION_ALTITUDE,
+            )
+        )
+        self._patrol_generator = UrbanPatrolPatternGenerator()
 
         # ── Crowd intelligence (existing classes, if enabled) ──
         self._crowd_coordinator = None
@@ -332,6 +352,27 @@ class ScenarioExecutor:
         self._detection_times: Dict[str, float] = {}  # object_id → detection time
         self._observed_cells: set = set()
         self._events_log: List[dict] = []
+        self._object_sensor_hits: Dict[str, set[SensorType]] = {}
+        self._threat_sensor_hits: Dict[str, set[SensorType]] = {}
+        self._active_inspections: Dict[str, InspectionPlan] = {}
+        self._drone_threat_assignment: Dict[int, str] = {}
+        self._mission_states: Dict[int, DroneMissionState] = {
+            drone_id: DroneMissionState.PATROL_HIGH for drone_id in self.drones
+        }
+        self._inspection_states: Dict[int, str] = {
+            drone_id: "idle" for drone_id in self.drones
+        }
+        self._sector_backfill_states: Dict[int, str] = {
+            drone_id: "normal" for drone_id in self.drones
+        }
+        self._coverage_states: Dict[int, SectorCoverageState] = {
+            drone_id: SectorCoverageState(
+                drone_id=drone_id,
+                sector_id=f"sector_{drone_id}",
+            )
+            for drone_id in self.drones
+        }
+        self._crowd_overwatch_goals: Dict[int, Vector3] = {}
 
     def _to_world(self, x: float, y: float) -> tuple[float, float]:
         """Remap YAML coordinates (0-1000) to world coordinates (-500 to +500)."""
@@ -553,13 +594,14 @@ class ScenarioExecutor:
         dy = pos.y - ccy
         return (dx * dx + dy * dy) <= crowd.radius ** 2
 
-    # ── Autonomous Pipeline Ticks (existing code, no modifications) ──
+    # ── Autonomous Pipeline Ticks ──
 
     def _tick_drones(self, dt: float):
         """Tick the decentralised autonomous drone stack.
 
         Uses existing AlphaRegimentCoordinator (Boids + CBBA) and
-        AvoidanceManager (APF + HPL). Zero hardcoded drone logic here.
+        AvoidanceManager (APF + HPL), with deterministic mission-policy
+        overrides for close inspection and crowd overwatch.
         """
         # ── 1. Update each coordinator with current drone state ──
         for drone_id, coord in self._coordinators.items():
@@ -573,6 +615,9 @@ class ScenarioExecutor:
                 yaw=math.radians(drone.heading),
                 battery=drone.battery,
                 mode=drone.mode,
+                mission_state=self._mission_states[drone_id].name,
+                inspection_state=self._inspection_states[drone_id],
+                sector_backfill_state=self._sector_backfill_states[drone_id],
             )
             coord.update_member_state(drone_id, state)
 
@@ -616,6 +661,14 @@ class ScenarioExecutor:
 
                 desired_velocity = coord.get_desired_velocity(drone_id) if coord else Vector3()
                 desired_goal = coord.get_desired_goal(drone_id) if coord else None
+                policy_goal = self._get_policy_goal(drone_id)
+                if policy_goal is not None:
+                    desired_goal = policy_goal
+                    desired_velocity = self._velocity_toward(
+                        drone.position,
+                        policy_goal,
+                        speed=CRUISE_SPEED,
+                    )
 
                 if mgr is not None:
                     mgr.set_boids_velocity(desired_velocity)
@@ -639,22 +692,17 @@ class ScenarioExecutor:
                 drone.velocity = velocity
                 drone.battery = max(0.0, drone.battery - 0.002 * dt)
 
-            elif drone.drone_type == DroneType.BETA:
-                # Beta autonomously moves toward highest-priority threat
-                active = self._threat_manager.get_active_threats()
-                target = None
-                for t in sorted(active, key=lambda t: t.threat_level.value, reverse=True):
-                    if t.status.name in ("DETECTED", "PENDING_CONFIRMATION"):
-                        target = t.position
-                        break
-                if target:
-                    drone.step(dt, target)
+        self._advance_active_inspections()
 
         # ── 6. Advance mission waypoint if swarm is close ──
         if goal and self._mission_waypoints:
             dists = []
             for did, d in self.drones.items():
-                if d.active and d.drone_type == DroneType.ALPHA:
+                if (
+                    d.active
+                    and d.drone_type == DroneType.ALPHA
+                    and self._mission_states[did] == DroneMissionState.PATROL_HIGH
+                ):
                     dx = d.position.x - goal.x
                     dy = d.position.y - goal.y
                     dists.append(math.sqrt(dx * dx + dy * dy))
@@ -667,8 +715,291 @@ class ScenarioExecutor:
             return None
         return self._mission_waypoints[self._waypoint_index % len(self._mission_waypoints)]
 
+    def _velocity_toward(self, current: Vector3, target: Vector3, speed: float) -> Vector3:
+        delta = target - current
+        dist = delta.magnitude()
+        if dist < 1e-6:
+            return Vector3()
+        return delta.normalized() * min(speed, dist)
+
+    def _get_policy_goal(self, drone_id: int) -> Optional[Vector3]:
+        threat_id = self._drone_threat_assignment.get(drone_id)
+        if threat_id and threat_id in self._active_inspections:
+            plan = self._active_inspections[threat_id]
+            if plan.scan_waypoints:
+                return plan.scan_waypoints[0].position
+            return plan.target_point
+        return self._crowd_overwatch_goals.get(drone_id)
+
+    def _active_inspector_count(self) -> int:
+        return len(self._active_inspections)
+
+    def _advance_active_inspections(self):
+        completed: List[str] = []
+        for threat_id, plan in self._active_inspections.items():
+            drone = self.drones.get(plan.inspector_id)
+            if drone is None or not drone.active:
+                self._mission_states[plan.inspector_id] = DroneMissionState.DEGRADED_SAFE
+                continue
+
+            current_target = plan.scan_waypoints[0].position if plan.scan_waypoints else plan.target_point
+            if drone.position.distance_to(current_target) > self._mission_policy.config.max_confirmation_distance:
+                continue
+
+            if self._inspection_states[plan.inspector_id] == "reascend":
+                self._mission_states[plan.inspector_id] = DroneMissionState.PATROL_HIGH
+                self._inspection_states[plan.inspector_id] = "idle"
+                completed.append(threat_id)
+                continue
+
+            if plan.scan_waypoints:
+                plan.scan_waypoints.pop(0)
+                if plan.scan_waypoints:
+                    self._inspection_states[plan.inspector_id] = "facade_scan"
+                    continue
+
+            self._inspection_states[plan.inspector_id] = "confirming"
+            threat = self._threat_manager.get_threat(threat_id)
+            if threat is None:
+                completed.append(threat_id)
+                continue
+
+            altitude = abs(drone.position.z)
+            obs = self._zoom_cameras[plan.inspector_id].capture(
+                drone_position=drone.position,
+                altitude=altitude,
+                world_model=self.world,
+                drone_id=plan.inspector_id,
+            )
+            match = next(
+                (
+                    det for det in obs.detected_objects
+                    if det.object_type == threat.object_type
+                ),
+                None,
+            )
+            if match is None:
+                match = next(
+                    (
+                        det for det in obs.detected_objects
+                        if det.position.distance_to(threat.position) <= 15.0
+                    ),
+                    None,
+                )
+
+            is_confirmed = bool(match and match.confidence >= 0.70)
+            self._threat_manager.confirm_threat(
+                threat_id,
+                is_confirmed=is_confirmed,
+                current_time=self._sim_time,
+                confirming_drone_id=plan.inspector_id,
+            )
+            self._mission_states[plan.inspector_id] = DroneMissionState.REASCEND_REJOIN
+            self._inspection_states[plan.inspector_id] = "reascend"
+            sector = self._coordinators[plan.inspector_id].get_my_sector()
+            rejoin = sector.center if sector is not None else drone.position
+            plan.target_point = Vector3(rejoin.x, rejoin.y, -ALPHA_ALTITUDE)
+
+        for threat_id in completed:
+            plan = self._active_inspections.pop(threat_id, None)
+            if plan is None:
+                continue
+            self._drone_threat_assignment.pop(plan.inspector_id, None)
+            for backfill_id in self._coverage_states[plan.inspector_id].backfilled_by:
+                if backfill_id in self._sector_backfill_states:
+                    self._sector_backfill_states[backfill_id] = "normal"
+            self._coverage_states[plan.inspector_id].degraded = False
+            self._coverage_states[plan.inspector_id].backfilled_by.clear()
+            self._coverage_states[plan.inspector_id].active_inspector = None
+            self._sector_backfill_states[plan.inspector_id] = "normal"
+
+    def _update_sector_coverage_state(self):
+        for drone_id, coord in self._coordinators.items():
+            sector = coord.get_my_sector()
+            if sector is None:
+                continue
+            state = self._coverage_states[drone_id]
+            state.sector_id = sector.sector_id
+            state.coverage_percent = sector.coverage_percent
+
+    def _corridor_safe_for(self, threat_position: Vector3) -> bool:
+        for building in self.scenario.buildings:
+            bx, by = self._to_world(building.center[0], building.center[1])
+            if abs(threat_position.x - bx) <= building.width / 2.0 and abs(threat_position.y - by) <= building.depth / 2.0:
+                return threat_position.z >= -(building.height + 10.0)
+        return True
+
+    def _update_policy(self):
+        self._update_sector_coverage_state()
+        self._crowd_overwatch_goals = {}
+        for drone_id in self.drones:
+            if drone_id in self._drone_threat_assignment:
+                continue
+            if self._mission_states[drone_id] == DroneMissionState.CROWD_OVERWATCH:
+                self._mission_states[drone_id] = DroneMissionState.PATROL_HIGH
+                self._inspection_states[drone_id] = "idle"
+
+        for threat in self._threat_manager.get_active_threats():
+            if threat.status.name in {"CONFIRMED", "CLEARED", "RESOLVED"}:
+                continue
+            if threat.assigned_inspector >= 0 and threat.threat_id in self._active_inspections:
+                continue
+
+            sensor_hits = self._threat_sensor_hits.get(threat.threat_id, set())
+            vector = self._mission_policy.build_threat_vector(threat, sensor_hits)
+            coverage_pct = min(
+                100.0,
+                min(state.coverage_percent for state in self._coverage_states.values()) if self._coverage_states else 100.0,
+            )
+            decision = self._mission_policy.evaluate_threat(
+                vector,
+                active_inspectors=self._active_inspector_count(),
+                sector_coverage_pct=coverage_pct,
+                corridor_safe=self._corridor_safe_for(threat.position),
+                swarm_coverage_ready=True,
+                gcs_connected=True,
+            )
+
+            if decision.decision == AutonomyDecisionType.CROWD_RETASK:
+                self._assign_crowd_overwatch(threat.position)
+                continue
+
+            if decision.decision not in {
+                AutonomyDecisionType.DESCEND,
+                AutonomyDecisionType.EXECUTE_FACADE_SCAN,
+            }:
+                continue
+
+            available = [
+                (drone_id, drone.position)
+                for drone_id, drone in self.drones.items()
+                if drone.active and drone.drone_type == DroneType.ALPHA and drone_id not in self._drone_threat_assignment
+            ]
+            inspector_id = self._mission_policy.select_inspector(
+                threat.position,
+                available,
+            )
+            if inspector_id is None:
+                continue
+
+            assigned = self._threat_manager.request_inspection(threat.threat_id, available)
+            if assigned is None:
+                continue
+
+            plan = self._build_inspection_plan(
+                threat_id=threat.threat_id,
+                inspector_id=assigned,
+                recommendation=vector.inspection_recommendation,
+                threat_position=threat.position,
+            )
+            self._active_inspections[threat.threat_id] = plan
+            self._drone_threat_assignment[assigned] = threat.threat_id
+            self._mission_states[assigned] = decision.mission_state
+            self._inspection_states[assigned] = "ingress"
+            self._mark_sector_backfill(assigned)
+            self._events_log.append(
+                {
+                    "time": self._sim_time,
+                    "type": "alpha_inspection_dispatched",
+                    "threat_id": threat.threat_id,
+                    "drone_id": assigned,
+                    "recommendation": vector.inspection_recommendation.name,
+                }
+            )
+
+    def _assign_crowd_overwatch(self, center: Vector3):
+        active = [
+            (drone_id, drone.position)
+            for drone_id, drone in self.drones.items()
+            if drone.active and drone.drone_type == DroneType.ALPHA and drone_id not in self._drone_threat_assignment
+        ]
+        active.sort(key=lambda item: item[1].distance_to(center))
+        for drone_id, _ in active[:2]:
+            self._crowd_overwatch_goals[drone_id] = Vector3(center.x, center.y, -ALPHA_ALTITUDE)
+            self._mission_states[drone_id] = DroneMissionState.CROWD_OVERWATCH
+            self._inspection_states[drone_id] = "high_overwatch"
+
+    def _mark_sector_backfill(self, inspector_id: int):
+        state = self._coverage_states[inspector_id]
+        state.degraded = True
+        state.active_inspector = inspector_id
+        neighbours = sorted(
+            (
+                (other_id, abs(other_id - inspector_id))
+                for other_id in self.drones
+                if other_id != inspector_id
+            ),
+            key=lambda item: item[1],
+        )[:2]
+        state.backfilled_by = [other_id for other_id, _ in neighbours]
+        self._sector_backfill_states[inspector_id] = "degraded"
+        for other_id, _ in neighbours:
+            self._sector_backfill_states[other_id] = f"backfilling_sector_{inspector_id}"
+
+    def _build_inspection_plan(
+        self,
+        threat_id: str,
+        inspector_id: int,
+        recommendation: InspectionRecommendation,
+        threat_position: Vector3,
+    ) -> InspectionPlan:
+        scan_waypoints = []
+        target_point = Vector3(
+            threat_position.x,
+            threat_position.y,
+            -ALPHA_INSPECTION_ALTITUDE,
+        )
+
+        if recommendation == InspectionRecommendation.FACADE_SCAN:
+            nearest = min(
+                self.scenario.buildings,
+                key=lambda building: math.hypot(
+                    self._to_world(building.center[0], building.center[1])[0] - threat_position.x,
+                    self._to_world(building.center[0], building.center[1])[1] - threat_position.y,
+                ),
+                default=None,
+            )
+            if nearest is not None:
+                scan_waypoints = self._patrol_generator.vertical_scan(
+                    face_center=Vector3(threat_position.x, threat_position.y, 0.0),
+                    face_width=nearest.width,
+                    building_height=nearest.height,
+                    standoff=self._mission_policy.config.facade_scan_standoff,
+                )
+                if scan_waypoints:
+                    target_point = scan_waypoints[0].position
+
+        return InspectionPlan(
+            threat_id=threat_id,
+            inspector_id=inspector_id,
+            recommendation=recommendation,
+            ingress_point=self.drones[inspector_id].position,
+            target_point=target_point,
+            safe_altitude=ALPHA_INSPECTION_ALTITUDE,
+            standoff_distance=self._mission_policy.config.facade_scan_standoff,
+            scan_waypoints=scan_waypoints,
+            corridor_safe=True,
+            approved_by_swarm=True,
+        )
+
+    def _record_sensor_hits(self, observation):
+        for det in observation.detected_objects:
+            if det.object_id not in self._object_sensor_hits:
+                self._object_sensor_hits[det.object_id] = set()
+            sensor_type = SensorType.WIDE_RGB_CAMERA if observation.sensor_type == SensorType.RGB_CAMERA else observation.sensor_type
+            self._object_sensor_hits[det.object_id].add(sensor_type)
+
+    def _link_threat_sensor_hits(self, threat_id: str, fused_observation):
+        threat = self._threat_manager.get_threat(threat_id)
+        if threat is None:
+            return
+        hits = self._threat_sensor_hits.setdefault(threat_id, set())
+        for det in fused_observation.detected_objects:
+            if det.position.distance_to(threat.position) <= 15.0:
+                hits.update(self._object_sensor_hits.get(det.object_id, set()))
+
     def _tick_sensors(self):
-        """Tick sensors at SENSOR_HZ. Existing pipelines, untouched."""
+        """Tick deployed sensors, fuse observations, and update mission policy."""
         if self._sim_time - self._last_sensor_tick < 1.0 / self.SENSOR_HZ:
             return
         self._last_sensor_tick = self._sim_time
@@ -692,6 +1023,8 @@ class ScenarioExecutor:
                 world_model=self.world,
                 drone_id=drone_id,
             )
+            self._record_sensor_hits(rgb_obs)
+            self._record_sensor_hits(thermal_obs)
 
             # Fuse
             pipeline = self._fusion_pipelines[drone_id]
@@ -711,6 +1044,7 @@ class ScenarioExecutor:
             for change in changes:
                 threat = self._threat_manager.report_change(change)
                 if threat:
+                    self._link_threat_sensor_hits(threat.threat_id, fused)
                     # Record detection for metrics
                     for obj in fused.detected_objects:
                         if obj.object_id not in self._detection_times:
@@ -739,6 +1073,7 @@ class ScenarioExecutor:
 
         # Update threat manager (aging, timeouts)
         self._threat_manager.update(self._sim_time)
+        self._update_policy()
 
     def _tick_crowd(self):
         """Tick crowd pipeline — existing CrowdIntelligenceCoordinator."""
@@ -771,6 +1106,10 @@ class ScenarioExecutor:
                 yaw=math.radians(d.heading),
                 battery=d.battery,
                 mode=d.mode,
+                mission_state=self._mission_states[did].name,
+                inspection_state=self._inspection_states[did],
+                sector_backfill_state=self._sector_backfill_states[did],
+                patrol_progress=self._coverage_states[did].coverage_percent / 100.0,
             )
 
         try:

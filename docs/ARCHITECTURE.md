@@ -1,25 +1,21 @@
 # System Architecture
 
-This document describes the current, authoritative Project Sanjay MK2 architecture for the police deployment program.
+This document describes the current Project Sanjay MK2 architecture as it exists in the repo today.
 
-## 1. Mission Baseline
+## Mission Baseline
 
-The system is built around a two-tier police surveillance fleet:
+The authoritative police deployment model is:
 
-| Tier | Count | Altitude | Payload | Mission role |
-|------|-------|----------|---------|--------------|
-| Alpha | 6 | 65 m | RGB + thermal + 3D LiDAR | Wide-area patrol, anomaly detection, geometry awareness |
-| Beta | 1 | 25 m | 1080p RGB | Close visual confirmation and operator-readable evidence |
+| Attribute | Current target |
+|----------|----------------|
+| Customer | State Police |
+| Fleet | `6` homogeneous `Alpha` drones |
+| Patrol altitude | `65 m` nominal |
+| Inspection altitude | `35 m` nominal |
+| Sensor suite | `wide RGB + zoom EO + thermal + 3D LiDAR + IMU/odometry` |
+| Confirmation model | Alpha self-confirmation under mission-policy gating |
 
-The mission target is state police urban operations, especially:
-
-- high-rise surveillance
-- crowd monitoring
-- stampede-risk detection
-- suspicious person and vehicle detection
-- operator-supervised confirmation and evidence capture
-
-## 2. Runtime Layers
+## Top-Level Runtime Model
 
 ```mermaid
 flowchart LR
@@ -29,146 +25,177 @@ flowchart LR
     D --> E["APF + HPL Avoidance"]
     E --> F["Flight / Kinematic Execution"]
 
-    G["Alpha RGB + Thermal"] --> H["Sensor Fusion"]
+    G["Wide RGB + Thermal Patrol Sensors"] --> H["Sensor Fusion"]
     H --> I["Baseline / Change Detection"]
     I --> J["Threat Manager"]
-    J --> K["Beta Dispatch / Confirmation"]
+    J --> K["Mission Policy Engine"]
+    K --> L["Assign Inspector / Crowd Overwatch / Hold High"]
+    L --> E
 
-    L["Crowd Density / Flow / Stampede Risk"] --> J
-    J --> M["GCS Telemetry / Threat / Audit / Zones"]
+    M["Zoom EO Confirmation Sensor"] --> N["Close Inspection Confirmation"]
+    N --> J
+
+    O["Crowd Density / Flow / Stampede Risk"] --> K
+    J --> P["GCS Telemetry / Threat / Crowd / Audit"]
 ```
 
-### 2.1 Alpha surveillance loop
+## Runtime Layers
 
-The Alpha loop is the main surveillance path:
+### 1. Swarm coordination
 
-1. Alpha drones patrol sectors under decentralized regiment coordination.
-2. RGB and thermal observations are captured and fused.
-3. Fused observations are compared against the baseline map.
-4. New objects or thermal anomalies become `ChangeEvent`s.
-5. `ThreatManager` scores and tracks them through the threat lifecycle.
+The strongest part of the repo remains the decentralized swarm layer:
 
-LiDAR is part of the Alpha deployed stack, but in the current codebase it is primarily used for geometry and avoidance integration rather than deep semantic threat classification.
+- `AlphaRegimentCoordinator` manages sector ownership and patrol geometry
+- `CBBA` handles task choice
+- `Boids` produces motion intent
+- `APF + HPL` provides local avoidance and safety gating
 
-### 2.2 Beta confirmation loop
+This layer is mature enough for simulation-led mission work.
 
-The Beta loop is intentionally narrower:
+### 2. Surveillance and threat detection
 
-1. Beta remains available for confirmation rather than broad patrol sensing.
-2. When a threat crosses the configured threshold, Beta is dispatched.
-3. Beta captures close-range RGB evidence for operator review and threat confirmation.
+The patrol sensing path is currently:
 
-Beta is not part of the deployed thermal or LiDAR path in the current architecture.
+- wide RGB patrol camera
+- thermal camera
+- sensor fusion
+- baseline-map comparison
+- change detection
+- threat lifecycle management
 
-### 2.3 Swarm autonomy loop
+This is still mostly heuristic/rule-based, not yet learned multimodal perception.
 
-The current autonomy path is decentralized:
+### 3. Mission policy
 
-- `CBBA` selects tasks per Alpha drone
-- `Boids` generates motion intent and local flock behavior
-- `APF + HPL` enforces local obstacle avoidance and safety gating
-- Gossip/state-sync components provide peer-awareness without a centralized flight controller
+The repo now has a deterministic mission-policy layer in [mission_policy.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/response/mission_policy.py).
 
-This is the strongest and most mature part of the repo.
+Its role is to decide whether the swarm should:
 
-### 2.4 Crowd-intelligence loop
+- continue patrol
+- track a threat from high altitude
+- assign an Alpha inspector
+- execute a facade scan
+- perform target confirmation
+- retask for crowd overwatch
+- abort and stay safe
 
-For police-event operations, the system also runs:
+Close inspection is allowed only when:
+
+- multiple sensors support the threat
+- threat score exceeds the critical threshold
+- corridor safety is acceptable
+- coverage repair is acceptable
+
+### 4. Close confirmation
+
+Close confirmation is no longer modeled as a separate Beta aircraft in the authoritative path.
+
+Instead:
+
+- one Alpha is selected as the inspector
+- that Alpha descends or performs a facade scan
+- the zoom EO camera is used for close confirmation
+- the rest of the swarm backfills coverage
+
+### 5. Crowd-risk path
+
+The crowd path remains high-altitude by default:
 
 - crowd density estimation
 - crowd flow analysis
-- stampede risk scoring
-- zone-aware GCS outputs
+- stampede-risk scoring
+- GCS alerting
+- overhead retasking
 
-This path feeds the threat lifecycle and the GCS but remains simulation-first until real camera and thermal data are introduced.
+Crowd workflows do not descend unless that behavior is explicitly added later.
 
-### 2.5 GCS loop
+### 6. GCS
 
-The GCS path exposes:
+The GCS runtime surface currently exposes:
 
-- drone state and telemetry
-- threat feed
-- crowd updates
+- map updates
+- per-drone telemetry
+- threat events
+- crowd/stampede outputs
 - zone updates
-- evidence recording events
+- evidence hooks
 - audit stream
 
-The current implementation uses an in-process WebSocket server and in-memory audit history. The planned MQTT/Kafka pipeline is designed but not yet the shipped runtime path.
+The runtime GCS path is still the in-process WebSocket server, not the planned durable event/data pipeline.
 
-## 3. Simulation Architecture
+## Simulation Architecture
 
-There are two practical simulation modes.
+### Fast police-scenario path
 
-### 3.1 Fast Python simulation
+The most aligned runtime path is the scenario framework:
 
-The fast path uses the scenario framework and lightweight kinematic drones:
+- [src/simulation/scenario_loader.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/simulation/scenario_loader.py)
+- [src/simulation/scenario_executor.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/simulation/scenario_executor.py)
+- [config/scenarios](/Users/archishmanpaul/Desktop/Sanjay_MK2/config/scenarios)
 
-- world model and terrain generation
-- scheduled threat/object spawns
-- surveillance pipeline execution
-- crowd intelligence execution
-- GCS output generation
+This path is where the Alpha-only mission-policy architecture is implemented and tested.
 
-This path is best for logic validation, repeatability, and regression testing.
+### Isaac Sim path
 
-### 3.2 Isaac Sim integration
+The Isaac path is still relevant for high-fidelity topic integration, but it is not perfectly uniform with the new authoritative architecture.
 
-The high-fidelity path uses Isaac Sim plus ROS 2:
+Current truth:
 
-- [scripts/isaac_sim/create_surveillance_scene.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/scripts/isaac_sim/create_surveillance_scene.py) creates the police surveillance arena
-- [config/isaac_sim.yaml](/Users/archishmanpaul/Desktop/Sanjay_MK2/config/isaac_sim.yaml) defines the deployed topic contract
-- [src/integration/isaac_sim_bridge.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/integration/isaac_sim_bridge.py) converts ROS 2 topics into runtime observations
+- Alpha ROS topics are aligned around `rgb`, `thermal`, `lidar_3d`, `odom`, `imu`, `cmd_vel`
+- the Isaac bridge remains compatible with a legacy `beta_0` entry
+- the Isaac scene builder still spawns a Beta in its current script
 
-The canonical ROS 2 topic contract is:
+That means the Isaac path is best understood as:
 
-- Alpha: `rgb`, `thermal`, `lidar_3d`, `odom`, `imu`, `cmd_vel`
-- Beta: `rgb`, `odom`, `imu`, `cmd_vel`
+- useful for integration and topic-validation work
+- partially legacy in fleet composition
+- not the sole source of truth for deployment architecture
 
-## 4. Current Implementation Status
+## Current Status
 
-### Implemented
+### Implemented now
 
-- Police deployment config and mission profile loading
-- Alpha/Beta fleet model with the current deployed sensor contract
-- Decentralized coordination and avoidance
-- RGB + thermal fusion and heuristic change detection
-- Threat lifecycle management and Beta dispatch
-- Crowd intelligence modules
-- Scenario framework and 50 police scenarios
-- GCS server and dashboard integration
-- Isaac Sim bridge and scene generation
+- Alpha-only police config in [config/police_deployment.yaml](/Users/archishmanpaul/Desktop/Sanjay_MK2/config/police_deployment.yaml)
+- mission-policy data types in [drone_types.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/core/types/drone_types.py)
+- deterministic mission policy in [mission_policy.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/response/mission_policy.py)
+- zoom EO sensor simulation in [zoom_camera.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/single_drone/sensors/zoom_camera.py)
+- Alpha-only inspection logic in [scenario_executor.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/simulation/scenario_executor.py)
+- inspector-aware threat handling in [threat_manager.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/surveillance/threat_manager.py)
+- GCS telemetry reflecting mission/inspection/backfill state in [gcs_server.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/gcs/gcs_server.py)
 
-### Designed but not yet fully implemented
+### Not implemented yet
 
-- TIDE learned multimodal threat identification
-- Mission-policy and response orchestration layer
-- Durable telemetry/threat data pipeline beyond the in-process GCS path
-- Full hardware-backed calibration and field validation
+- learned multimodal threat identification on real data
+- production-grade facade/window semantic analysis
+- real-sensor synchronization and calibration
+- hardware-in-the-loop validation
+- complete removal of legacy Beta compatibility from the Isaac-facing path
 
-## 5. Simulation Vs Hardware Boundary
+## Simulation vs Hardware Boundary
 
-### What simulation can validate well
+### Simulation can validate
 
-- swarm tasking and patrol behavior
-- detection pipeline contracts
-- degraded-sensor handling logic
-- GCS event flows
-- police scenario coverage and response timing
+- sector ownership and backfill
+- swarm patrol coordination
+- obstacle avoidance logic
+- mission-policy gating
+- facade scan path generation
+- crowd-overwatch retasking
+- GCS event flow
 
-### What requires real hardware
+### Hardware is still required for
 
-- LiDAR performance in real urban conditions
-- thermal fidelity and false-positive behavior
-- RGB imaging quality at operational altitude
-- payload power/weight effects
-- actual radio, GNSS, flight stability, and endurance behavior
+- real LiDAR fidelity
+- real thermal behavior
+- real RGB evidence quality
+- endurance and payload validation
+- wind, RF, GNSS, and flight safety proof
 
-## 6. Architectural Principle
+## Architectural Principle
 
-The current repo should be read as:
+The cleanest way to read the repo today is:
 
-- a credible police-simulation and autonomy platform today
-- a partial field-system foundation
-- not yet the final deployable autonomous drone product
-
-That distinction matters. The architecture is now aligned to the intended fleet and sensor contract, but the road from simulation to field deployment still runs through perception upgrades, response-policy implementation, and real hardware validation.
+- `authoritative mission architecture`: Alpha-only police swarm
+- `strongest implementation surface`: scenario framework
+- `highest-fidelity integration surface`: Isaac Sim bridge
+- `largest remaining gap`: learned perception plus real hardware proof

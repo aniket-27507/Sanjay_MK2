@@ -1,6 +1,6 @@
 # S32 — Armed Person + Crowd Panic + Vehicle
 # Category: multi
-# Tests: Triple simultaneous threat handling, priority-based Beta dispatch
+# Tests: Triple simultaneous threat handling, priority-based Alpha inspection dispatch
 
 scenario:
   id: S32
@@ -9,7 +9,7 @@ scenario:
   duration_sec: 300
   description: >
     Armed person at t=20s, vehicle at t=30s, crowd density rises from
-    2.0 to 6.0. Tests triple-threat prioritization, Beta dispatch to
+    2.0 to 6.0. Tests triple-threat prioritization, Alpha inspection dispatch to
     highest-priority target, and crowd monitoring during active threats.
   split: train
 
@@ -45,7 +45,7 @@ faults: []
 
 fleet:
   num_alpha: 6
-  num_beta: 1
+  num_beta: 0
   formation_center: [500, 500]
   patrol_pattern: crowd_overhead
 

@@ -133,7 +133,7 @@ class TestScenarioExecutor:
     def test_drone_count(self):
         s = ScenarioLoader.load(SCENARIOS_DIR / "S10_baseline_patrol.yaml")
         ex = ScenarioExecutor(s, gcs_port=19996)
-        assert len(ex.drones) == 7  # 6 alpha + 1 beta
+        assert len(ex.drones) == 6  # 6 Alpha-only police swarm
 
     def test_fault_deactivates_drone(self):
         s = ScenarioLoader.load(SCENARIOS_DIR / "S09_drone_gps_loss.yaml")

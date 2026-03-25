@@ -9,8 +9,8 @@ scenario:
   duration_sec: 300
   description: >
     Industrial equipment with high thermal signature (0.75) spawns at t=20s.
-    Alpha detects as thermal_contact. Beta dispatched for confirmation.
-    Beta close-up reveals it's equipment → threat CLEARED.
+    Alpha detects as thermal_contact. Alpha inspection dispatched for confirmation.
+    Alpha zoom confirmation reveals it's equipment → threat CLEARED.
   split: test
 
 world:
@@ -31,7 +31,7 @@ faults: []
 
 fleet:
   num_alpha: 6
-  num_beta: 1
+  num_beta: 0
   formation_center: [500, 500]
   patrol_pattern: hexagonal
 

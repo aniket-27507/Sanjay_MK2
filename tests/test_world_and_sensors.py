@@ -100,6 +100,7 @@ class TestSensorQueries:
 import pytest
 from src.single_drone.sensors.rgb_camera import SimulatedRGBCamera
 from src.single_drone.sensors.thermal_camera import SimulatedThermalCamera
+from src.single_drone.sensors.zoom_camera import SimulatedZoomEOCamera
 from src.surveillance.world_model import WorldModel
 from src.core.types.drone_types import Vector3, DroneType, SensorType
 
@@ -123,7 +124,7 @@ class TestRGBCamera:
         # (probabilistic, but footprint at 25m with 84 deg FOV is ~47m radius)
         assert len(obs.coverage_cells) > 0
 
-    def test_beta_higher_confidence(self, world_with_objects):
+    def test_legacy_beta_profile_still_higher_confidence(self, world_with_objects):
         alpha_cam = SimulatedRGBCamera(drone_type=DroneType.ALPHA)
         beta_cam = SimulatedRGBCamera(drone_type=DroneType.BETA)
         assert beta_cam.base_confidence > alpha_cam.base_confidence
@@ -152,3 +153,20 @@ class TestThermalCamera:
         # Higher threshold should detect fewer or equal objects
         assert len(obs_high.detected_objects) <= len(obs_low.detected_objects)
 
+
+class TestZoomEOCamera:
+    def test_capture_uses_zoom_sensor_type(self, world_with_objects):
+        cam = SimulatedZoomEOCamera()
+        obs = cam.capture(
+            drone_position=Vector3(0, 0, -20),
+            altitude=20.0,
+            world_model=world_with_objects,
+            drone_id=1,
+        )
+        assert obs.sensor_type == SensorType.ZOOM_EO_CAMERA
+        assert obs.drone_id == 1
+
+    def test_zoom_has_smaller_footprint_than_wide_rgb(self):
+        zoom = SimulatedZoomEOCamera()
+        wide = SimulatedRGBCamera(drone_type=DroneType.ALPHA)
+        assert zoom.get_footprint_radius(35.0) < wide.get_footprint_radius(35.0)

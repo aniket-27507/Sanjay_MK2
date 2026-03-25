@@ -38,7 +38,7 @@ faults:
 
 fleet:
   num_alpha: 6
-  num_beta: 1
+  num_beta: 0
   formation_center: [500, 500]
   patrol_pattern: hexagonal
 

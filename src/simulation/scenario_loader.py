@@ -74,7 +74,7 @@ class FaultEvent:
 class FleetConfig:
     """Fleet composition and patrol pattern."""
     num_alpha: int = 6
-    num_beta: int = 1
+    num_beta: int = 0
     formation_center: tuple[float, float] = (500.0, 500.0)
     patrol_pattern: str = "hexagonal"
 
@@ -276,7 +276,7 @@ class ScenarioLoader:
         fleet_raw = raw.get("fleet", {})
         fleet = FleetConfig(
             num_alpha=int(fleet_raw.get("num_alpha", 6)),
-            num_beta=int(fleet_raw.get("num_beta", 1)),
+            num_beta=int(fleet_raw.get("num_beta", 0)),
             formation_center=tuple(fleet_raw.get("formation_center", [500, 500])),
             patrol_pattern=fleet_raw.get("patrol_pattern", "hexagonal"),
         )

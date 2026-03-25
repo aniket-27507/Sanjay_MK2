@@ -27,11 +27,11 @@ class TestSwarmConfig:
     """Tests for SwarmConfig."""
     
     def test_default_values(self):
-        """Test default swarm configuration (spec §10.2: 6 Alpha + 1 Beta)."""
+        """Test default swarm configuration for the Alpha-only police regiment."""
         config = SwarmConfig()
         assert config.num_alpha_drones == 6
-        assert config.num_beta_drones == 1
-        assert config.total_drones == 7
+        assert config.num_beta_drones == 0
+        assert config.total_drones == 6
         assert config.gossip_interval == 0.1  # 10 Hz (spec §4.4)
         assert config.threat_score_threshold == 0.65  # spec §5.3
         assert config.gossip_neighbour_count == 2
@@ -80,14 +80,15 @@ class TestConfigManager:
         assert drone_cfg.drone_type == DroneType.ALPHA
         assert drone_cfg.nominal_altitude == 65.0
     
-    def test_drone_config_beta(self):
-        """Test Beta drone configuration (Beta IDs start at 100)."""
+    def test_alpha_only_default_drone_manifest(self):
+        """Alpha-only defaults should initialize six Alpha configs and no Betas."""
         config = get_config()
-        drone_cfg = config.get_drone_config(100)  # Beta drone (ID 100+)
-
-        assert drone_cfg.drone_id == 100
-        assert drone_cfg.drone_type == DroneType.BETA
-        assert drone_cfg.nominal_altitude == 25.0
+        drone_ids = sorted(config._drone_configs.keys())
+        assert drone_ids == [0, 1, 2, 3, 4, 5]
+        assert all(
+            cfg.drone_type == DroneType.ALPHA
+            for cfg in config._drone_configs.values()
+        )
     
     def test_connection_string(self):
         """Test connection string generation."""
@@ -152,3 +153,9 @@ class TestConfigManager:
         assert drone_cfg.drone_id == 999
         assert drone_cfg.drone_type == DroneType.ALPHA  # Default
 
+    def test_loads_autonomy_section(self):
+        config = get_config()
+        assert config.load_from_file("police_deployment.yaml") is True
+        assert config.autonomy.critical_threat_threshold == 0.75
+        assert config.autonomy.allow_crowd_descent is False
+        assert config.autonomy.max_active_inspectors == 1

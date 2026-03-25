@@ -31,7 +31,7 @@ faults: []
 
 fleet:
   num_alpha: 6
-  num_beta: 1
+  num_beta: 0
   formation_center: [500, 500]
   patrol_pattern: hexagonal
 
@@ -39,7 +39,7 @@ expected_events:
   - type: threat_detected
     object_type: vehicle
     max_latency_sec: 45
-  - type: beta_dispatched
+  - type: alpha_inspection_dispatched
     max_latency_sec: 75
 
 metrics:

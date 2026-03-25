@@ -44,7 +44,7 @@ class MissionProfile:
 
     # Altitudes
     alpha_altitude: float = 65.0
-    beta_standby_altitude: float = 25.0
+    inspection_altitude: float = 35.0
 
     # Patrol
     patrol_speed: float = 3.0
@@ -68,7 +68,7 @@ class MissionProfile:
             "formation": self.formation,
             "formation_spacing": self.formation_spacing,
             "alpha_altitude": self.alpha_altitude,
-            "beta_standby_altitude": self.beta_standby_altitude,
+            "inspection_altitude": self.inspection_altitude,
             "patrol_speed": self.patrol_speed,
             "threat_score_threshold": self.threat_score_threshold,
             "crowd_density_alert_threshold": self.crowd_density_alert_threshold,
@@ -126,7 +126,7 @@ MISSION_PROFILES: Dict[MissionType, MissionProfile] = {
     MissionType.EMERGENCY_RESPONSE: MissionProfile(
         mission_type=MissionType.EMERGENCY_RESPONSE,
         name="Emergency Response",
-        description="Ring formation around incident area. Auto-evidence recording, Beta immediate dispatch.",
+        description="Ring formation around incident area with Alpha self-confirmation and auto-evidence recording.",
         formation="RING",
         formation_spacing=50.0,
         patrol_speed=5.0,

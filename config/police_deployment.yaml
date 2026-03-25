@@ -12,8 +12,8 @@ deployment:
 
 swarm:
   num_alpha_drones: 6
-  num_beta_drones: 1
-  total_drones: 7
+  num_beta_drones: 0
+  total_drones: 6
   formation_spacing: 60.0   # tighter for urban operations
   default_formation: "hexagonal"
   gossip_interval: 0.1
@@ -44,6 +44,18 @@ mission:
   auto_record_on_alert: true
   evidence_retention_hours: 72
   gcs_port: 8765
+
+autonomy:
+  critical_threat_threshold: 0.75
+  multi_sensor_min_count: 2
+  max_active_inspectors: 1
+  min_sector_coverage_pct: 75.0
+  allow_crowd_descent: false
+  facade_scan_standoff: 30.0
+  patrol_altitude: 65.0
+  inspection_altitude: 35.0
+  max_confirmation_distance: 12.0
+  disconnected_allows_new_descent: false
 
 network:
   mavsdk_server_port: 50051

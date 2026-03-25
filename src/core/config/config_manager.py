@@ -36,12 +36,12 @@ class SwarmConfig:
     """
     Swarm-wide configuration settings.
 
-    Spec reference: §10.2 Drone Manifest — 6 Alpha + 1 Beta per regiment.
+    Spec reference: v1 police deployment — homogeneous 6-Alpha regiment.
     """
-    # Swarm composition (spec §10.2)
+    # Swarm composition
     num_alpha_drones: int = 6
-    num_beta_drones: int = 1
-    total_drones: int = 7
+    num_beta_drones: int = 0
+    total_drones: int = 6
 
     # Communication (spec §4.4 — gossip at 10 Hz to 2 nearest neighbours)
     mesh_port_base: int = 14550
@@ -144,6 +144,21 @@ class MissionConfig:
     gcs_port: int = 8765
 
 
+@dataclass
+class AutonomyConfig:
+    """Policy thresholds and behavior gates for Alpha-only autonomy."""
+    critical_threat_threshold: float = 0.75
+    multi_sensor_min_count: int = 2
+    max_active_inspectors: int = 1
+    min_sector_coverage_pct: float = 75.0
+    allow_crowd_descent: bool = False
+    facade_scan_standoff: float = 30.0
+    patrol_altitude: float = 65.0
+    inspection_altitude: float = 35.0
+    max_confirmation_distance: float = 12.0
+    disconnected_allows_new_descent: bool = False
+
+
 class ConfigManager:
     """
     Centralized configuration management.
@@ -180,6 +195,7 @@ class ConfigManager:
         self.crowd = CrowdConfig()
         self.urban = UrbanConfig()
         self.mission = MissionConfig()
+        self.autonomy = AutonomyConfig()
         
         # Per-drone configurations
         self._drone_configs: Dict[int, DroneConfig] = {}
@@ -192,9 +208,8 @@ class ConfigManager:
     def _initialize_default_drone_configs(self):
         """Create default configurations for all drones.
 
-        Regiment layout (spec §10.2):
+        Regiment layout:
             Alpha IDs: 0 .. num_alpha-1  (6 drones, 65m AGL)
-            Beta  IDs: 100 .. 100+num_beta-1  (1 drone, 25m AGL)
         """
         # Alpha drones (IDs 0-5)
         for i in range(self.swarm.num_alpha_drones):
@@ -204,17 +219,6 @@ class ConfigManager:
                 nominal_altitude=65.0,
                 max_altitude=70.0,
                 max_horizontal_speed=8.0,
-            )
-
-        # Beta drones (IDs 100+)
-        for i in range(self.swarm.num_beta_drones):
-            beta_id = 100 + i
-            self._drone_configs[beta_id] = DroneConfig(
-                drone_id=beta_id,
-                drone_type=DroneType.BETA,
-                nominal_altitude=25.0,
-                max_altitude=30.0,
-                max_horizontal_speed=12.0,
             )
     
     def get_drone_config(self, drone_id: int) -> DroneConfig:
@@ -288,6 +292,9 @@ class ConfigManager:
         if 'mission' in data:
             self._update_dataclass(self.mission, data['mission'])
 
+        if 'autonomy' in data:
+            self._update_dataclass(self.autonomy, data['autonomy'])
+
         if 'drones' in data:
             for drone_data in data['drones']:
                 drone_id = drone_data.get('drone_id', 0)
@@ -333,6 +340,8 @@ class ConfigManager:
                 setattr(self.simulation, param, converted_value)
             elif section == 'network' and hasattr(self.network, param):
                 setattr(self.network, param, converted_value)
+            elif section == 'autonomy' and hasattr(self.autonomy, param):
+                setattr(self.autonomy, param, converted_value)
     
     def _convert_env_value(self, value: str) -> Any:
         """Convert environment variable string to appropriate type."""
@@ -369,6 +378,10 @@ class ConfigManager:
             'swarm': self._dataclass_to_dict(self.swarm),
             'simulation': self._dataclass_to_dict(self.simulation),
             'network': self._dataclass_to_dict(self.network),
+            'crowd': self._dataclass_to_dict(self.crowd),
+            'urban': self._dataclass_to_dict(self.urban),
+            'mission': self._dataclass_to_dict(self.mission),
+            'autonomy': self._dataclass_to_dict(self.autonomy),
             'drones': [
                 self._dataclass_to_dict(cfg) 
                 for cfg in self._drone_configs.values()
@@ -438,4 +451,3 @@ def reset_config():
     """Reset the singleton instance (for testing)."""
     global _config_instance
     _config_instance = None
-

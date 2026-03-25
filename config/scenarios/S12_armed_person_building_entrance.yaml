@@ -9,7 +9,7 @@ scenario:
   duration_sec: 300
   description: >
     Armed person appears near a building entrance at (215,215) at t=25s.
-    Tests detection with partial building occlusion. Beta should be
+    Tests detection with partial building occlusion. Alpha inspector should be
     dispatched for close-range confirmation.
   split: train
 
@@ -35,7 +35,7 @@ faults: []
 
 fleet:
   num_alpha: 6
-  num_beta: 1
+  num_beta: 0
   formation_center: [500, 500]
   patrol_pattern: hexagonal
 
@@ -43,7 +43,7 @@ expected_events:
   - type: threat_detected
     object_type: weapon_person
     max_latency_sec: 60
-  - type: beta_dispatched
+  - type: alpha_inspection_dispatched
     max_latency_sec: 90
 
 metrics:

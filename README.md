@@ -1,141 +1,124 @@
 # Project Sanjay MK2
 
-Project Sanjay MK2 is a police-focused autonomous drone swarm program centered on urban surveillance, crowd-risk detection, and operator-supervised threat confirmation.
+Project Sanjay MK2 is a police-focused autonomous drone swarm program for urban overwatch, threat detection, crowd-risk monitoring, and operator-supervised response.
 
-This repository now treats the following as the authoritative baseline:
+This repo now treats the following as the authoritative product target:
 
 - Deployment target: `State Police`
-- Fleet: `6 Alpha + 1 Beta`
-- Alpha payload: `RGB + thermal + 3D LiDAR`
-- Beta payload: `1080p RGB visual confirmation camera`
-- High-fidelity simulation path: `Windows + WSL2 + NVIDIA Isaac Sim`
+- Fleet: `6` homogeneous `Alpha` drones
+- Alpha payload: `wide RGB + zoom EO + thermal + 3D LiDAR + IMU/odometry`
+- Core autonomy model: decentralized patrol with deterministic mission-policy gating for close inspection
+- Close confirmation: performed by an Alpha drone from the same swarm, not by a separate Beta tier
 
-## What The Repo Is Today
+## Current State
 
-The codebase already implements the core simulation and autonomy backbone:
+The codebase is strongest today in simulation and autonomy scaffolding:
 
-- Decentralized Alpha swarm coordination with `CBBA` task allocation and `Boids` flocking
-- Local obstacle avoidance with `APF + HPL`
-- RGB + thermal surveillance fusion with baseline-map change detection
-- Threat lifecycle management and Beta dispatch for confirmation
-- Crowd-density, crowd-flow, and stampede-risk analysis for police event monitoring
-- Isaac Sim scene generation and ROS 2 bridge wiring for the deployed sensor contract
-- Scenario-driven simulation with 50 police-oriented YAML scenarios
-- WebSocket GCS services for telemetry, threats, zones, evidence, crowd signals, and audit events
+- decentralized `CBBA + Boids` swarm coordination
+- local obstacle avoidance with `APF + HPL`
+- RGB + thermal surveillance fusion and baseline-map change detection
+- threat lifecycle management with inspector assignment
+- crowd density, crowd flow, and stampede-risk analysis
+- scenario-driven simulation with 50 police-oriented scenarios
+- WebSocket GCS telemetry, threat, crowd, zone, and audit outputs
+- Isaac Sim bridge and scene tooling for the ROS 2 integration path
 
-## End Goal
+The repo is not yet a full field-ready police drone system. Learned perception, real-sensor validation, and hardware flight proof are still incomplete.
 
-The end goal is a fieldable police overwatch system that can:
+## Implemented Architecture
 
-- Maintain persistent wide-area surveillance with six Alpha drones
-- Detect people, vehicles, fire, crowd hazards, and other anomalous events
-- Dispatch a Beta drone for close-range operator-readable confirmation
-- Surface a clear operational picture to a police GCS with auditability
-- Progress from simulation to hardware-in-the-loop and then to real multi-drone field trials
+The active police/autonomy path is:
 
-That end state is not fully complete yet. The repo is strongest today in simulation, coordination, and rule-based surveillance. It is not yet a fully validated field system.
+1. six Alpha drones spread across a regular-hex patrol geometry
+2. each Alpha owns a sector and patrols at the high surveillance layer
+3. wide RGB + thermal observations feed the surveillance stack
+4. threats are scored and converted into deterministic policy decisions
+5. one Alpha may descend for close confirmation only when:
+   - multi-sensor evidence exists
+   - threat score exceeds the configured critical threshold
+   - corridor safety is acceptable
+   - sector coverage repair is accepted
+6. crowd/stampede workflows stay high-altitude by default and retask the swarm without descent
 
-## What Is Implemented Vs Planned
+The new mission-policy and inspection slice is implemented in:
 
-### Implemented now
+- [src/response/mission_policy.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/response/mission_policy.py)
+- [src/simulation/scenario_executor.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/simulation/scenario_executor.py)
+- [src/single_drone/sensors/zoom_camera.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/single_drone/sensors/zoom_camera.py)
 
-- Police deployment configuration in [config/police_deployment.yaml](/Users/archishmanpaul/Desktop/Sanjay_MK2/config/police_deployment.yaml)
-- Deployed Isaac sensor contract in [config/isaac_sim.yaml](/Users/archishmanpaul/Desktop/Sanjay_MK2/config/isaac_sim.yaml)
-- Isaac ROS 2 bridge in [src/integration/isaac_sim_bridge.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/integration/isaac_sim_bridge.py)
-- Police scene construction in [scripts/isaac_sim/create_surveillance_scene.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/scripts/isaac_sim/create_surveillance_scene.py)
-- Scenario execution in [src/simulation/scenario_executor.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/simulation/scenario_executor.py)
-- Surveillance pipeline in [src/surveillance](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/surveillance)
-- Swarm autonomy in [src/swarm](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/swarm)
-- GCS services in [src/gcs](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/gcs)
+## What Is Authoritative
 
-### Planned / not yet productionized
+These files define the current architecture and state:
 
-- TIDE learned multimodal threat identification as described in [docs/superpowers/specs/2026-03-23-tide-threat-identification-edge-ai-design.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/superpowers/specs/2026-03-23-tide-threat-identification-edge-ai-design.md)
-- Response orchestration and mission-policy layer as described in [docs/superpowers/specs/2026-03-23-swarm-response-orchestration-mission-policy-design.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/superpowers/specs/2026-03-23-swarm-response-orchestration-mission-policy-design.md)
-- Durable data pipeline upgrades described in [docs/superpowers/specs/2026-03-25-gcs-data-pipeline-mqtt-kafka-design.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/superpowers/specs/2026-03-25-gcs-data-pipeline-mqtt-kafka-design.md)
-- Real hardware calibration, flight testing, and field validation for LiDAR, thermal, RGB, and comms
+- [README.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/README.md)
+- [STATE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/STATE.md)
+- [docs/ARCHITECTURE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/ARCHITECTURE.md)
+- [docs/API_REFERENCE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/API_REFERENCE.md)
+- [docs/ISAAC_SIM_SETUP.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/ISAAC_SIM_SETUP.md)
+- [docs/SIMULATION_RUN_GUIDE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/SIMULATION_RUN_GUIDE.md)
+
+Planning docs under [docs/superpowers](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/superpowers) remain useful, but they are not the runtime source of truth.
+
+## Important Boundary
+
+The repo now has two distinct meanings that should not be conflated:
+
+- `authoritative deployment architecture`: Alpha-only police swarm
+- `legacy compatibility surfaces`: Beta-era bridge/scene/spec references that still exist in parts of the Isaac path and older planning material
+
+When those conflict, the Alpha-only police architecture is the intended direction.
 
 ## Repository Layout
 
 | Path | Purpose |
 |------|---------|
-| [src/core](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/core) | Shared types, config, and utility primitives |
-| [src/single_drone](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/single_drone) | Flight control, deployed sensors, obstacle avoidance |
-| [src/swarm](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/swarm) | Boids, CBBA, formation logic, regiment coordination |
-| [src/surveillance](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/surveillance) | World model, fusion, baseline map, change detection, threat management, crowd intelligence |
-| [src/gcs](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/gcs) | Police GCS server, evidence recorder, zone management |
-| [src/simulation](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/simulation) | Scenario loading and execution |
-| [src/integration](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/integration) | Isaac Sim ROS 2 bridge and coordinators |
-| [config/scenarios](/Users/archishmanpaul/Desktop/Sanjay_MK2/config/scenarios) | Police-oriented simulation scenarios |
-| [scripts/isaac_sim](/Users/archishmanpaul/Desktop/Sanjay_MK2/scripts/isaac_sim) | Isaac scene creation, bridge launch, mission runner |
-| [gcs-dashboard](/Users/archishmanpaul/Desktop/Sanjay_MK2/gcs-dashboard) | React/Vite police dashboard |
-
-## Canonical Docs
-
-| Document | Purpose |
-|----------|---------|
-| [README.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/README.md) | Entry point and canonical product summary |
-| [STATE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/STATE.md) | Current status, gaps, and simulation-vs-hardware boundary |
-| [docs/ARCHITECTURE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/ARCHITECTURE.md) | Current system architecture and runtime boundaries |
-| [docs/ISAAC_SIM_SETUP.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/ISAAC_SIM_SETUP.md) | Isaac environment setup |
-| [docs/SIMULATION_RUN_GUIDE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/SIMULATION_RUN_GUIDE.md) | End-to-end sim bring-up guide |
-| [CHANGELOG.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/CHANGELOG.md) | Historical change record |
+| [src/core](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/core) | Shared types, config, mission profiles, utilities |
+| [src/single_drone](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/single_drone) | Sensors, flight control, obstacle avoidance |
+| [src/swarm](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/swarm) | Coordination, formations, CBBA, Boids |
+| [src/surveillance](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/surveillance) | World model, fusion, change detection, threats, crowd intelligence |
+| [src/response](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/response) | Deterministic mission-policy layer |
+| [src/simulation](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/simulation) | Scenario loader/executor and simulation tooling |
+| [src/integration](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/integration) | Isaac Sim bridge and integration adapters |
+| [src/gcs](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/gcs) | GCS server, zones, evidence, audit |
+| [config](/Users/archishmanpaul/Desktop/Sanjay_MK2/config) | Police deployment config, Isaac config, scenarios |
+| [scripts/isaac_sim](/Users/archishmanpaul/Desktop/Sanjay_MK2/scripts/isaac_sim) | Isaac scene creation and mission tooling |
 
 ## Quick Start
 
-### Headless validation
-
-Use the fast simulation path when you want to validate autonomy or surveillance logic without Isaac Sim:
-
-```bash
-python3 scripts/isaac_sim/run_mission.py --headless --timeout 60
-```
-
-### Police scenario execution
-
-Use the scenario framework when you want repeatable police-event simulation:
+For the fastest end-to-end police autonomy validation path:
 
 ```bash
 python3 scripts/run_scenario.py --scenario S10
 ```
 
-### Full Isaac path
+For the full scenario/autonomy slice used by current tests:
 
-For the deployed sensor contract and ROS 2 integration:
+```bash
+python3 -m pytest tests/test_scenario_framework.py -q
+python3 -m pytest tests/test_mission_policy.py -q
+```
 
-1. Follow [docs/ISAAC_SIM_SETUP.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/ISAAC_SIM_SETUP.md).
-2. Bring up the end-to-end stack with [docs/SIMULATION_RUN_GUIDE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/SIMULATION_RUN_GUIDE.md).
+For Isaac setup and the higher-fidelity integration path, use:
 
-## Simulation Boundary
+- [docs/ISAAC_SIM_SETUP.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/ISAAC_SIM_SETUP.md)
+- [docs/SIMULATION_RUN_GUIDE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/SIMULATION_RUN_GUIDE.md)
 
-Simulation can validate:
+## What Simulation Can Prove
 
-- Fleet coordination and patrol behavior
-- Task allocation and swarm recovery behavior
-- RGB + thermal surveillance pipeline behavior
-- Crowd intelligence and zone workflows
-- Isaac topic wiring and GCS integration
+Simulation can already validate:
 
-Simulation cannot replace:
+- sector assignment and patrol geometry
+- swarm coordination and backfill behavior
+- obstacle avoidance and mission-path retasking
+- threat scoring and inspection gating
+- crowd/stampede workflows
+- GCS event and telemetry outputs
 
-- Real LiDAR performance under rain, dust, reflective surfaces, and vibration
-- Real thermal behavior under ambient drift and urban heat clutter
-- Real RGB quality under blur, haze, exposure shifts, and altitude
-- Flight endurance, payload integration, wind response, RF degradation, and airworthiness
+Simulation cannot prove:
 
-## Current Validation Snapshot
+- real LiDAR performance
+- real thermal performance
+- real RGB image quality at deployment altitude
+- wind, endurance, vibration, RF, GNSS, or airworthiness behavior
 
-Recent focused validation for the active architecture includes:
-
-- `python3 -m py_compile` on the updated core, bridge, scene, and test modules
-- `python3 -m pytest tests/test_drone_types.py tests/test_world_and_sensors.py tests/test_isaac_sim_bridge.py -q`
-- A residue sweep confirming the active code/docs set no longer references removed depth-sensor architecture
-
-## Current Priorities
-
-The next major work before hardware prototyping is:
-
-1. Finish authoritative documentation and keep it small and current.
-2. Strengthen scenario-driven simulation around police missions and degraded sensing.
-3. Implement learned multimodal perception and response orchestration.
-4. Move to hardware-in-the-loop, then controlled field testing with real drones and sensors.
+That line matters. The current repo is a serious autonomy/simulation platform, not yet a field-validated deployed system.

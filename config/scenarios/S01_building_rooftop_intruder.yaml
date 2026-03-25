@@ -1,6 +1,6 @@
 # S01 — Building Rooftop Intruder
 # Category: high_rise
-# Tests: Person detection on building rooftop, Beta dispatch for confirmation
+# Tests: Person detection on building rooftop, Alpha inspection dispatch for confirmation
 
 scenario:
   id: S01
@@ -10,7 +10,7 @@ scenario:
   description: >
     Single person appears on a 50m building rooftop at t=30s.
     Alpha drones should detect via RGB+thermal within ~60s.
-    ThreatManager should escalate to HIGH and dispatch Beta for confirmation.
+    ThreatManager should escalate to HIGH and dispatch an Alpha inspector for confirmation.
   split: train
 
 world:
@@ -35,7 +35,7 @@ faults: []
 
 fleet:
   num_alpha: 6
-  num_beta: 1
+  num_beta: 0
   formation_center: [500, 500]
   patrol_pattern: hexagonal
 
@@ -43,7 +43,7 @@ expected_events:
   - type: threat_detected
     object_type: person
     max_latency_sec: 60
-  - type: beta_dispatched
+  - type: alpha_inspection_dispatched
     max_latency_sec: 90
 
 metrics:

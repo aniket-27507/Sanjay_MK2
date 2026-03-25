@@ -1,14 +1,14 @@
-# S27 — Beta Comms Loss During Confirmation
+# S27 — Alpha inspector Comms Loss During Confirmation
 # Category: degraded
-# Tests: Comms failure on Beta during threat confirmation, fallback handling
+# Tests: Comms failure on Alpha inspector during threat confirmation, fallback handling
 
 scenario:
   id: S27
-  name: Beta Comms Loss During Confirmation
+  name: Alpha inspector Comms Loss During Confirmation
   category: degraded
   duration_sec: 300
   description: >
-    Person threat spawns at t=20s. Beta (drone 6) loses comms at t=50s
+    Person threat spawns at t=20s. Alpha drone 5 loses comms at t=50s
     during confirmation flight. Tests comms-loss fallback and whether
     system can still confirm threat via Alpha consensus.
   split: train
@@ -35,7 +35,7 @@ faults:
 
 fleet:
   num_alpha: 6
-  num_beta: 1
+  num_beta: 0
   formation_center: [500, 500]
   patrol_pattern: hexagonal
 

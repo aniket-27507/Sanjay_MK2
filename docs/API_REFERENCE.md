@@ -1,99 +1,265 @@
-# API Reference — Project Sanjay MK2
-> **Author**: Prathamesh Hiwarkar
+# API Reference
 
-Below is a reference of the primary packages, modules, and public APIs available within the Project Sanjay MK2 codebase.
+This is a high-level reference for the main runtime modules in the current Alpha-only police swarm architecture.
 
----
+## `src.core.types.drone_types`
 
-## 1. `src.core.types.drone_types`
-Core data structures used throughout the simulation and autonomy pipelines.
-- `Vector3(x, y, z)`: Used for positions and velocities (NED coordinates). Methods: `distance_to`, `cross`, `dot`, `to_array`, `normalized`.
-- `Quaternion(w, x, y, z)`: Orientation data. Methods: `to_euler`, `from_euler`.
-- `FlightMode`: Enum for state machine (`IDLE`, `ARMING`, `TAKING_OFF`, `HOVERING`, `NAVIGATING`, `LANDING`, `EMERGENCY`).
-- `DroneType`: Enum (`ALPHA`, `BETA`).
-- `DroneConfig`: Configuration schema containing flight rules, tolerances, and timeouts.
-- `TelemetryData`: Record of current location, battery, and fix type.
-- `SensorType`, `ThreatLevel`, `ThreatStatus`, `DetectedObject`, `SensorObservation`, `FusedObservation`, `Threat`.
+Shared runtime types used across simulation, surveillance, response, and GCS.
 
----
+Important classes and enums:
 
-## 2. `src.core.config.config_manager`
-Singleton configuration manager.
-- `ConfigManager()`: Handles loading from YAML and overriding via `SANJAY_` prefixed environment variables.
-- `get_config()`: Returns the singleton `ConfigManager` instance.
-- **Classes**: `SwarmConfig`, `SimulationConfig`, `NetworkConfig`.
+- `Vector3`
+- `Quaternion`
+- `FlightMode`
+- `DroneType`
+- `DroneConfig`
+- `DroneState`
+- `TelemetryData`
+- `SensorType`
+- `ThreatLevel`
+- `ThreatStatus`
+- `InspectionRecommendation`
+- `DroneMissionState`
+- `AutonomyDecisionType`
+- `DetectedObject`
+- `SensorObservation`
+- `FusedObservation`
+- `Threat`
+- `ThreatVector`
+- `InspectionPlan`
+- `SectorCoverageState`
+- `CrowdRiskState`
+- `AutonomyDecision`
 
----
+## `src.core.config.config_manager`
 
-## 3. `src.single_drone.flight_control`
-### `flight_controller.py`
-- `FlightController(drone_id, config)`: High-level async flight manager.
-  - `initialize(connection_string)`: Connect to drone.
-  - `arm()`, `disarm()`, `takeoff(altitude)`, `land()`.
-  - `goto_position(position, speed, tolerance)`: Navigate drone to target Vector3.
+Central config loader and singleton access point.
 
-### `mavsdk_interface.py`
-- `MAVSDKInterface()`: Core communications link to PX4.
-  - `connect(connection_string, timeout)`
-  - Subscribes asynchronously to position, velocity, and battery.
+Important classes:
 
----
+- `SwarmConfig`
+- `SimulationConfig`
+- `NetworkConfig`
+- `CrowdConfig`
+- `UrbanConfig`
+- `MissionConfig`
+- `AutonomyConfig`
+- `ConfigManager`
 
-## 4. `src.single_drone.sensors`
-- `SimulatedRGBCamera(drone_type)`: Simulates visual detections incorporating altitude scaling.
-  - `capture(drone_position, altitude, world_model)` -> `SensorObservation`
-- `SimulatedThermalCamera(fov_deg, thermal_threshold, max_detection_range)`: Simulates LWIR anomaly sensing.
-  - `capture(...)` -> `SensorObservation`
-- `SimulatedLiDAR3D(...)`: Produces Alpha-drone 3D geometry observations for mapping and avoidance workflows.
+Important functions:
 
----
+- `get_config()`
+- `reset_config()`
 
-## 5. `src.surveillance`
+Current deployment defaults are loaded from [config/police_deployment.yaml](/Users/archishmanpaul/Desktop/Sanjay_MK2/config/police_deployment.yaml).
+
+## `src.core.config.mission_profiles`
+
+Prebuilt mission-profile definitions.
+
+Important types:
+
+- `MissionType`
+- `MissionProfile`
+
+Important functions:
+
+- `get_profile(mission_type)`
+- `list_profiles()`
+
+## `src.single_drone.sensors`
+
+Simulated sensor models used by the active police simulation path.
+
+### `rgb_camera.py`
+
+- `SimulatedRGBCamera(drone_type=DroneType.ALPHA)`
+- `capture(drone_position, altitude, world_model, drone_id=0) -> SensorObservation`
+
+This is the wide patrol RGB sensor used in the surveillance path.
+
+### `thermal_camera.py`
+
+- `SimulatedThermalCamera(fov_deg=40.0, thermal_threshold=0.3, max_detection_range=120.0)`
+- `capture(...) -> SensorObservation`
+
+### `zoom_camera.py`
+
+- `SimulatedZoomEOCamera(...)`
+- `capture(...) -> SensorObservation`
+
+This is the narrow-FOV confirmation sensor used by descending or facade-scanning Alpha inspectors.
+
+### `lidar_3d.py`
+
+- `Lidar3DConfig`
+- `Lidar3DDriver`
+
+The LiDAR driver is used for obstacle geometry and avoidance integration.
+
+## `src.surveillance`
+
 ### `world_model.py`
-- `WorldModel(width, height, cell_size)`: Represents the simulated physical environment.
-  - `generate_terrain()`: Procedurally generates buildings, roads, etc.
-  - `spawn_object() / remove_object()`: Handles dynamic entities.
-  - `query_fov(...)`: Returns visible objects from a vantage point.
+
+- `WorldModel(width=1000.0, height=1000.0, cell_size=5.0)`
+- `generate_terrain(seed=42)`
+- `spawn_object(object_type, position, is_threat=False, spawn_time=0.0)`
+- `remove_object(object_id)`
+- `query_fov(...)`
+- `query_thermal(...)`
 
 ### `sensor_fusion.py`
-- `SensorFusionPipeline(match_radius)`:
-  - `add_observation(observation)`: Add single-sensor frame from RGB or thermal sensors.
-  - `fuse()` -> `FusedObservation`: Combines RGB + thermal observations, boosting confidence when detections agree.
 
-### `change_detection.py`
-- `ChangeDetector(baseline_map)`:
-  - `detect_changes(fused_observation)`: Returns `ChangeEvent` logic.
+- `SensorFusionPipeline(match_radius=15.0)`
+- `add_observation(observation)`
+- `fuse() -> FusedObservation | None`
+
+Current fusion is RGB + thermal.
 
 ### `baseline_map.py`
-- `BaselineMap(rows, cols)`: Stores historic state.
-  - `build_from_world_model()`: Initial snapshot.
-  - `update_from_observation()`: Incremental updates.
+
+- `BaselineMap(rows, cols, cell_size)`
+- `build_from_world_model(world_model)`
+
+### `change_detection.py`
+
+- `ChangeEvent`
+- `ChangeDetector(baseline, min_confidence=...)`
+- `detect_changes(fused_observation, current_time=None) -> list[ChangeEvent]`
 
 ### `threat_manager.py`
-- `ThreatManager()`:
-  - `report_change(event)` -> `Threat`
-  - `request_confirmation(threat_id, available_betas)`
 
----
+- `ThreatManager(...)`
+- `report_change(event) -> Threat`
+- `report_crowd_risk(zone, indicators, current_time=None) -> Threat | None`
+- `request_inspection(threat_id, available_drones) -> int | None`
+- `confirm_threat(threat_id, is_confirmed, current_time=None, confirming_drone_id=None)`
+- `get_active_threats()`
 
-## 6. `src.swarm.fault_injection`
-- `FaultInjector()`:
-  - `inject_fault(fault_type, drone_id, severity, duration)`: Break a drone mechanism intentionally.
-- `TaskRedistributor(drone_count)`:
-  - `check_failures(time)`: Looks for expired heartbeats.
+Legacy Beta-oriented helpers remain for compatibility, but `request_inspection` is the current police-autonomy API.
 
----
+## `src.response`
 
-## 7. `src.simulation.mujoco_sim`
-- `MuJoCoDroneSim()`: Runs lightweight physics simulation.
-  - `spawn_drone(position)`
-  - `step(dt)`
-  - `apply_thrust(drone_id, thrust_array)`
+### `mission_policy.py`
 
----
+Deterministic mission-policy layer for Alpha-only police autonomy.
 
-## 8. `src.integration.isaac_sim_bridge`
-- Connects ROS 2 DDS topics to backend pipeline.
-- `BridgeConfig.from_yaml(path)`
-- `ImageToObservation.convert()`
-- `OdometryAdapter.to_telemetry()`
+Important classes:
+
+- `MissionPolicyConfig`
+- `MissionPolicyEngine`
+
+Important methods:
+
+- `build_threat_vector(threat, sensor_evidence, mission_profile="crowd_event", crowd_risk=None)`
+- `evaluate_threat(...) -> AutonomyDecision`
+- `select_inspector(threat_position, drone_positions, unavailable=None) -> int | None`
+
+## `src.swarm`
+
+### `coordination/regiment_coordinator.py`
+
+Important types:
+
+- `RegimentFormation`
+- `SectorAssignment`
+- `TriangleSector`
+- `RegimentConfig`
+- `AlphaRegimentCoordinator`
+
+Important methods:
+
+- `initialize()`
+- `register_drone(drone_id, config=None)`
+- `update_member_state(drone_id, state)`
+- `coordination_step()`
+- `get_desired_velocity(drone_id)`
+- `get_desired_goal(drone_id)`
+- `get_my_sector()`
+
+### `coordination/urban_patrol_patterns.py`
+
+Pattern generator for:
+
+- building perimeter paths
+- vertical facade scans
+- crowd overhead patterns
+- exit-corridor monitoring
+
+## `src.simulation`
+
+### `scenario_loader.py`
+
+Important types:
+
+- `ScenarioDefinition`
+- `FleetConfig`
+- `SpawnEvent`
+- `FaultEvent`
+- `CrowdConfig`
+
+Important functions:
+
+- `ScenarioLoader.load(path)`
+- `ScenarioLoader.load_all(directory, category=None, split=None)`
+
+### `scenario_executor.py`
+
+Main simulation orchestrator for the police scenario path.
+
+Important runtime responsibilities:
+
+- world setup
+- Alpha drone spawn and coordination
+- sensor capture and fusion
+- threat generation
+- mission-policy evaluation
+- Alpha inspection dispatch
+- crowd-overwatch retasking
+- GCS push
+
+Important classes:
+
+- `ScenarioExecutor`
+- `ScenarioResult`
+
+## `src.integration`
+
+### `isaac_sim_bridge.py`
+
+ROS 2 / Isaac Sim bridge layer.
+
+Important classes:
+
+- `DroneTopicConfig`
+- `BridgeConfig`
+- `ImageToObservation`
+- `OdometryAdapter`
+
+This path is still partially legacy because it retains Beta compatibility in the current Isaac configuration surface.
+
+## `src.gcs`
+
+### `gcs_server.py`
+
+Important class:
+
+- `GCSServer`
+
+Important push methods:
+
+- `push_state(...)`
+- `push_map_update(...)`
+- `push_telemetry(...)`
+- `emit_threat_event(threat)`
+- `emit_audit(event_type, detail)`
+- `push_crowd_density(...)`
+- `push_stampede_risk(...)`
+- `push_zone_update(...)`
+
+### Other GCS modules
+
+- `zone_manager.py`
+- `evidence_recorder.py`
+
+These support operational zones, recordings, and audit workflows.

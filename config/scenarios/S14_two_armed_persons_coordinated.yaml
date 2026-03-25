@@ -1,6 +1,6 @@
 # S14 — Two Armed Persons Coordinated
 # Category: armed
-# Tests: Multi-threat detection, simultaneous Beta tracking
+# Tests: Multi-threat detection, simultaneous Alpha inspector tracking
 
 scenario:
   id: S14
@@ -10,7 +10,7 @@ scenario:
   description: >
     Two armed persons appear at separate locations at t=30s and t=35s.
     Tests multi-threat detection and prioritization. Both threats must
-    be detected and Beta dispatched to higher-priority target.
+    be detected and Alpha inspection dispatched to higher-priority target.
   split: train
 
 world:
@@ -36,7 +36,7 @@ faults: []
 
 fleet:
   num_alpha: 6
-  num_beta: 1
+  num_beta: 0
   formation_center: [500, 500]
   patrol_pattern: hexagonal
 
@@ -44,7 +44,7 @@ expected_events:
   - type: threat_detected
     object_type: weapon_person
     max_latency_sec: 60
-  - type: beta_dispatched
+  - type: alpha_inspection_dispatched
     max_latency_sec: 90
 
 metrics:

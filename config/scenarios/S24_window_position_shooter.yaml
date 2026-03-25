@@ -9,7 +9,7 @@ scenario:
   duration_sec: 300
   description: >
     Armed person at elevated window position (200,200,35) at t=40s.
-    Tests detection of weapon_person at building mid-height. Beta must
+    Tests detection of weapon_person at building mid-height. Alpha inspector must
     maneuver to window-level altitude for confirmation.
   split: train
 
@@ -35,7 +35,7 @@ faults: []
 
 fleet:
   num_alpha: 6
-  num_beta: 1
+  num_beta: 0
   formation_center: [500, 500]
   patrol_pattern: building_perimeter
 
@@ -43,7 +43,7 @@ expected_events:
   - type: threat_detected
     object_type: weapon_person
     max_latency_sec: 60
-  - type: beta_dispatched
+  - type: alpha_inspection_dispatched
     max_latency_sec: 90
 
 metrics:
