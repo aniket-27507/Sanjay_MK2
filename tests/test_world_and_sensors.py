@@ -1,5 +1,4 @@
-"""Tests for the WorldModel."""
-import pytest
+"""Tests for the WorldModel and deployed simulated sensors."""
 import numpy as np
 from src.surveillance.world_model import WorldModel, TerrainType, WorldObject
 from src.core.types.drone_types import Vector3
@@ -101,7 +100,6 @@ class TestSensorQueries:
 import pytest
 from src.single_drone.sensors.rgb_camera import SimulatedRGBCamera
 from src.single_drone.sensors.thermal_camera import SimulatedThermalCamera
-from src.single_drone.sensors.depth_estimator import SimulatedDepthEstimator
 from src.surveillance.world_model import WorldModel
 from src.core.types.drone_types import Vector3, DroneType, SensorType
 
@@ -154,16 +152,3 @@ class TestThermalCamera:
         # Higher threshold should detect fewer or equal objects
         assert len(obs_high.detected_objects) <= len(obs_low.detected_objects)
 
-
-class TestDepthEstimator:
-    def test_estimate_returns_data(self, world_with_objects):
-        est = SimulatedDepthEstimator()
-        depths, cells = est.estimate(Vector3(0, 0, 0), 65.0, world_with_objects)
-        assert len(depths) > 0
-        assert len(cells) == len(depths)
-
-    def test_accuracy_degrades_with_altitude(self):
-        est = SimulatedDepthEstimator()
-        acc_low = est.get_accuracy_at_altitude(25.0)
-        acc_high = est.get_accuracy_at_altitude(65.0)
-        assert acc_high > acc_low  # Higher altitude = worse accuracy (larger stddev)

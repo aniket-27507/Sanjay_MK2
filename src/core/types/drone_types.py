@@ -440,7 +440,7 @@ class SensorType(Enum):
     """Types of sensors carried by drones."""
     RGB_CAMERA = auto()           # Visual camera (4K Alpha / 1080p Beta)
     THERMAL_CAMERA = auto()       # LWIR thermal imaging
-    DEPTH_ESTIMATOR = auto()      # AI monocular depth estimation
+    LIDAR_3D = auto()             # 3D point-cloud sensing for Alpha drones
 
 
 class ThreatLevel(Enum):

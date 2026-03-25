@@ -79,7 +79,7 @@ Open Isaac Sim → **Window → Script Editor** → load and run:
 scripts/isaac_sim/create_surveillance_scene.py
 ```
 
-This creates buildings, roads, vegetation, Alpha drones (65m), and Beta drones (25m) with RGB + depth cameras. Save the scene to `simulation/worlds/surveillance_arena.usd`.
+This creates buildings, roads, vegetation, six Alpha drones (65m) with RGB + thermal + 3D LiDAR sensors, and one Beta drone (25m) with a 1080p RGB visual-confirmation camera. Save the scene to `simulation/worlds/surveillance_arena.usd`.
 
 ---
 
@@ -113,7 +113,8 @@ ros2 topic echo /alpha_0/rgb/image_raw --once
 | Topic | Type | Source |
 |-------|------|--------|
 | `/{drone}/rgb/image_raw` | `sensor_msgs/Image` | Isaac Sim camera |
-| `/{drone}/depth/image_raw` | `sensor_msgs/Image` | Isaac Sim depth |
+| `/{drone}/thermal/image_raw` | `sensor_msgs/Image` | Isaac Sim thermal camera (Alpha only) |
+| `/{drone}/lidar_3d/points` | `sensor_msgs/PointCloud2` | Isaac Sim RTX LiDAR (Alpha only) |
 | `/{drone}/odom` | `nav_msgs/Odometry` | Isaac Sim physics |
 | `/{drone}/imu` | `sensor_msgs/Imu` | Isaac Sim IMU |
 | `/{drone}/cmd_vel` | `geometry_msgs/Twist` | Bridge → Isaac Sim |

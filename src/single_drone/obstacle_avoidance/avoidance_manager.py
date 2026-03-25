@@ -20,7 +20,7 @@ Orchestrates the three-tier obstacle avoidance hierarchy:
                         ▼
                   FlightController
 
-The AvoidanceManager ties sensor input (3D LiDAR + depth) to the
+The AvoidanceManager ties sensor input (3D LiDAR) to the
 APF core, routes through the HPL safety gate, and escalates to the
 Tactical Planner when local minima are detected.
 

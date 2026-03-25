@@ -24,7 +24,6 @@ from src.integration.isaac_sim_bridge import (
     DroneTopicConfig,
     ImageToObservation,
     OdometryAdapter,
-    DepthToObservation,
     is_ros2_available,
 )
 
@@ -86,9 +85,15 @@ class TestBridgeConfig:
 
         for drone in config.drones:
             assert drone.topic_rgb, f"No RGB topic for {drone.name}"
-            assert drone.topic_depth, f"No depth topic for {drone.name}"
             assert drone.topic_odom, f"No odom topic for {drone.name}"
             assert drone.topic_cmd_vel, f"No cmd_vel topic for {drone.name}"
+            if drone.drone_type == DroneType.ALPHA:
+                assert drone.topic_thermal, f"No thermal topic for {drone.name}"
+                assert drone.topic_lidar_3d, f"No LiDAR topic for {drone.name}"
+                assert drone.topic_lidar_3d.endswith("/lidar_3d/points")
+            else:
+                assert drone.topic_thermal == ""
+                assert drone.topic_lidar_3d == ""
 
     def test_loads_from_minimal_yaml(self):
         """Load config from minimal YAML content."""
@@ -99,7 +104,8 @@ class TestBridgeConfig:
                     "altitude": 50.0,
                     "topics": {
                         "rgb": "/test/rgb",
-                        "depth": "/test/depth",
+                        "thermal": "/test/thermal",
+                        "lidar_3d": "/test/lidar_3d/points",
                         "odom": "/test/odom",
                         "cmd_vel": "/test/cmd_vel",
                     },
@@ -119,6 +125,8 @@ class TestBridgeConfig:
         assert len(config.drones) == 1
         assert config.drones[0].name == "test_drone"
         assert config.drones[0].topic_rgb == "/test/rgb"
+        assert config.drones[0].topic_thermal == "/test/thermal"
+        assert config.drones[0].topic_lidar_3d == "/test/lidar_3d/points"
         assert config.tick_rate_hz == 5.0
         assert config.qos_depth == 5
 
@@ -251,29 +259,6 @@ class TestOdometryAdapter:
             quat_x=0, quat_y=0, quat_z=0, quat_w=1,
         )
         assert telem.in_air is False
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  DepthToObservation
-# ═══════════════════════════════════════════════════════════════════
-
-
-class TestDepthToObservation:
-    """Tests for depth image → SensorObservation."""
-
-    def test_convert_depth(self):
-        adapter = DepthToObservation(drone_id=2)
-        depth = np.random.rand(480, 640).astype(np.float32) * 100.0
-
-        obs = adapter.convert(
-            depth_image=depth,
-            drone_position=Vector3(50, 50, 0),
-            altitude=25.0,
-        )
-
-        assert obs.sensor_type == SensorType.DEPTH_ESTIMATOR
-        assert obs.drone_id == 2
-        assert obs.drone_altitude == 25.0
 
 
 # ═══════════════════════════════════════════════════════════════════

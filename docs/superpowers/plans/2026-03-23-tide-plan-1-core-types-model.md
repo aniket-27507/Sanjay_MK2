@@ -83,7 +83,7 @@ def test_sensor_type_backwards_compatible():
     """Existing sensor types must not change."""
     assert SensorType.RGB_CAMERA is not None
     assert SensorType.THERMAL_CAMERA is not None
-    assert SensorType.DEPTH_ESTIMATOR is not None
+    assert SensorType.LIDAR_3D is not None
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -91,11 +91,13 @@ def test_sensor_type_backwards_compatible():
 Run: `python -m pytest tests/test_tide_types.py::test_lidar_3d_sensor_type_exists -v`
 Expected: FAIL with `AttributeError: LIDAR_3D`
 
-- [ ] **Step 3: Add LIDAR_3D to SensorType**
+- [ ] **Step 3: Ensure LIDAR_3D is part of SensorType**
 
-In `src/core/types/drone_types.py`, add after `DEPTH_ESTIMATOR = auto()`:
+In `src/core/types/drone_types.py`, ensure the active deployment sensors include:
 
 ```python
+    RGB_CAMERA = auto()
+    THERMAL_CAMERA = auto()
     LIDAR_3D = auto()             # 3D LiDAR point cloud
 ```
 

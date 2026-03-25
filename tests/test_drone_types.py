@@ -21,7 +21,8 @@ from src.core.types.drone_types import (
     DroneType,
     DroneConfig,
     DroneState,
-    TelemetryData
+    TelemetryData,
+    SensorType,
 )
 
 
@@ -183,6 +184,15 @@ class TestFlightMode:
         assert len(modes) == 9
 
 
+class TestSensorType:
+    """Tests for deployment sensor types."""
+
+    def test_required_sensor_types_exist(self):
+        assert SensorType.RGB_CAMERA is not None
+        assert SensorType.THERMAL_CAMERA is not None
+        assert SensorType.LIDAR_3D is not None
+
+
 class TestDroneConfig:
     """Tests for DroneConfig class."""
     
@@ -275,4 +285,3 @@ class TestTelemetryData:
         after = time.time()
         
         assert before <= telem.timestamp <= after
-

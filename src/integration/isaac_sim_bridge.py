@@ -76,7 +76,7 @@ class DroneTopicConfig:
     altitude: float
     rgb_fov_deg: float = 84.0
     topic_rgb: str = ""
-    topic_depth: str = ""
+    topic_thermal: str = ""
     topic_odom: str = ""
     topic_imu: str = ""
     topic_lidar_3d: str = ""
@@ -110,14 +110,18 @@ class BridgeConfig:
         drones: List[DroneTopicConfig] = []
         for name, cfg in raw.get("drones", {}).items():
             topics = cfg.get("topics", {})
+            drone_type = DroneType[cfg.get("type", "ALPHA")]
             drones.append(
                 DroneTopicConfig(
                     name=name,
-                    drone_type=DroneType[cfg.get("type", "ALPHA")],
+                    drone_type=drone_type,
                     altitude=float(cfg.get("altitude", 65.0)),
                     rgb_fov_deg=float(cfg.get("rgb_fov_deg", 84.0)),
                     topic_rgb=topics.get("rgb", f"/{name}/rgb/image_raw"),
-                    topic_depth=topics.get("depth", f"/{name}/depth/image_raw"),
+                    topic_thermal=topics.get(
+                        "thermal",
+                        f"/{name}/thermal/image_raw" if drone_type == DroneType.ALPHA else "",
+                    ),
                     topic_odom=topics.get("odom", f"/{name}/odom"),
                     topic_imu=topics.get("imu", f"/{name}/imu"),
                     topic_lidar_3d=topics.get("lidar_3d", ""),
@@ -274,42 +278,6 @@ class OdometryAdapter:
         )
 
 
-class DepthToObservation:
-    """
-    Convert a depth image (HxW float32, meters) into a SensorObservation.
-    """
-
-    def __init__(self, drone_id: int):
-        self.drone_id = drone_id
-
-    def convert(
-        self,
-        depth_image: np.ndarray,
-        drone_position: Vector3,
-        altitude: float,
-    ) -> SensorObservation:
-        """
-        Convert depth frame to observation.
-
-        Args:
-            depth_image: HxW float32 array (depth in meters).
-            drone_position: Drone XY position.
-            altitude: Altitude AGL.
-
-        Returns:
-            SensorObservation for the depth sensor.
-        """
-        return SensorObservation(
-            sensor_type=SensorType.DEPTH_ESTIMATOR,
-            drone_id=self.drone_id,
-            drone_position=drone_position,
-            drone_altitude=altitude,
-            detected_objects=[],
-            coverage_cells=[],
-            timestamp=time.time(),
-        )
-
-
 # ═══════════════════════════════════════════════════════════════════
 #  ROS 2 Bridge Node (requires rclpy)
 # ═══════════════════════════════════════════════════════════════════
@@ -341,7 +309,7 @@ if _ROS2_AVAILABLE:
         ROS 2 node that bridges Isaac Sim sensors into the autonomy pipeline.
 
         For each configured drone, the node:
-        1. Subscribes to RGB, depth, and odometry topics from Isaac Sim
+        1. Subscribes to RGB, thermal, odometry, and optional LiDAR topics from Isaac Sim
         2. Buffers incoming sensor data
         3. At a fixed rate (default 10 Hz), fuses observations via
            SensorFusionPipeline and runs change detection
@@ -407,7 +375,10 @@ if _ROS2_AVAILABLE:
                         drone_id=idx,
                         sensor_type=SensorType.RGB_CAMERA,
                     ),
-                    "depth_adapter": DepthToObservation(drone_id=idx),
+                    "thermal_adapter": ImageToObservation(
+                        drone_id=idx,
+                        sensor_type=SensorType.THERMAL_CAMERA,
+                    ),
                     "odom_adapter": OdometryAdapter(),
                     "lidar_point_count": 0,
                 }
@@ -420,13 +391,14 @@ if _ROS2_AVAILABLE:
                     sensor_qos,
                 )
 
-                # Depth subscriber
-                self.create_subscription(
-                    Image,
-                    drone_cfg.topic_depth,
-                    lambda msg, n=name: self._on_depth(n, msg),
-                    sensor_qos,
-                )
+                # Thermal subscriber (Alpha drones only)
+                if drone_cfg.topic_thermal:
+                    self.create_subscription(
+                        Image,
+                        drone_cfg.topic_thermal,
+                        lambda msg, n=name: self._on_thermal(n, msg),
+                        sensor_qos,
+                    )
 
                 # Odometry subscriber
                 self.create_subscription(
@@ -509,13 +481,13 @@ if _ROS2_AVAILABLE:
                     f"RGB callback error for {drone_name}: {e}"
                 )
 
-        def _on_depth(self, drone_name: str, msg: Image):
-            """Handle incoming depth image from Isaac Sim."""
+        def _on_thermal(self, drone_name: str, msg: Image):
+            """Handle incoming thermal image from Isaac Sim."""
             state = self._drone_state[drone_name]
             try:
-                depth = self._ros_depth_to_numpy(msg)
-                obs = state["depth_adapter"].convert(
-                    depth_image=depth,
+                image = self._ros_image_to_numpy(msg)
+                obs = state["thermal_adapter"].convert(
+                    image=image,
                     drone_position=state["position"],
                     altitude=state["altitude"],
                 )
@@ -523,7 +495,7 @@ if _ROS2_AVAILABLE:
                     self._fusion.add_observation(obs)
             except Exception as e:
                 self.get_logger().warn(
-                    f"Depth callback error for {drone_name}: {e}"
+                    f"Thermal callback error for {drone_name}: {e}"
                 )
 
         def _on_odom(self, drone_name: str, msg: Odometry):
@@ -652,13 +624,6 @@ if _ROS2_AVAILABLE:
             else:
                 image = image.reshape((msg.height, msg.width, channels))
             return image
-
-        @staticmethod
-        def _ros_depth_to_numpy(msg: Image) -> np.ndarray:
-            """Convert depth Image (32FC1) to float32 numpy array."""
-            depth = np.frombuffer(msg.data, dtype=np.float32)
-            return depth.reshape((msg.height, msg.width))
-
 
 # ═══════════════════════════════════════════════════════════════════
 #  CLI Entry Point

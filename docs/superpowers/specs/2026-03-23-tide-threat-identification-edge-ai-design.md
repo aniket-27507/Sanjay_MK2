@@ -89,8 +89,7 @@ The caller (regiment coordinator / sim loop) checks `config.tide.enabled` and dr
 class SensorType(Enum):
     RGB_CAMERA = auto()
     THERMAL_CAMERA = auto()
-    DEPTH_ESTIMATOR = auto()
-    LIDAR_3D = auto()           # NEW
+    LIDAR_3D = auto()           # Alpha drone 3D LiDAR
 ```
 
 ### 3.2 Threat Object Types

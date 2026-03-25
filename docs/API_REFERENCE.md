@@ -44,8 +44,7 @@ Singleton configuration manager.
   - `capture(drone_position, altitude, world_model)` -> `SensorObservation`
 - `SimulatedThermalCamera(fov_deg, thermal_threshold, max_detection_range)`: Simulates LWIR anomaly sensing.
   - `capture(...)` -> `SensorObservation`
-- `SimulatedDepthEstimator(base_accuracy, altitude_noise)`: Estimates digital elevation model.
-  - `estimate(...)` -> `np.ndarray` grid.
+- `SimulatedLiDAR3D(...)`: Produces Alpha-drone 3D geometry observations for mapping and avoidance workflows.
 
 ---
 
@@ -58,8 +57,8 @@ Singleton configuration manager.
 
 ### `sensor_fusion.py`
 - `SensorFusionPipeline(match_radius)`:
-  - `add_observation(observation)`: Add single-sensor frame.
-  - `fuse()` -> `FusedObservation`: Combines added observations, boosting confidence.
+  - `add_observation(observation)`: Add single-sensor frame from RGB or thermal sensors.
+  - `fuse()` -> `FusedObservation`: Combines RGB + thermal observations, boosting confidence when detections agree.
 
 ### `change_detection.py`
 - `ChangeDetector(baseline_map)`:

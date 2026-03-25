@@ -138,13 +138,14 @@ docker compose exec isaac-bridge ros2 topic list
 ```
 /alpha_0/odom
 /alpha_0/rgb/image_raw
-/alpha_0/depth/image_raw
+/alpha_0/thermal/image_raw
 /alpha_0/imu
 /alpha_0/lidar_3d/points
 /alpha_0/cmd_vel
 ... (repeat for alpha_1 through alpha_5)
 /beta_0/odom
 /beta_0/rgb/image_raw
+/beta_0/imu
 ...
 ```
 

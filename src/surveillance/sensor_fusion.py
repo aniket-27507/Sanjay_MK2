@@ -1,13 +1,12 @@
 """
 Project Sanjay Mk2 - Sensor Fusion Pipeline
 =============================================
-Fuses observations from RGB camera, thermal camera, and depth estimator
-into unified detections with boosted confidence.
+Fuses observations from RGB and thermal cameras into unified detections
+with boosted confidence.
 
 Confidence boosting rules:
     - RGB-only detection:              0.3 - 0.6
     - RGB + thermal corroboration:     0.6 - 0.85
-    - RGB + thermal + depth context:   0.85 - 0.95
 
 Implements temporal buffering to cross reference proximal sensors.
 
@@ -32,16 +31,15 @@ CROSS_SENSOR_MATCH_RADIUS = 15.0
 
 # Confidence boost factors
 THERMAL_CORROBORATION_BOOST = 0.25
-DEPTH_CONTEXT_BOOST = 0.10
 
 
 class SensorFusionPipeline:
     """
     Fuses multi-sensor observations into unified detections.
     
-    Collects observations from RGB, thermal, and depth sensors,
-    then cross-references detections to boost confidence and
-    enrich object data.
+    Collects observations from RGB and thermal sensors, then
+    cross-references detections to boost confidence and enrich
+    object data.
     """
 
     def __init__(self, match_radius: float = CROSS_SENSOR_MATCH_RADIUS):

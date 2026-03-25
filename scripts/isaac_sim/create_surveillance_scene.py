@@ -753,7 +753,7 @@ def _set_prim_color(stage, prim_path: str, color: np.ndarray):
 
 
 def _attach_sensors(drone_name: str, prim_path: str, drone_type: str):
-    """Attach RGB + depth cameras and RTX 3D LiDAR."""
+    """Attach deployed RGB/thermal/LiDAR sensors for police operations."""
     try:
         from isaacsim.sensors.camera import Camera
         lidar_prim_path = None
@@ -766,11 +766,14 @@ def _attach_sensors(drone_name: str, prim_path: str, drone_type: str):
         )
         rgb.set_focal_length(fov_lens)
 
-        depth = Camera(
-            prim_path=f"{prim_path}/depth_camera",
-            resolution=(640, 480),
-            frequency=15,
-        )
+        thermal = None
+        if drone_type == "alpha":
+            thermal = Camera(
+                prim_path=f"{prim_path}/thermal_camera",
+                resolution=(640, 512),
+                frequency=9,
+            )
+            thermal.set_focal_length(fov_lens)
 
         # ── RTX 3D LiDAR (Alpha only) ──
         if drone_type == "alpha":
@@ -818,7 +821,7 @@ def _attach_sensors(drone_name: str, prim_path: str, drone_type: str):
             prim_path,
             drone_type,
             rgb,
-            depth,
+            thermal_cam=thermal,
             lidar_prim_path=lidar_prim_path,
         )
 
@@ -831,7 +834,7 @@ def _wire_ros2_topics(
     prim_path,
     drone_type,
     rgb_cam,
-    depth_cam,
+    thermal_cam=None,
     lidar_prim_path=None,
 ):
     """Wire OmniGraph ROS 2 publishers for camera + LiDAR topics."""
@@ -849,8 +852,8 @@ def _wire_ros2_topics(
         ]
 
         rgb_path = rgb_cam.get_render_product_path() if rgb_cam else None
-        depth_path = depth_cam.get_render_product_path() if depth_cam else None
-        if not rgb_path or not depth_path:
+        thermal_path = thermal_cam.get_render_product_path() if thermal_cam else None
+        if not rgb_path or (drone_type == "alpha" and not thermal_path):
             print(f"    └─ ROS 2 graph skipped for {drone_name}: no valid render product (placeholder drone)")
             return
 
@@ -882,34 +885,34 @@ def _wire_ros2_topics(
         if not rgb_ok:
             raise RuntimeError(f"Could not create RGB ROS2 graph for {drone_name}")
 
-        # Depth camera publisher
-        depth_ok = False
-        for camera_helper in camera_helper_nodes:
-            try:
-                og.Controller.edit(
-                    {"graph_path": f"/ROS2_{drone_name}_Depth", "evaluator_name": "execution"},
-                    {
-                        og.Controller.Keys.CREATE_NODES: [
-                            ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
-                            ("DepthHelper", camera_helper),
-                        ],
-                        og.Controller.Keys.CONNECT: [
-                            ("OnPlaybackTick.outputs:tick", "DepthHelper.inputs:execIn"),
-                        ],
-                        og.Controller.Keys.SET_VALUES: [
-                            ("DepthHelper.inputs:topicName", f"/{prefix}/depth/image_raw"),
-                            ("DepthHelper.inputs:frameId", f"{prefix}_depth"),
-                            ("DepthHelper.inputs:renderProductPath", depth_path),
-                            ("DepthHelper.inputs:type", "depth"),
-                        ],
-                    },
-                )
-                depth_ok = True
-                break
-            except Exception:
-                continue
-        if not depth_ok:
-            raise RuntimeError(f"Could not create depth ROS2 graph for {drone_name}")
+        # Thermal camera publisher (Alpha only)
+        if drone_type == "alpha" and thermal_path:
+            thermal_ok = False
+            for camera_helper in camera_helper_nodes:
+                try:
+                    og.Controller.edit(
+                        {"graph_path": f"/ROS2_{drone_name}_Thermal", "evaluator_name": "execution"},
+                        {
+                            og.Controller.Keys.CREATE_NODES: [
+                                ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+                                ("ThermalHelper", camera_helper),
+                            ],
+                            og.Controller.Keys.CONNECT: [
+                                ("OnPlaybackTick.outputs:tick", "ThermalHelper.inputs:execIn"),
+                            ],
+                            og.Controller.Keys.SET_VALUES: [
+                                ("ThermalHelper.inputs:topicName", f"/{prefix}/thermal/image_raw"),
+                                ("ThermalHelper.inputs:frameId", f"{prefix}_thermal"),
+                                ("ThermalHelper.inputs:renderProductPath", thermal_path),
+                            ],
+                        },
+                    )
+                    thermal_ok = True
+                    break
+                except Exception:
+                    continue
+            if not thermal_ok:
+                raise RuntimeError(f"Could not create thermal ROS2 graph for {drone_name}")
 
         # LiDAR PointCloud2 publisher (Alpha only)
         if drone_type == "alpha" and lidar_prim_path:
@@ -932,7 +935,7 @@ def _wire_ros2_topics(
                                 ],
                                 og.Controller.Keys.SET_VALUES: [
                                     ("ReadLidar.inputs:lidarPrim", lidar_prim_path),
-                                    ("PC2Pub.inputs:topicName", f"/{prefix}/lidar/points"),
+                                    ("PC2Pub.inputs:topicName", f"/{prefix}/lidar_3d/points"),
                                     ("PC2Pub.inputs:frameId", f"{prefix}_lidar"),
                                 ],
                             },
@@ -960,7 +963,7 @@ def _wire_ros2_topics(
                                 ],
                                 og.Controller.Keys.SET_VALUES: [
                                     ("PC2Pub.inputs:lidarPrim", lidar_prim_path),
-                                    ("PC2Pub.inputs:topicName", f"/{prefix}/lidar/points"),
+                                    ("PC2Pub.inputs:topicName", f"/{prefix}/lidar_3d/points"),
                                     ("PC2Pub.inputs:frameId", f"{prefix}_lidar"),
                                 ],
                             },

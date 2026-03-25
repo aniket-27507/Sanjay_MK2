@@ -184,7 +184,7 @@ class APF3DAvoidance:
         return self._closest_obstacle_dist
 
     def update_obstacles(self, obstacles: List[Obstacle3D]):
-        """Feed clustered obstacles from LiDAR / depth fusion."""
+        """Feed clustered obstacles from the deployed LiDAR stack."""
         self._obstacles = obstacles
 
     def update_voxels(self, voxels: List[OccupancyVoxel]):
