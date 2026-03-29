@@ -1,0 +1,49 @@
+# VisDrone -> Sanjay Police class mapping for YOLO training
+#
+# VisDrone has 10 aerial classes. We remap them to the 6 Sanjay police
+# deployment classes. Classes not present in VisDrone (weapon_person,
+# fire, explosive_device, crowd) will be added via supplementary
+# datasets in later training rounds.
+#
+# Phase 1: Train on VisDrone with remapped classes
+# Phase 2: Merge supplementary datasets (weapons, fire, crowd)
+# Phase 3: Fine-tune on Isaac Sim synthetic data
+#
+# Usage:
+#   yolo detect train model=yolo26s.pt data=config/training/visdrone_police.yaml
+
+# --- VisDrone auto-download (handled by Ultralytics) ---
+# We use a wrapper script that downloads VisDrone, remaps labels,
+# and points YOLO at the remapped dataset.
+# See: scripts/train_yolo.py --setup-visdrone
+
+path: data/visdrone_police  # will be created by setup script
+
+train: images/train
+val: images/val
+test: images/test
+
+# Sanjay police deployment classes (6 total)
+# Indices 0-5 map to the police threat model
+names:
+  0: person
+  1: weapon_person
+  2: vehicle
+  3: fire
+  4: explosive_device
+  5: crowd
+
+# VisDrone -> Police class remapping reference:
+#   VisDrone 0 (pedestrian)       -> 0 (person)
+#   VisDrone 1 (people)           -> 0 (person)
+#   VisDrone 2 (bicycle)          -> 2 (vehicle)
+#   VisDrone 3 (car)              -> 2 (vehicle)
+#   VisDrone 4 (van)              -> 2 (vehicle)
+#   VisDrone 5 (truck)            -> 2 (vehicle)
+#   VisDrone 6 (tricycle)         -> 2 (vehicle)
+#   VisDrone 7 (awning-tricycle)  -> 2 (vehicle)
+#   VisDrone 8 (bus)              -> 2 (vehicle)
+#   VisDrone 9 (motor)            -> 2 (vehicle)
+#
+# Classes 1 (weapon_person), 3 (fire), 4 (explosive_device),
+# 5 (crowd) have NO VisDrone source -- added via supplementary data.

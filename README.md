@@ -42,22 +42,24 @@ The active police/autonomy path is:
 
 The new mission-policy and inspection slice is implemented in:
 
-- [src/response/mission_policy.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/response/mission_policy.py)
-- [src/simulation/scenario_executor.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/simulation/scenario_executor.py)
-- [src/single_drone/sensors/zoom_camera.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/single_drone/sensors/zoom_camera.py)
+- [src/response/mission_policy.py](src/response/mission_policy.py)
+- [src/simulation/scenario_executor.py](src/simulation/scenario_executor.py)
+- [src/single_drone/sensors/zoom_camera.py](src/single_drone/sensors/zoom_camera.py)
 
 ## What Is Authoritative
 
 These files define the current architecture and state:
 
-- [README.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/README.md)
-- [STATE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/STATE.md)
-- [docs/ARCHITECTURE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/ARCHITECTURE.md)
-- [docs/API_REFERENCE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/API_REFERENCE.md)
-- [docs/ISAAC_SIM_SETUP.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/ISAAC_SIM_SETUP.md)
-- [docs/SIMULATION_RUN_GUIDE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/SIMULATION_RUN_GUIDE.md)
+- [README.md](README.md)
+- [CLAUDE.md](CLAUDE.md) — onboarding for Claude Code, Codex, and other AI assistants
+- [STATE.md](STATE.md) — living project snapshot (update as milestones change)
+- [Roadmap.md](Roadmap.md) — phased plan from simulation to pilot readiness
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/API_REFERENCE.md](docs/API_REFERENCE.md)
+- [docs/ISAAC_SIM_SETUP.md](docs/ISAAC_SIM_SETUP.md)
+- [docs/SIMULATION_RUN_GUIDE.md](docs/SIMULATION_RUN_GUIDE.md)
 
-Planning docs under [docs/superpowers](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/superpowers) remain useful, but they are not the runtime source of truth.
+Planning docs under [docs/superpowers](docs/superpowers) remain useful, but they are not the runtime source of truth.
 
 ## Important Boundary
 
@@ -72,16 +74,16 @@ When those conflict, the Alpha-only police architecture is the intended directio
 
 | Path | Purpose |
 |------|---------|
-| [src/core](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/core) | Shared types, config, mission profiles, utilities |
-| [src/single_drone](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/single_drone) | Sensors, flight control, obstacle avoidance |
-| [src/swarm](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/swarm) | Coordination, formations, CBBA, Boids |
-| [src/surveillance](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/surveillance) | World model, fusion, change detection, threats, crowd intelligence |
-| [src/response](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/response) | Deterministic mission-policy layer |
-| [src/simulation](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/simulation) | Scenario loader/executor and simulation tooling |
-| [src/integration](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/integration) | Isaac Sim bridge and integration adapters |
-| [src/gcs](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/gcs) | GCS server, zones, evidence, audit |
-| [config](/Users/archishmanpaul/Desktop/Sanjay_MK2/config) | Police deployment config, Isaac config, scenarios |
-| [scripts/isaac_sim](/Users/archishmanpaul/Desktop/Sanjay_MK2/scripts/isaac_sim) | Isaac scene creation and mission tooling |
+| [src/core](src/core) | Shared types, config, mission profiles, utilities |
+| [src/single_drone](src/single_drone) | Sensors, flight control, obstacle avoidance |
+| [src/swarm](src/swarm) | Coordination, formations, CBBA, Boids |
+| [src/surveillance](src/surveillance) | World model, fusion, change detection, threats, crowd intelligence |
+| [src/response](src/response) | Deterministic mission-policy layer |
+| [src/simulation](src/simulation) | Scenario loader/executor and simulation tooling |
+| [src/integration](src/integration) | Isaac Sim bridge and integration adapters |
+| [src/gcs](src/gcs) | GCS server, zones, evidence, audit |
+| [config](config) | Police deployment config, Isaac config, scenarios |
+| [scripts/isaac_sim](scripts/isaac_sim) | Isaac scene creation and mission tooling |
 
 ## Quick Start
 
@@ -100,8 +102,8 @@ python3 -m pytest tests/test_mission_policy.py -q
 
 For Isaac setup and the higher-fidelity integration path, use:
 
-- [docs/ISAAC_SIM_SETUP.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/ISAAC_SIM_SETUP.md)
-- [docs/SIMULATION_RUN_GUIDE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/SIMULATION_RUN_GUIDE.md)
+- [docs/ISAAC_SIM_SETUP.md](docs/ISAAC_SIM_SETUP.md)
+- [docs/SIMULATION_RUN_GUIDE.md](docs/SIMULATION_RUN_GUIDE.md)
 
 ## What Simulation Can Prove
 

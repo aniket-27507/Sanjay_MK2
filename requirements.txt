@@ -41,6 +41,11 @@ onnxruntime
 opencv-python
 pillow
 
+# Dataset acquisition and preparation
+roboflow
+fiftyone
+scikit-learn
+
 # Services / APIs
 requests
 polars

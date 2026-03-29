@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.simulation.scenario_loader import ScenarioLoader
 from src.simulation.scenario_executor import ScenarioExecutor
+from src.simulation.model_adapter import DetectionModelAdapter
 
 
 def main():
@@ -71,6 +72,10 @@ def main():
     parser.add_argument(
         "--timeout", type=float,
         help="Override scenario duration (seconds)",
+    )
+    parser.add_argument(
+        "--model", type=str,
+        help="Path to YOLO weights (.pt) or ONNX model to use instead of heuristic sensors",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -122,9 +127,23 @@ def main():
         print("No scenarios matched the criteria.")
         sys.exit(1)
 
+    # Build detection adapter if --model specified
+    detection_adapter = None
+    if args.model:
+        model_path = args.model
+        if model_path.endswith(".onnx"):
+            from src.simulation.model_adapter import ONNXModelAdapter
+            detection_adapter = ONNXModelAdapter(model_path)
+        else:
+            from src.simulation.model_adapter import YOLOModelAdapter
+            detection_adapter = YOLOModelAdapter(model_path)
+
+    model_label = detection_adapter.name if detection_adapter else "heuristic"
+
     print(f"\n{'=' * 65}")
     print(f"  SANJAY MK2 — Scenario Runner")
     print(f"  Scenarios: {len(scenarios)}")
+    print(f"  Detector:  {model_label}")
     print(f"  GCS Port:  {args.gcs_port}")
     print(f"  Realtime:  {args.realtime}")
     print(f"{'=' * 65}\n")
@@ -138,7 +157,10 @@ def main():
         print(f"[{i+1}/{len(scenarios)}] {scenario.id}: {scenario.name} "
               f"({scenario.category}, {scenario.duration_sec}s)")
 
-        executor = ScenarioExecutor(scenario, gcs_port=args.gcs_port)
+        executor = ScenarioExecutor(
+            scenario, gcs_port=args.gcs_port,
+            detection_adapter=detection_adapter,
+        )
         result = executor.run(realtime=args.realtime)
         results.append(result)
 

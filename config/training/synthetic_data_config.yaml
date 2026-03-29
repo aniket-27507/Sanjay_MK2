@@ -1,0 +1,83 @@
+# Isaac Sim Synthetic Data Generation Config
+# Used by: scripts/isaac_sim/generate_synthetic_dataset.py
+
+output_dir: data/synthetic_isaac
+num_frames: 5000
+train_ratio: 0.9
+
+camera:
+  altitude_range: [25, 100]
+  fov_deg: 84
+  resolution: [1280, 720]
+  # Random pitch offset from straight-down (degrees)
+  pitch_offset_range: [-15, 15]
+  roll_offset_range: [-5, 5]
+
+# Object spawn configuration per frame
+# count_range: [min, max] objects spawned per frame
+objects:
+  person:
+    class_id: 0
+    count_range: [5, 30]
+    size: [0.5, 0.5, 1.8]
+    color_range: [[0.4, 0.3, 0.2], [0.9, 0.8, 0.7]]
+  weapon_person:
+    class_id: 1
+    count_range: [0, 3]
+    size: [0.5, 0.5, 1.8]
+    # Attached weapon proxy: small cuboid at arm height
+    weapon_size: [0.1, 0.05, 0.6]
+    color_range: [[0.3, 0.2, 0.2], [0.7, 0.5, 0.4]]
+  vehicle:
+    class_id: 2
+    count_range: [2, 10]
+    size_range: [[3.5, 1.8, 1.4], [6.0, 2.5, 2.5]]
+    color_range: [[0.1, 0.1, 0.1], [0.9, 0.9, 0.9]]
+  fire:
+    class_id: 3
+    count_range: [0, 2]
+    # Cluster of emissive cuboids
+    cluster_size_range: [2.0, 8.0]
+    num_particles_range: [3, 12]
+    color: [0.95, 0.4, 0.05]
+    emissive_intensity: 5000
+  explosive_device:
+    class_id: 4
+    count_range: [0, 3]
+    # Small box / backpack shaped
+    size_range: [[0.2, 0.2, 0.15], [0.6, 0.4, 0.4]]
+    color_range: [[0.2, 0.2, 0.2], [0.6, 0.5, 0.3]]
+  crowd:
+    class_id: 5
+    count_range: [0, 2]
+    # Each crowd is a dense cluster of person proxies
+    people_per_crowd_range: [10, 50]
+    cluster_radius_range: [5.0, 25.0]
+    person_size: [0.5, 0.5, 1.8]
+
+lighting:
+  # Directional light (sun) randomization
+  intensity_range: [500, 8000]
+  elevation_range: [15, 85]  # sun angle above horizon
+  color_options:
+    - [1.0, 0.98, 0.95]    # noon daylight
+    - [1.0, 0.85, 0.65]    # golden hour
+    - [0.7, 0.75, 0.9]     # overcast
+    - [0.3, 0.3, 0.45]     # dusk/dawn
+  # Ambient light
+  ambient_range: [0.05, 0.3]
+
+# Domain randomization post-processing
+post_processing:
+  gaussian_noise_std_range: [0, 5]
+  motion_blur_prob: 0.1
+  jpeg_quality_range: [75, 100]
+
+# Police class map for YOLO labels
+class_map:
+  person: 0
+  weapon_person: 1
+  vehicle: 2
+  fire: 3
+  explosive_device: 4
+  crowd: 5

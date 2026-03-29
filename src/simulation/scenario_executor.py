@@ -59,6 +59,7 @@ from src.swarm.coordination.regiment_coordinator import (
 from src.simulation.scenario_loader import (
     ScenarioDefinition, SpawnEvent, FaultEvent, CrowdConfig,
 )
+from src.simulation.model_adapter import DetectionModelAdapter
 from src.response.mission_policy import MissionPolicyConfig, MissionPolicyEngine
 from src.swarm.coordination.urban_patrol_patterns import UrbanPatrolPatternGenerator
 
@@ -191,9 +192,15 @@ class ScenarioExecutor:
     SENSOR_HZ = 2.0  # sensor capture rate
     GCS_PUSH_HZ = 5.0  # GCS push rate
 
-    def __init__(self, scenario: ScenarioDefinition, gcs_port: int = 8765):
+    def __init__(
+        self,
+        scenario: ScenarioDefinition,
+        gcs_port: int = 8765,
+        detection_adapter: DetectionModelAdapter | None = None,
+    ):
         self.scenario = scenario
         self.gcs_port = gcs_port
+        self._detection_adapter = detection_adapter
 
         # ── World ──
         self.world = WorldModel(width=1000.0, height=1000.0, cell_size=5.0)
@@ -1010,19 +1017,37 @@ class ScenarioExecutor:
 
             altitude = abs(drone.position.z)
 
-            # Capture
-            rgb_obs = self._rgb_cameras[drone_id].capture(
-                drone_position=drone.position,
-                altitude=altitude,
-                world_model=self.world,
-                drone_id=drone_id,
-            )
-            thermal_obs = self._thermal_cameras[drone_id].capture(
-                drone_position=drone.position,
-                altitude=altitude,
-                world_model=self.world,
-                drone_id=drone_id,
-            )
+            # Capture — use model adapter when provided, else heuristic sensors
+            if self._detection_adapter is not None:
+                rgb_obs = self._detection_adapter.detect(
+                    drone_position=drone.position,
+                    altitude=altitude,
+                    world_model=self.world,
+                    drone_id=drone_id,
+                    sensor_type=SensorType.RGB_CAMERA,
+                    fov_deg=84.0,
+                )
+                thermal_obs = self._detection_adapter.detect(
+                    drone_position=drone.position,
+                    altitude=altitude,
+                    world_model=self.world,
+                    drone_id=drone_id,
+                    sensor_type=SensorType.THERMAL_CAMERA,
+                    fov_deg=40.0,
+                )
+            else:
+                rgb_obs = self._rgb_cameras[drone_id].capture(
+                    drone_position=drone.position,
+                    altitude=altitude,
+                    world_model=self.world,
+                    drone_id=drone_id,
+                )
+                thermal_obs = self._thermal_cameras[drone_id].capture(
+                    drone_position=drone.position,
+                    altitude=altitude,
+                    world_model=self.world,
+                    drone_id=drone_id,
+                )
             self._record_sensor_hits(rgb_obs)
             self._record_sensor_hits(thermal_obs)
 

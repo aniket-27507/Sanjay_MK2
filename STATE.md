@@ -1,8 +1,39 @@
 # Project State
 
-Authoritative as of `2026-03-25`.
+**Last updated:** 2026-03-29
 
-## Product Target
+## How to use this file (Claude / Codex / GPT)
+
+1. Read **`CLAUDE.md`** first for project rules, layout, and boundaries.
+2. Use **this file** as the **living snapshot**: what is true *today*, what is broken, what is in flight.
+3. **`Roadmap.md`** holds the **global** phased plan; § Session scope below holds the **current session** focus.
+4. After meaningful work, update **§ Implemented / § Not finished / § Session scope** so the next session starts cold-start safe.
+
+---
+
+## Session scope (fill per session)
+
+*Overwrite or trim this section when starting a new focused task; leave a one-line summary when idle.*
+
+| Field | Value |
+|-------|--------|
+| **Current goal** | e.g. “Isaac Beta quarantine + Alpha-only scene” |
+| **In scope** | Files / subsystems touched |
+| **Out of scope** | Explicit non-goals for this session |
+| **Exit criteria** | Tests or behaviors that must pass |
+| **Handoff notes** | Blockers, branches, or decisions for the next agent |
+
+---
+
+## Global roadmap position
+
+Authoritative detail: **`Roadmap.md`** (eight phases: architecture → simulation → edge AI → policy → GCS → HIL → field → pilot).
+
+**Approximate current emphasis (as of last update):** simulation-grade Alpha-only autonomy is **implemented**; **architecture hardening** (Isaac/Beta legacy) and **edge AI / real data** remain the main forward gaps. Adjust this line when a phase completes.
+
+---
+
+## Product target
 
 The intended v1 product is:
 
@@ -12,11 +43,13 @@ The intended v1 product is:
 - patrol model: one Alpha per sector in a regular-hex surveillance pattern
 - confirmation model: Alpha self-confirmation under deterministic mission policy
 
-The old `6 Alpha + 1 Beta` concept is no longer the authoritative target.
+The old `6 Alpha + 1 Beta` concept is **not** the authoritative target.
 
-## What Is Implemented
+---
 
-The repo now has a real simulation-grade police autonomy backbone:
+## What is implemented
+
+The repo has a simulation-grade police autonomy backbone:
 
 - sector-based Alpha patrol coordination
 - decentralized `CBBA + Boids` swarm motion
@@ -28,11 +61,13 @@ The repo now has a real simulation-grade police autonomy backbone:
 - zoom EO confirmation sensor simulation
 - crowd density, flow, and stampede-risk analysis
 - GCS outputs for telemetry, threats, crowd state, zones, and audit
-- 50 scenario YAMLs updated to the Alpha-only executor path
+- 50 scenario YAMLs for the police scenario framework
 
-## What Is Not Finished
+---
 
-This is still not a field-ready police drone product. The major unfinished areas are:
+## What is not finished
+
+This is still **not** a field-ready police drone product. Major gaps:
 
 - learned multimodal perception on real sensor data
 - production-grade facade/window threat analysis
@@ -41,20 +76,24 @@ This is still not a field-ready police drone product. The major unfinished areas
 - real-flight proof for endurance, wind, RF, GNSS, and safety
 - cleanup of remaining legacy Beta compatibility in some Isaac-facing surfaces
 
-## Current Runtime Truth
+---
 
-The active police/autonomy implementation is in:
+## Current runtime truth
 
-- [src/simulation/scenario_executor.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/simulation/scenario_executor.py)
-- [src/response/mission_policy.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/response/mission_policy.py)
-- [src/core/types/drone_types.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/core/types/drone_types.py)
-- [config/police_deployment.yaml](/Users/archishmanpaul/Desktop/Sanjay_MK2/config/police_deployment.yaml)
+The active police/autonomy implementation is centered on:
 
-The scenario framework is aligned to Alpha-only police autonomy.
+- `src/simulation/scenario_executor.py`
+- `src/response/mission_policy.py`
+- `src/core/types/drone_types.py`
+- `config/police_deployment.yaml`
 
-The Isaac bridge path still retains some legacy Beta compatibility in [config/isaac_sim.yaml](/Users/archishmanpaul/Desktop/Sanjay_MK2/config/isaac_sim.yaml) and [scripts/isaac_sim/create_surveillance_scene.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/scripts/isaac_sim/create_surveillance_scene.py). That path should be treated as partially aligned, not fully authoritative.
+The **scenario framework** is aligned to Alpha-only police autonomy.
 
-## Simulation Can Achieve Now
+The **Isaac** bridge path still retains some legacy Beta compatibility in `config/isaac_sim.yaml` and `scripts/isaac_sim/create_surveillance_scene.py`. Treat that path as **partially aligned**, not fully authoritative for fleet composition.
+
+---
+
+## Simulation can achieve now
 
 Before hardware prototyping, simulation can credibly validate:
 
@@ -67,59 +106,42 @@ Before hardware prototyping, simulation can credibly validate:
 - fault/degradation handling
 - GCS event flow and operational visibility
 
-## What Requires Real Hardware
+---
+
+## What requires real hardware
 
 ### Real LiDAR
 
-Needed for:
-
-- outdoor point-cloud fidelity
-- reflective-surface failure modes
-- weather and particulate degradation
-- vibration and mounting effects
+Outdoor point-cloud fidelity, reflective surfaces, weather, vibration.
 
 ### Real thermal
 
-Needed for:
-
-- urban heat clutter
-- rooftop and facade bleed
-- ambient drift
-- night-range and optics limits
+Urban heat clutter, facade bleed, ambient drift, night optics limits.
 
 ### Real RGB
 
-Needed for:
-
-- blur, glare, haze, exposure shifts
-- actual confirmation readability
-- realistic long-range facade/window detail
-- operator trust in live evidence
+Blur, glare, haze, exposure, long-range facade detail, operator trust.
 
 ### Real drones
 
-Needed for:
+Payload, power, endurance, wind, RF/GNSS, failsafes, airworthiness.
 
-- payload mass and power budget
-- endurance with deployed payload
-- wind and vibration response
-- RF and GNSS behavior
-- failsafes and airworthiness
+---
 
-## Strategic Read
+## Strategic read
 
-The codebase is now in a good place for serious simulation-led police autonomy prototyping.
+The codebase is a strong **simulation-led** police autonomy platform.
 
-It is not yet in a good place to claim:
+It is **not** yet a defensible claim of field-proven multimodal perception or operational readiness.
 
-- field-proven multimodal perception
-- field-proven autonomous close inspection
-- field-proven operational readiness
+---
 
-## Canonical Docs
+## Canonical docs
 
-- [README.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/README.md)
-- [docs/ARCHITECTURE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/ARCHITECTURE.md)
-- [docs/API_REFERENCE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/API_REFERENCE.md)
-- [docs/ISAAC_SIM_SETUP.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/ISAAC_SIM_SETUP.md)
-- [docs/SIMULATION_RUN_GUIDE.md](/Users/archishmanpaul/Desktop/Sanjay_MK2/docs/SIMULATION_RUN_GUIDE.md)
+- `README.md`
+- `CLAUDE.md` — agent onboarding and rules
+- `Roadmap.md` — phased delivery plan
+- `docs/ARCHITECTURE.md`
+- `docs/API_REFERENCE.md`
+- `docs/ISAAC_SIM_SETUP.md`
+- `docs/SIMULATION_RUN_GUIDE.md`
