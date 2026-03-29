@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-03-29
+**Last updated:** 2026-03-29 (Phase 3 infrastructure added)
 
 ## How to use this file (Claude / Codex / GPT)
 
@@ -29,7 +29,7 @@
 
 Authoritative detail: **`Roadmap.md`** (eight phases: architecture → simulation → edge AI → policy → GCS → HIL → field → pilot).
 
-**Approximate current emphasis (as of last update):** simulation-grade Alpha-only autonomy is **implemented**; **architecture hardening** (Isaac/Beta legacy) and **edge AI / real data** remain the main forward gaps. Adjust this line when a phase completes.
+**Approximate current emphasis (as of last update):** simulation-grade Alpha-only autonomy is **implemented**; **Phase 3 (Edge AI & Perception) infrastructure is built** — model adapters, training pipeline, validation engine, dataset acquisition scripts, and Isaac Sim synthetic data generator are all in place. **Next action:** run the training pipeline (VisDrone + supplementary + synthetic data) to produce the first trained police detection model.
 
 ---
 
@@ -63,13 +63,25 @@ The repo has a simulation-grade police autonomy backbone:
 - GCS outputs for telemetry, threats, crowd state, zones, and audit
 - 50 scenario YAMLs for the police scenario framework
 
+### Edge AI & Perception infrastructure (Phase 3)
+
+- **Model adapters** (`src/simulation/model_adapter.py`): pluggable detection backends — YOLO (v8/v11/v12/26), YOLO+SAHI tiled inference, thermal YOLO, crowd density (CSRNet/DM-Count), ONNX Runtime
+- **Model validation engine** (`src/simulation/model_validator.py`): runs trained models through police scenarios, computes precision/recall/F1 per class against ground truth, pass/fail gates
+- **Training pipeline** (`scripts/train_yolo.py`): VisDrone download + label remapping to 6 police classes, YOLO training with aerial augmentations, merge supplementary datasets
+- **Colab notebook** (`notebooks/train_yolo_police.ipynb`): full training workflow for cloud GPU
+- **Supplementary data acquisition** (`scripts/prepare_supplementary_data.py`): download + convert weapon (Roboflow, OpenImages), fire (D-Fire, FLAME), crowd (DroneCrowd) datasets
+- **Synthetic data generation** (`scripts/isaac_sim/generate_synthetic_dataset.py`): domain randomization + YOLO-format Replicator writer for Isaac Sim, with standalone BEV fallback
+- **Dataset audit** (`scripts/audit_dataset.py`): class distribution, missing labels, underrepresented class warnings
+- **COCO-to-YOLO converter** (`scripts/utils/coco_to_yolo.py`): bridges Isaac MCP dataset pipeline to YOLO training format
+- **Validation CLI** (`scripts/validate_model.py`): run trained models through scenarios with `--compare` baseline, JSON reports, CI-friendly exit codes
+
 ---
 
 ## What is not finished
 
 This is still **not** a field-ready police drone product. Major gaps:
 
-- learned multimodal perception on real sensor data
+- **trained detection models** — infrastructure is built but no model has been trained yet; run the pipeline to produce the first checkpoint
 - production-grade facade/window threat analysis
 - robust real-sensor synchronization and calibration
 - hardware-in-the-loop validation
@@ -88,6 +100,14 @@ The active police/autonomy implementation is centered on:
 - `config/police_deployment.yaml`
 
 The **scenario framework** is aligned to Alpha-only police autonomy.
+
+The **Edge AI training pipeline** is centered on:
+
+- `scripts/train_yolo.py` — training orchestrator
+- `scripts/validate_model.py` — post-training simulation validation
+- `src/simulation/model_adapter.py` — pluggable detection backends
+- `src/simulation/model_validator.py` — ground-truth detection scoring
+- `config/training/visdrone_police.yaml` — dataset config (6 police classes)
 
 The **Isaac** bridge path still retains some legacy Beta compatibility in `config/isaac_sim.yaml` and `scripts/isaac_sim/create_surveillance_scene.py`. Treat that path as **partially aligned**, not fully authoritative for fleet composition.
 
@@ -130,7 +150,9 @@ Payload, power, endurance, wind, RF/GNSS, failsafes, airworthiness.
 
 ## Strategic read
 
-The codebase is a strong **simulation-led** police autonomy platform.
+The codebase is a strong **simulation-led** police autonomy platform with a **complete but unexecuted** edge AI training pipeline.
+
+The next high-value action is to **run the training pipeline** (`train_yolo.py --setup-visdrone` then `--train`) to produce the first trained detection model, validate it in simulation, and begin the real-vs-heuristic comparison.
 
 It is **not** yet a defensible claim of field-proven multimodal perception or operational readiness.
 

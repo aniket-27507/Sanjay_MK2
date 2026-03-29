@@ -65,11 +65,15 @@
 | `src/swarm/` | CBBA, Boids, formations, coordination |
 | `src/surveillance/` | Fusion, change detection, threats, crowd/stampede |
 | `src/response/` | **Mission policy** (deterministic gating for inspection / hold / crowd) |
-| `src/simulation/` | Scenario loader, executor, metrics — **primary police autonomy test surface** |
+| `src/simulation/` | Scenario loader, executor, metrics, **model adapters, model validator** |
 | `src/integration/` | Isaac Sim bridge |
 | `src/gcs/` | WebSocket GCS server, zones, audit-oriented hooks |
 | `config/` | `police_deployment.yaml`, `isaac_sim.yaml`, `config/scenarios/*.yaml` |
-| `scripts/isaac_sim/` | Scene creation, mission helpers |
+| `config/training/` | `visdrone_police.yaml`, `synthetic_data_config.yaml` — ML training configs |
+| `scripts/` | `train_yolo.py`, `validate_model.py`, `prepare_supplementary_data.py`, `audit_dataset.py` |
+| `scripts/isaac_sim/` | Scene creation, mission helpers, **synthetic data generation** |
+| `scripts/utils/` | `coco_to_yolo.py` and training data utilities |
+| `notebooks/` | `train_yolo_police.ipynb` — Colab training notebook |
 | `gcs-dashboard/` | Operator UI (consumes GCS WebSocket) |
 | `tests/` | Pytest suite |
 
@@ -120,6 +124,22 @@ python -m pytest tests/test_mission_policy.py -q
 
 # Broader suite (as appropriate)
 python -m pytest tests/ -q
+
+# Edge AI training pipeline
+python scripts/train_yolo.py --setup-visdrone        # Download + remap VisDrone
+python scripts/train_yolo.py --train                  # Train YOLO
+python scripts/validate_model.py --yolo best.pt --all --compare  # Validate in sim
+
+# Supplementary dataset acquisition
+python scripts/prepare_supplementary_data.py --fire-dfire  # D-Fire dataset
+python scripts/prepare_supplementary_data.py --merge-all   # Merge all sources
+python scripts/audit_dataset.py data/visdrone_police        # Audit dataset
+
+# Synthetic data generation
+python scripts/isaac_sim/generate_synthetic_dataset.py --standalone --num-frames 5000
+
+# Run scenario with trained model
+python scripts/run_scenario.py --scenario S01 --model runs/detect/train/weights/best.pt
 ```
 
 GCS dashboard (if used) lives under `gcs-dashboard/` — see `README.md`/`package.json` for `npm` scripts.
@@ -150,4 +170,4 @@ GCS dashboard (if used) lives under `gcs-dashboard/` — see `README.md`/`packag
 
 ---
 
-*Last updated: 2026-03-29. Maintainer: align this file with `STATE.md` when project direction changes.*
+*Last updated: 2026-03-29 (Phase 3 AI infrastructure added). Maintainer: align this file with `STATE.md` when project direction changes.*

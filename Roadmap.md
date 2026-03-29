@@ -179,6 +179,27 @@ Replace the current mostly heuristic surveillance interpretation with trained mu
   - stampede-risk prediction
   - confirmation accuracy from zoom EO
 
+### Progress
+
+Infrastructure **built** (2026-03-29):
+
+- model adapter layer with 6 pluggable backends (`src/simulation/model_adapter.py`)
+- post-training simulation validation engine (`src/simulation/model_validator.py`)
+- YOLO training pipeline with VisDrone + supplementary merge (`scripts/train_yolo.py`)
+- Colab training notebook (`notebooks/train_yolo_police.ipynb`)
+- supplementary dataset acquisition scripts for weapon/fire/crowd (`scripts/prepare_supplementary_data.py`)
+- Isaac Sim synthetic data pipeline with domain randomization + YOLO writer (`scripts/isaac_sim/generate_synthetic_dataset.py`)
+- COCO-to-YOLO converter (`scripts/utils/coco_to_yolo.py`)
+- dataset audit tool (`scripts/audit_dataset.py`)
+- scenario executor wired to accept optional `detection_adapter` parameter
+
+**Not yet done:**
+
+- actual model training execution (run the pipeline)
+- supplementary dataset downloads (run the acquisition scripts)
+- synthetic data generation (run the Isaac Sim generator)
+- model evaluation reports and confidence calibration
+
 ### Deliverables
 
 - `src/tide` or equivalent production perception package
@@ -504,11 +525,12 @@ If the GCS does not explain why the swarm acted the way it did, police users wil
 
 The highest-value next moves from the current state are:
 
-1. finish architecture hardening, especially the remaining Isaac-side Beta compatibility
-2. expand the scenario suite around high-rise and crowd edge cases
-3. start the edge AI data and model pipeline
-4. harden mission-policy explanation and audit behavior
-5. freeze the first-pass hardware stack for HIL work
+1. **run the training pipeline** — `train_yolo.py --setup-visdrone` then `--train` to produce the first police detection checkpoint
+2. **download supplementary datasets** — weapon (Roboflow/OpenImages), fire (D-Fire/FLAME), crowd (DroneCrowd) via `prepare_supplementary_data.py`
+3. **generate synthetic data** — run `generate_synthetic_dataset.py` for explosive_device class and aerial weapon_person supplement
+4. **validate in simulation** — `validate_model.py --compare` to prove the trained model beats heuristic baseline
+5. finish architecture hardening, especially the remaining Isaac-side Beta compatibility
+6. freeze the first-pass hardware stack for HIL work
 
 ## What Must Be True Before Any Police Pilot
 

@@ -82,8 +82,10 @@ When those conflict, the Alpha-only police architecture is the intended directio
 | [src/simulation](src/simulation) | Scenario loader/executor and simulation tooling |
 | [src/integration](src/integration) | Isaac Sim bridge and integration adapters |
 | [src/gcs](src/gcs) | GCS server, zones, evidence, audit |
-| [config](config) | Police deployment config, Isaac config, scenarios |
-| [scripts/isaac_sim](scripts/isaac_sim) | Isaac scene creation and mission tooling |
+| [config](config) | Police deployment config, Isaac config, scenarios, training configs |
+| [scripts](scripts) | Scenario runner, training, validation, dataset preparation |
+| [scripts/isaac_sim](scripts/isaac_sim) | Isaac scene creation, mission tooling, synthetic data generation |
+| [notebooks](notebooks) | Colab training notebooks |
 
 ## Quick Start
 
@@ -99,6 +101,26 @@ For the full scenario/autonomy slice used by current tests:
 python3 -m pytest tests/test_scenario_framework.py -q
 python3 -m pytest tests/test_mission_policy.py -q
 ```
+
+### Edge AI Training
+
+Train a YOLO detection model on aerial data with 6 police classes:
+
+```bash
+# Download VisDrone + remap labels to police classes
+python scripts/train_yolo.py --setup-visdrone
+
+# Train YOLO on VisDrone
+python scripts/train_yolo.py --train --model yolo26s.pt --epochs 100
+
+# Validate trained model in simulation (compare vs heuristic baseline)
+python scripts/validate_model.py --yolo runs/detect/train/weights/best.pt --all --compare
+
+# Run scenarios with the trained model
+python scripts/run_scenario.py --scenario S01 --model runs/detect/train/weights/best.pt
+```
+
+For supplementary datasets (weapon, fire, crowd) and synthetic data generation, see the training pipeline docs in [scripts/train_yolo.py](scripts/train_yolo.py) and [scripts/prepare_supplementary_data.py](scripts/prepare_supplementary_data.py).
 
 For Isaac setup and the higher-fidelity integration path, use:
 

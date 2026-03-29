@@ -220,8 +220,45 @@ Important runtime responsibilities:
 
 Important classes:
 
-- `ScenarioExecutor`
+- `ScenarioExecutor(scenario, gcs_port=8765, detection_adapter=None)` — optional `detection_adapter` swaps heuristic sensors for a trained model
 - `ScenarioResult`
+
+### `model_adapter.py`
+
+Pluggable detection backends for scenario executor and model validator.
+
+Important classes:
+
+- `DetectionModelAdapter` — abstract base
+- `HeuristicAdapter` — wraps existing probabilistic sensors (baseline)
+- `YOLOAdapter(weights_path, class_map, confidence_threshold, img_size)` — Ultralytics YOLO (v8/v11/v12/26)
+- `YOLOSAHIAdapter(weights_path, ...)` — YOLO + SAHI tiled inference for small objects at altitude
+- `ThermalYOLOAdapter(weights_path, ...)` — YOLO fine-tuned on LWIR thermal
+- `CrowdDensityAdapter(weights_path, ...)` — CSRNet/DM-Count density estimation
+- `ONNXAdapter(onnx_path, ...)` — ONNX Runtime for edge-exported models
+
+Important class maps:
+
+- `SANJAY_POLICE_CLASS_MAP` — custom-trained model (6 classes)
+- `COCO_CLASS_MAP` — off-the-shelf COCO pretrained models
+- `VISDRONE_CLASS_MAP` — VisDrone-pretrained models
+- `FLIR_ADAS_CLASS_MAP` — FLIR ADAS thermal models
+
+### `model_validator.py`
+
+Post-training simulation validation against ground truth.
+
+Important classes:
+
+- `ModelValidator(adapter, scenarios_dir, match_radius, thresholds)`
+- `ValidationReport` — aggregate metrics with `passed` gate and `print_summary()`
+- `ScenarioValidationResult` — per-scenario precision/recall/F1/latency/coverage
+- `ClassMetrics` — per-class TP/FP/FN with precision/recall/F1
+
+Important functions:
+
+- `ModelValidator.run(category, split, scenario_ids, max_scenarios) -> ValidationReport`
+- `compare_models(adapters, scenarios_dir, category) -> Dict[str, ValidationReport]`
 
 ## `src.integration`
 

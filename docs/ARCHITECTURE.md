@@ -163,9 +163,18 @@ That means the Isaac path is best understood as:
 - inspector-aware threat handling in [threat_manager.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/surveillance/threat_manager.py)
 - GCS telemetry reflecting mission/inspection/backfill state in [gcs_server.py](/Users/archishmanpaul/Desktop/Sanjay_MK2/src/gcs/gcs_server.py)
 
+### Edge AI training pipeline (infrastructure built, models not yet trained)
+
+- pluggable detection model adapters in `src/simulation/model_adapter.py` (YOLO, YOLO+SAHI, thermal YOLO, crowd density, ONNX)
+- post-training simulation validation in `src/simulation/model_validator.py` (precision/recall/F1 vs ground truth)
+- YOLO training pipeline in `scripts/train_yolo.py` (VisDrone + supplementary dataset merge + aerial augmentations)
+- supplementary dataset acquisition in `scripts/prepare_supplementary_data.py` (weapon, fire, crowd sources)
+- Isaac Sim synthetic data generation in `scripts/isaac_sim/generate_synthetic_dataset.py` (domain randomization + YOLO writer)
+- scenario executor supports optional `detection_adapter` parameter to swap heuristic sensors for real models
+
 ### Not implemented yet
 
-- learned multimodal threat identification on real data
+- **trained detection model checkpoints** (pipeline exists, training not yet run)
 - production-grade facade/window semantic analysis
 - real-sensor synchronization and calibration
 - hardware-in-the-loop validation
@@ -191,6 +200,32 @@ That means the Isaac path is best understood as:
 - endurance and payload validation
 - wind, RF, GNSS, and flight safety proof
 
+## Edge AI Training Pipeline
+
+The perception training architecture is:
+
+```mermaid
+flowchart LR
+    A["VisDrone (10K aerial images)"] --> D["Label Remap (10 -> 6 classes)"]
+    B["Supplementary (weapon/fire/crowd)"] --> D
+    C["Isaac Sim Synthetic (all 6 classes)"] --> D
+    D --> E["Merged Training Set"]
+    E --> F["YOLO Training (aerial augmentations)"]
+    F --> G["best.pt checkpoint"]
+    G --> H["Simulation Validation (50 scenarios)"]
+    H --> I{Pass thresholds?}
+    I -->|Yes| J["ONNX / TensorRT Export"]
+    I -->|No| E
+    G --> K["ScenarioExecutor (detection_adapter)"]
+```
+
+Key files:
+
+- Training: `scripts/train_yolo.py`, `config/training/visdrone_police.yaml`
+- Validation: `scripts/validate_model.py`, `src/simulation/model_validator.py`
+- Adapters: `src/simulation/model_adapter.py` (6 backends)
+- Data: `scripts/prepare_supplementary_data.py`, `scripts/isaac_sim/generate_synthetic_dataset.py`
+
 ## Architectural Principle
 
 The cleanest way to read the repo today is:
@@ -198,4 +233,5 @@ The cleanest way to read the repo today is:
 - `authoritative mission architecture`: Alpha-only police swarm
 - `strongest implementation surface`: scenario framework
 - `highest-fidelity integration surface`: Isaac Sim bridge
-- `largest remaining gap`: learned perception plus real hardware proof
+- `perception training surface`: YOLO pipeline + simulation validation
+- `largest remaining gap`: trained models plus real hardware proof
