@@ -40,6 +40,10 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VISDRONE_POLICE_DIR = PROJECT_ROOT / "data" / "visdrone_police"
 DATA_YAML = PROJECT_ROOT / "config" / "training" / "visdrone_police.yaml"
+ULTRALYTICS_CONFIG_DIR = PROJECT_ROOT / ".ultralytics"
+ULTRALYTICS_DATASETS_DIR = PROJECT_ROOT / "datasets"
+ULTRALYTICS_WEIGHTS_DIR = PROJECT_ROOT / "weights"
+ULTRALYTICS_RUNS_DIR = PROJECT_ROOT / "runs"
 
 # VisDrone -> Police class remapping
 # VisDrone labels: 0=ignored, 1=pedestrian, 2=people, 3=bicycle, 4=car,
@@ -60,6 +64,25 @@ VISDRONE_TO_POLICE = {
 }
 
 
+def configure_ultralytics_paths():
+    """Force Ultralytics to use repo-local config, dataset, weights, and run dirs."""
+    os.environ.setdefault("YOLO_CONFIG_DIR", str(ULTRALYTICS_CONFIG_DIR))
+
+    ULTRALYTICS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    ULTRALYTICS_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
+    ULTRALYTICS_WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    ULTRALYTICS_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+
+    from ultralytics.utils import SETTINGS
+
+    SETTINGS.update({
+        "datasets_dir": str(ULTRALYTICS_DATASETS_DIR),
+        "weights_dir": str(ULTRALYTICS_WEIGHTS_DIR),
+        "runs_dir": str(ULTRALYTICS_RUNS_DIR),
+        "sync": False,
+    })
+
+
 def setup_visdrone():
     """Download VisDrone via Ultralytics and remap labels to police classes."""
     print("=" * 65)
@@ -71,6 +94,7 @@ def setup_visdrone():
     print("      This downloads ~2GB and may take a few minutes.\n")
 
     try:
+        configure_ultralytics_paths()
         from ultralytics.data.utils import check_det_dataset
     except ImportError:
         print("ERROR: ultralytics not installed. Run: pip install ultralytics")
@@ -186,6 +210,7 @@ def train(args):
     print("=" * 65)
 
     try:
+        configure_ultralytics_paths()
         from ultralytics import YOLO
     except ImportError:
         print("ERROR: ultralytics not installed. Run: pip install ultralytics")

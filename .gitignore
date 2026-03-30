@@ -29,5 +29,15 @@ test_report_*.txt
 test_results*.txt
 FINAL_TEST_REPORT.md
 
+# Local training/runtime outputs
+.ultralytics/
+datasets/
+weights/
+runs/
+reports/day1/*.json
+reports/day1/*.txt
+reports/day1/*.log
+!reports/day1/STATUS.md
+
 # Binary documents
 *.docx
