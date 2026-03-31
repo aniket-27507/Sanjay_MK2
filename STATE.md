@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-03-29 (Phase 3 infrastructure added)
+**Last updated:** 2026-03-31 (Day 2 — model training in progress)
 
 ## How to use this file (Claude / Codex / GPT)
 
@@ -17,11 +17,11 @@
 
 | Field | Value |
 |-------|--------|
-| **Current goal** | e.g. “Isaac Beta quarantine + Alpha-only scene” |
-| **In scope** | Files / subsystems touched |
-| **Out of scope** | Explicit non-goals for this session |
-| **Exit criteria** | Tests or behaviors that must pass |
-| **Handoff notes** | Blockers, branches, or decisions for the next agent |
+| **Current goal** | Resume `police_full_v1` YOLO11s training on Google Colab (epochs 2–100) |
+| **In scope** | `notebooks/train_yolo_police.ipynb`, `reports/day2/`, Day 2 validation |
+| **Out of scope** | Architecture changes, new scenarios, Isaac path |
+| **Exit criteria** | mAP50 > 0.55 on all classes; fire mAP50 > 0.40; best.pt back on disk |
+| **Handoff notes** | Upload `runs/detect/runs/detect/police_full_v1/weights/last.pt` (55MB) to Google Drive at `My Drive/SanjayMK2/checkpoints/police_full_v1_epoch1.pt` before opening Colab. Notebook is `notebooks/train_yolo_police.ipynb` (updated to Day 2 resume flow). After training, validate: `python scripts/validate_model.py --yolo best_day2.pt --all --compare 2>&1 \| tee reports/day2/validation.log` |
 
 ---
 
@@ -81,7 +81,8 @@ The repo has a simulation-grade police autonomy backbone:
 
 This is still **not** a field-ready police drone product. Major gaps:
 
-- **trained detection models** — infrastructure is built but no model has been trained yet; run the pipeline to produce the first checkpoint
+- **police_full_v1 training** — YOLO11s epoch 1/100 complete (mAP50=0.406); checkpoint at `runs/detect/runs/detect/police_full_v1/weights/last.pt` (55MB); resuming on Colab for epochs 2–100
+- YOLO11n baseline trained: mAP50=0.480 (30 epochs, VisDrone only) — at `runs/detect/runs/detect/visdrone_baseline_day1/weights/best.pt`
 - production-grade facade/window threat analysis
 - robust real-sensor synchronization and calibration
 - hardware-in-the-loop validation
@@ -152,7 +153,9 @@ Payload, power, endurance, wind, RF/GNSS, failsafes, airworthiness.
 
 The codebase is a strong **simulation-led** police autonomy platform with a **complete but unexecuted** edge AI training pipeline.
 
-The next high-value action is to **run the training pipeline** (`train_yolo.py --setup-visdrone` then `--train`) to produce the first trained detection model, validate it in simulation, and begin the real-vs-heuristic comparison.
+**Day 1 (2026-03-30) completed:** VisDrone bootstrapped, YOLO11n baseline trained (mAP50=0.480), 31,538-image merged dataset built (VisDrone + D-Fire + ShanghaiTech + weapon_synthetic), YOLO11s `police_full_v1` training started (1/100 epochs).
+
+**Day 2 (2026-03-31) in progress:** Resume `police_full_v1` on Google Colab A100 (epochs 2–100). Target mAP50 > 0.55. Notebook: `notebooks/train_yolo_police.ipynb`.
 
 It is **not** yet a defensible claim of field-proven multimodal perception or operational readiness.
 
