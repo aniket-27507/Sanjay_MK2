@@ -10,8 +10,23 @@ Usage:
     # Download weapon data from Roboflow (needs API key)
     python scripts/prepare_supplementary_data.py --weapon-roboflow --roboflow-api-key YOUR_KEY
 
-    # Download weapon data from OpenImages via FiftyOne
+    # Download weapon data from OpenImages via FiftyOne (heavy)
     python scripts/prepare_supplementary_data.py --weapon-openimages
+
+    # Download weapon data from OpenImages directly (lightweight, recommended)
+    python scripts/prepare_supplementary_data.py --weapon-openimages-direct
+
+    # Download YouTube-GDD gun detection dataset (~5K images)
+    python scripts/prepare_supplementary_data.py --weapon-youtube-gdd
+
+    # Download weapon datasets from Kaggle (~6K images)
+    python scripts/prepare_supplementary_data.py --weapon-kaggle
+
+    # Download ALL free weapon sources at once (~8.5K+ images)
+    python scripts/prepare_supplementary_data.py --weapon-all-free
+
+    # Remove synthetic weapon files from training set
+    python scripts/prepare_supplementary_data.py --remove-synthetic-weapons
 
     # Download D-Fire dataset (fire + smoke, 21K images)
     python scripts/prepare_supplementary_data.py --fire-dfire
@@ -201,6 +216,445 @@ def download_weapon_roboflow(api_key: str, max_images: int = 5000):
 
     print(f"  Weapon (Roboflow) ready at: {output}")
     print_class_distribution(output / "labels" / "train")
+
+
+def download_weapon_youtube_gdd(max_images: int = 5000):
+    """Download YouTube-GDD gun detection dataset from GitHub.
+
+    Dataset: ~5,000 images with 16K gun + 9K person bounding boxes.
+    Already in YOLO format with classes: person (0), gun (1).
+    We keep gun (1) as weapon_person (1) and drop person (0) since
+    we already have abundant person data from VisDrone.
+
+    Reference: https://github.com/UCAS-GYX/YouTube-GDD
+    """
+    output = SUPP_DIR / "weapon_youtube_gdd"
+    raw_dir = output / "raw"
+
+    print(f"\n  Cloning YouTube-GDD dataset from GitHub...")
+
+    if not (raw_dir / ".git").exists():
+        result = subprocess.run(
+            ["git", "clone", "--depth", "1",
+             "https://github.com/UCAS-GYX/YouTube-GDD.git",
+             str(raw_dir)],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"  WARNING: git clone failed: {result.stderr.strip()}")
+            print(f"  YouTube-GDD requires manual download. See:")
+            print(f"    https://github.com/UCAS-GYX/YouTube-GDD")
+            return
+
+    # YouTube-GDD structure: images/{train,val,test}/ + labels/{train,val}/
+    # Classes: 0=person, 1=gun
+    # We remap: keep only gun (1) -> weapon_person (1), drop person (0)
+    mapping = {1: CLASS_WEAPON_PERSON}  # gun -> weapon_person; person dropped
+
+    for split in ["train", "val"]:
+        src_lbl = raw_dir / "labels" / split
+        src_img = raw_dir / "images" / split
+        if not src_lbl.exists():
+            print(f"  WARNING: YouTube-GDD {split} labels not found at {src_lbl}")
+            # Try alternate layouts
+            for alt in [raw_dir / split / "labels", raw_dir / "dataset" / "labels" / split]:
+                if alt.exists():
+                    src_lbl = alt
+                    src_img = alt.parent.parent / "images" / split
+                    break
+            else:
+                continue
+
+        dst_split = split
+        dst_lbl = output / "labels" / dst_split
+        dst_img = output / "images" / dst_split
+
+        n_lbl = remap_yolo_labels(src_lbl, mapping, dst_lbl)
+        n_img = copy_images(src_img, dst_img) if src_img.exists() else 0
+        print(f"    {split}: {n_img} images, {n_lbl} labels")
+
+    print(f"  Weapon (YouTube-GDD) ready at: {output}")
+    for split in ["train", "val"]:
+        lbl_dir = output / "labels" / split
+        if lbl_dir.exists() and any(lbl_dir.iterdir()):
+            print(f"  {split}:")
+            print_class_distribution(lbl_dir)
+
+
+def download_weapon_kaggle(max_images: int = 5000):
+    """Download weapon detection datasets from Kaggle.
+
+    Downloads two complementary datasets:
+    1. atulyakumar98/gundetection — ~3K images, YOLO format, CC0
+    2. andrewmvd/handgun-detection — ~2.9K images, Pascal VOC XML
+
+    Both are remapped to class 1 (weapon_person).
+    Requires: pip install kagglehub
+    """
+    try:
+        import kagglehub
+    except ImportError:
+        print("ERROR: pip install kagglehub")
+        return
+
+    output = SUPP_DIR / "weapon_kaggle"
+    for split in ["train", "val"]:
+        (output / "images" / split).mkdir(parents=True, exist_ok=True)
+        (output / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+    total_images = 0
+
+    # ── Source 1: atulyakumar98/gundetection (YOLO format) ────────
+    print(f"\n  Downloading Kaggle: atulyakumar98/gundetection...")
+    try:
+        path1 = Path(kagglehub.dataset_download("atulyakumar98/gundetection"))
+        print(f"    Downloaded to: {path1}")
+
+        # Discover structure: look for images + labels directories
+        for root_candidate in [path1, *path1.iterdir()]:
+            if not root_candidate.is_dir():
+                continue
+            # Check for YOLO label files
+            label_dirs = list(root_candidate.rglob("*.txt"))
+            image_dirs = list(root_candidate.rglob("*.jpg")) + list(root_candidate.rglob("*.png"))
+            if label_dirs and image_dirs:
+                break
+
+        # Find all image files
+        img_files = sorted(
+            list(path1.rglob("*.jpg")) + list(path1.rglob("*.jpeg")) + list(path1.rglob("*.png"))
+        )
+        lbl_files = sorted(list(path1.rglob("*.txt")))
+
+        # Build stem -> label path mapping
+        lbl_map = {lp.stem: lp for lp in lbl_files
+                   if lp.name != "classes.txt" and lp.name != "README.txt"}
+
+        count = 0
+        for img_path in img_files[:max_images]:
+            lbl_path = lbl_map.get(img_path.stem)
+            if not lbl_path:
+                continue
+
+            # Remap all classes to weapon_person (class 1)
+            lines = []
+            with open(lbl_path) as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        parts[0] = str(CLASS_WEAPON_PERSON)
+                        lines.append(" ".join(parts))
+
+            if not lines:
+                continue
+
+            # Deterministic train/val split (90/10)
+            split = "val" if count % 10 == 0 else "train"
+            dst_img = output / "images" / split / f"kaggun_{img_path.name}"
+            dst_lbl = output / "labels" / split / f"kaggun_{img_path.stem}.txt"
+
+            if not dst_img.exists():
+                shutil.copy2(img_path, dst_img)
+            if not dst_lbl.exists():
+                dst_lbl.write_text("\n".join(lines) + "\n")
+
+            count += 1
+
+        total_images += count
+        print(f"    Source 1: {count} images processed")
+
+    except Exception as e:
+        print(f"    WARNING: Source 1 failed: {e}")
+
+    # ── Source 2: andrewmvd/handgun-detection (Pascal VOC XML) ────
+    print(f"\n  Downloading Kaggle: andrewmvd/handgun-detection...")
+    try:
+        path2 = Path(kagglehub.dataset_download("andrewmvd/handgun-detection"))
+        print(f"    Downloaded to: {path2}")
+
+        # This dataset uses Pascal VOC XML annotations
+        xml_files = sorted(list(path2.rglob("*.xml")))
+        img_files2 = sorted(
+            list(path2.rglob("*.jpg")) + list(path2.rglob("*.jpeg")) + list(path2.rglob("*.png"))
+        )
+        img_map = {ip.stem: ip for ip in img_files2}
+
+        count2 = 0
+        for xml_path in xml_files[:max_images]:
+            img_path = img_map.get(xml_path.stem)
+            if not img_path or not img_path.exists():
+                continue
+
+            # Parse VOC XML to YOLO format
+            lines = _parse_voc_xml_to_yolo(xml_path, CLASS_WEAPON_PERSON)
+            if not lines:
+                continue
+
+            split = "val" if count2 % 10 == 0 else "train"
+            dst_img = output / "images" / split / f"kaghg_{img_path.name}"
+            dst_lbl = output / "labels" / split / f"kaghg_{img_path.stem}.txt"
+
+            if not dst_img.exists():
+                shutil.copy2(img_path, dst_img)
+            if not dst_lbl.exists():
+                dst_lbl.write_text("\n".join(lines) + "\n")
+
+            count2 += 1
+
+        total_images += count2
+        print(f"    Source 2: {count2} images processed")
+
+    except Exception as e:
+        print(f"    WARNING: Source 2 failed: {e}")
+
+    print(f"\n  Weapon (Kaggle combined) ready at: {output}")
+    print(f"  Total: {total_images} images")
+    for split in ["train", "val"]:
+        lbl_dir = output / "labels" / split
+        if lbl_dir.exists() and any(lbl_dir.iterdir()):
+            print(f"  {split}:")
+            print_class_distribution(lbl_dir)
+
+
+def _parse_voc_xml_to_yolo(xml_path: Path, target_class: int) -> list:
+    """Parse a Pascal VOC XML annotation file to YOLO format lines.
+
+    All objects are mapped to target_class regardless of their original label.
+    Returns list of YOLO-format strings: 'class cx cy w h' (normalized).
+    """
+    import xml.etree.ElementTree as ET
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+    except ET.ParseError:
+        return []
+
+    size = root.find("size")
+    if size is None:
+        return []
+
+    img_w = float(size.findtext("width", "0"))
+    img_h = float(size.findtext("height", "0"))
+    if img_w <= 0 or img_h <= 0:
+        return []
+
+    lines = []
+    for obj in root.findall("object"):
+        bbox = obj.find("bndbox")
+        if bbox is None:
+            continue
+        try:
+            xmin = float(bbox.findtext("xmin", "0"))
+            ymin = float(bbox.findtext("ymin", "0"))
+            xmax = float(bbox.findtext("xmax", "0"))
+            ymax = float(bbox.findtext("ymax", "0"))
+        except (ValueError, TypeError):
+            continue
+
+        # Convert to YOLO normalized center format
+        cx = (xmin + xmax) / 2.0 / img_w
+        cy = (ymin + ymax) / 2.0 / img_h
+        w = (xmax - xmin) / img_w
+        h = (ymax - ymin) / img_h
+
+        # Clamp to [0, 1]
+        cx = max(0.0, min(1.0, cx))
+        cy = max(0.0, min(1.0, cy))
+        w = max(0.0, min(1.0, w))
+        h = max(0.0, min(1.0, h))
+
+        if w > 0.001 and h > 0.001:
+            lines.append(f"{target_class} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+
+    return lines
+
+
+def download_weapon_openimages_direct(max_images: int = 3000, num_workers: int = 8,
+                                      val_fraction: float = 0.1):
+    """Download OpenImages v7 'Handgun' class directly (no FiftyOne dependency).
+
+    Uses Google's public CSV annotations + S3-hosted images.  Only needs
+    pandas, requests, and concurrent.futures (all available on Colab).
+
+    Args:
+        max_images: Maximum number of unique images to download.
+        num_workers: Thread-pool size for parallel image downloads.
+        val_fraction: Fraction of images to place in the val split.
+    """
+    import csv
+    import io
+    import hashlib
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    try:
+        import requests
+    except ImportError:
+        print("ERROR: pip install requests")
+        return
+
+    output = SUPP_DIR / "weapon_openimages"
+    for split in ["train", "val"]:
+        (output / "images" / split).mkdir(parents=True, exist_ok=True)
+        (output / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+    # Manifest for resume support — tracks successfully downloaded ImageIDs
+    manifest_path = output / ".download_manifest.txt"
+    already_done: set = set()
+    if manifest_path.exists():
+        already_done = set(manifest_path.read_text().strip().splitlines())
+        print(f"  Resuming: {len(already_done)} images already downloaded")
+
+    # ── Step 1: Resolve LabelName for "Handgun" ──────────────────────
+    CLASS_CSV_URL = "https://storage.googleapis.com/openimages/v5/class-descriptions-boxable.csv"
+    print(f"\n  Downloading class descriptions...")
+    resp = requests.get(CLASS_CSV_URL, timeout=30)
+    resp.raise_for_status()
+    handgun_label = None
+    for row in csv.reader(io.StringIO(resp.text)):
+        if len(row) >= 2 and row[1].strip().lower() == "handgun":
+            handgun_label = row[0].strip()
+            break
+    if not handgun_label:
+        print("ERROR: 'Handgun' class not found in OpenImages class descriptions")
+        return
+    print(f"  Handgun LabelName: {handgun_label}")
+
+    # ── Step 2: Download + filter bbox annotations ───────────────────
+    BBOX_CSV_URL = "https://storage.googleapis.com/openimages/v6/oidv6-train-annotations-bbox.csv"
+    print(f"  Downloading bbox annotations (this is ~500 MB, may take a few minutes)...")
+    resp = requests.get(BBOX_CSV_URL, timeout=300, stream=True)
+    resp.raise_for_status()
+
+    # Parse in streaming mode to avoid loading full CSV in memory
+    # Columns: ImageID,Source,LabelName,Confidence,XMin,XMax,YMin,YMax,IsOccluded,IsTruncated,IsGroupOf,...
+    annotations: dict = {}  # ImageID -> list of (XMin, XMax, YMin, YMax)
+    reader = csv.DictReader(io.StringIO(resp.text))
+    for row in reader:
+        if row["LabelName"] != handgun_label:
+            continue
+        if row.get("IsGroupOf", "0") == "1":
+            continue
+        img_id = row["ImageID"]
+        bbox = (float(row["XMin"]), float(row["XMax"]),
+                float(row["YMin"]), float(row["YMax"]))
+        annotations.setdefault(img_id, []).append(bbox)
+
+    print(f"  Found {sum(len(v) for v in annotations.values())} Handgun boxes "
+          f"across {len(annotations)} images")
+
+    # Limit to max_images unique images
+    image_ids = sorted(annotations.keys())[:max_images]
+    # Exclude already-downloaded
+    to_download = [iid for iid in image_ids if iid not in already_done]
+    print(f"  Will download {len(to_download)} new images "
+          f"(skipping {len(image_ids) - len(to_download)} already done)")
+
+    # ── Step 3: Download images in parallel ──────────────────────────
+    S3_BASE = "https://s3.amazonaws.com/open-images-dataset/train"
+
+    def _download_one(image_id: str) -> tuple:
+        """Download a single image. Returns (image_id, success)."""
+        url = f"{S3_BASE}/{image_id}.jpg"
+        # Deterministic train/val split based on hash
+        split = "val" if int(hashlib.md5(image_id.encode()).hexdigest(), 16) % 100 < val_fraction * 100 else "train"
+        img_dst = output / "images" / split / f"{image_id}.jpg"
+        if img_dst.exists():
+            return image_id, split, True
+        try:
+            r = requests.get(url, timeout=30)
+            if r.status_code == 200:
+                img_dst.write_bytes(r.content)
+                return image_id, split, True
+        except Exception:
+            pass
+        return image_id, split, False
+
+    success_count = 0
+    fail_count = 0
+    manifest_file = open(manifest_path, "a")
+
+    try:
+        with ThreadPoolExecutor(max_workers=num_workers) as pool:
+            futures = {pool.submit(_download_one, iid): iid for iid in to_download}
+            for i, future in enumerate(as_completed(futures)):
+                image_id, split, ok = future.result()
+                if ok:
+                    # Write YOLO labels
+                    lines = []
+                    for xmin, xmax, ymin, ymax in annotations[image_id]:
+                        cx = (xmin + xmax) / 2.0
+                        cy = (ymin + ymax) / 2.0
+                        w = xmax - xmin
+                        h = ymax - ymin
+                        lines.append(f"{CLASS_WEAPON_PERSON} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+                    lbl_path = output / "labels" / split / f"{image_id}.txt"
+                    lbl_path.write_text("\n".join(lines) + "\n")
+                    manifest_file.write(image_id + "\n")
+                    success_count += 1
+                else:
+                    fail_count += 1
+                if (i + 1) % 200 == 0:
+                    print(f"    Progress: {i + 1}/{len(to_download)} "
+                          f"({success_count} ok, {fail_count} failed)")
+            manifest_file.flush()
+    finally:
+        manifest_file.close()
+
+    # Also write labels for previously-downloaded images (manifest entries)
+    for iid in already_done:
+        if iid in annotations:
+            split = "val" if int(hashlib.md5(iid.encode()).hexdigest(), 16) % 100 < val_fraction * 100 else "train"
+            lbl_path = output / "labels" / split / f"{iid}.txt"
+            if not lbl_path.exists():
+                lines = []
+                for xmin, xmax, ymin, ymax in annotations[iid]:
+                    cx = (xmin + xmax) / 2.0
+                    cy = (ymin + ymax) / 2.0
+                    w = xmax - xmin
+                    h = ymax - ymin
+                    lines.append(f"{CLASS_WEAPON_PERSON} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+                lbl_path.write_text("\n".join(lines) + "\n")
+
+    total = success_count + len(already_done)
+    print(f"\n  Download complete: {total} images ({success_count} new, "
+          f"{len(already_done)} resumed, {fail_count} failed)")
+    print(f"  Weapon (OpenImages direct) ready at: {output}")
+    for split in ["train", "val"]:
+        lbl_dir = output / "labels" / split
+        if lbl_dir.exists() and any(lbl_dir.iterdir()):
+            n = len(list(lbl_dir.glob("*.txt")))
+            print(f"    {split}: {n} labels")
+            print_class_distribution(lbl_dir)
+
+
+def remove_synthetic_weapons():
+    """Remove synthetic weapon files from the merged training dataset.
+
+    Deletes files matching supplementary_merged_weaponsynthetic_* from
+    data/visdrone_police/{images,labels}/{train,val}/.
+    """
+    visdrone_dir = PROJECT_ROOT / "data" / "visdrone_police"
+    pattern = "supplementary_merged_weaponsynthetic_*"
+    removed = 0
+
+    for subdir in ["images", "labels"]:
+        for split in ["train", "val"]:
+            target = visdrone_dir / subdir / split
+            if not target.exists():
+                continue
+            for f in target.glob(pattern):
+                f.unlink()
+                removed += 1
+
+    # Also rename the source directory to prevent re-merge
+    synth_dir = SUPP_DIR / "weapon_synthetic"
+    deprecated = SUPP_DIR / "_weapon_synthetic_DEPRECATED"
+    if synth_dir.exists() and not deprecated.exists():
+        shutil.move(str(synth_dir), str(deprecated))
+        print(f"  Renamed {synth_dir.name} -> {deprecated.name}")
+
+    print(f"  Removed {removed} synthetic weapon files from {visdrone_dir}")
+    return removed
 
 
 def download_weapon_openimages(max_images: int = 3000):
@@ -536,6 +990,297 @@ def download_crowd_roboflow(api_key: str, max_images: int = 3000):
     print(f"  Crowd (Roboflow) ready at: {output}")
 
 
+# ═══════════════════════════════════════════════════════════════════
+#  Cross-class supplementary data sources
+# ═══════════════════════════════════════════════════════════════════
+
+def import_roboflow_zip(zip_path: str, target_class: int, output_name: str = ""):
+    """Import a manually-downloaded Roboflow YOLO ZIP into supplementary data.
+
+    Download any Roboflow Universe dataset as a ZIP (YOLO format) from
+    the web UI (free account, no API key needed), then run this function.
+
+    Args:
+        zip_path: Path to the downloaded ZIP file.
+        target_class: Class ID to remap ALL annotations to.
+        output_name: Subdirectory name under data/supplementary/ (auto-derived if empty).
+    """
+    import zipfile
+    zp = Path(zip_path)
+    if not zp.exists():
+        print(f"ERROR: ZIP not found: {zp}")
+        return
+
+    if not output_name:
+        output_name = f"roboflow_{zp.stem}"
+    output = SUPP_DIR / output_name
+
+    print(f"\n  Importing Roboflow ZIP: {zp.name}")
+    print(f"  Target class: {target_class}")
+
+    # Extract to temp dir
+    tmp = output / "_raw"
+    with zipfile.ZipFile(zp, "r") as z:
+        z.extractall(tmp)
+
+    # Roboflow YOLO ZIPs typically have: train/images/, train/labels/,
+    # valid/images/, valid/labels/, test/images/, test/labels/
+    # OR: images/, labels/ at top level
+    for rf_split, our_split in [("train", "train"), ("valid", "val"),
+                                 ("test", "val")]:
+        # Try Roboflow structure
+        src_img = tmp / rf_split / "images"
+        src_lbl = tmp / rf_split / "labels"
+        if not src_img.exists():
+            src_img = tmp / "images" / rf_split
+            src_lbl = tmp / "labels" / rf_split
+        if not src_img.exists():
+            continue
+
+        dst_img = output / "images" / our_split
+        dst_lbl = output / "labels" / our_split
+        dst_img.mkdir(parents=True, exist_ok=True)
+        dst_lbl.mkdir(parents=True, exist_ok=True)
+
+        # Remap all classes to target_class
+        mapping = {}
+        for lbl_path in src_lbl.glob("*.txt"):
+            if lbl_path.name in ("classes.txt", "notes.json"):
+                continue
+            with open(lbl_path) as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        mapping[int(parts[0])] = target_class
+
+        if mapping:
+            remap_yolo_labels(src_lbl, mapping, dst_lbl)
+        copy_images(src_img, dst_img)
+
+    # Cleanup raw extraction
+    shutil.rmtree(tmp, ignore_errors=True)
+
+    print(f"  Roboflow import ready at: {output}")
+    for split in ["train", "val"]:
+        lbl_dir = output / "labels" / split
+        if lbl_dir.exists() and any(lbl_dir.iterdir()):
+            n = len(list(lbl_dir.glob("*.txt")))
+            print(f"    {split}: {n} labels")
+            print_class_distribution(lbl_dir)
+
+
+def download_hituav(max_images: int = 5000):
+    """Download HIT-UAV thermal IR aerial dataset from Kaggle.
+
+    2,898 infrared thermal images from UAV (60-130m altitude, day/night).
+    Classes: Person, Bicycle, Car, OtherVehicle -> remapped to police classes.
+    Adds aerial thermal perspective for person (0) and vehicle (2) detection.
+
+    Reference: https://github.com/suojiashun/HIT-UAV-Infrared-Thermal-Dataset
+    """
+    try:
+        import kagglehub
+    except ImportError:
+        print("ERROR: pip install kagglehub")
+        return
+
+    output = SUPP_DIR / "hituav_thermal"
+    for split in ["train", "val"]:
+        (output / "images" / split).mkdir(parents=True, exist_ok=True)
+        (output / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+    print(f"\n  Downloading HIT-UAV from Kaggle...")
+    try:
+        path = Path(kagglehub.dataset_download(
+            "pandrii000/hituav-a-highaltitude-infrared-thermal-dataset"))
+        print(f"    Downloaded to: {path}")
+    except Exception as e:
+        print(f"    WARNING: Kaggle download failed: {e}")
+        return
+
+    # HIT-UAV class mapping: Person->0, Bicycle->2, Car->2, OtherVehicle->2
+    HITUAV_CLASS_MAP = {
+        "Person": CLASS_PERSON,
+        "person": CLASS_PERSON,
+        "Bicycle": CLASS_VEHICLE,
+        "bicycle": CLASS_VEHICLE,
+        "Car": CLASS_VEHICLE,
+        "car": CLASS_VEHICLE,
+        "OtherVehicle": CLASS_VEHICLE,
+        "othervehicle": CLASS_VEHICLE,
+        "other vehicle": CLASS_VEHICLE,
+    }
+
+    # Find XML annotation files (normal_xml or VOC format)
+    xml_files = sorted(list(path.rglob("*.xml")))
+    img_files = sorted(
+        list(path.rglob("*.jpg")) + list(path.rglob("*.jpeg")) + list(path.rglob("*.png"))
+    )
+    img_map = {ip.stem: ip for ip in img_files}
+
+    print(f"    Found {len(xml_files)} XML annotations, {len(img_files)} images")
+
+    count = 0
+    for xml_path in xml_files[:max_images]:
+        # Match image by stem
+        img_path = img_map.get(xml_path.stem)
+        if not img_path or not img_path.exists():
+            continue
+
+        # Parse VOC XML with class-aware remapping
+        lines = _parse_voc_xml_to_yolo_mapped(xml_path, HITUAV_CLASS_MAP)
+        if not lines:
+            continue
+
+        split = "val" if count % 10 == 0 else "train"
+        dst_img = output / "images" / split / f"hituav_{img_path.name}"
+        dst_lbl = output / "labels" / split / f"hituav_{img_path.stem}.txt"
+
+        if not dst_img.exists():
+            shutil.copy2(img_path, dst_img)
+        if not dst_lbl.exists():
+            dst_lbl.write_text("\n".join(lines) + "\n")
+
+        count += 1
+
+    print(f"  HIT-UAV (thermal aerial) ready at: {output}")
+    print(f"  Total: {count} images")
+    for split in ["train", "val"]:
+        lbl_dir = output / "labels" / split
+        if lbl_dir.exists() and any(lbl_dir.iterdir()):
+            print(f"  {split}:")
+            print_class_distribution(lbl_dir)
+
+
+def _parse_voc_xml_to_yolo_mapped(xml_path: Path, class_map: dict) -> list:
+    """Parse VOC XML with name-based class mapping to YOLO format."""
+    import xml.etree.ElementTree as ET
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+    except ET.ParseError:
+        return []
+
+    size = root.find("size")
+    if size is None:
+        return []
+
+    img_w = float(size.findtext("width", "0"))
+    img_h = float(size.findtext("height", "0"))
+    if img_w <= 0 or img_h <= 0:
+        return []
+
+    lines = []
+    for obj in root.findall("object"):
+        name = (obj.findtext("name") or "").strip()
+        cls_id = class_map.get(name)
+        if cls_id is None:
+            # Try case-insensitive
+            cls_id = class_map.get(name.lower())
+        if cls_id is None:
+            continue
+
+        bbox = obj.find("bndbox")
+        if bbox is None:
+            continue
+        try:
+            xmin = float(bbox.findtext("xmin", "0"))
+            ymin = float(bbox.findtext("ymin", "0"))
+            xmax = float(bbox.findtext("xmax", "0"))
+            ymax = float(bbox.findtext("ymax", "0"))
+        except (ValueError, TypeError):
+            continue
+
+        cx = max(0, min(1, (xmin + xmax) / 2.0 / img_w))
+        cy = max(0, min(1, (ymin + ymax) / 2.0 / img_h))
+        w = max(0, min(1, (xmax - xmin) / img_w))
+        h = max(0, min(1, (ymax - ymin) / img_h))
+
+        if w > 0.001 and h > 0.001:
+            lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+
+    return lines
+
+
+def download_fire_aerial_kaggle(max_images: int = 5000):
+    """Download aerial fire/smoke detection dataset from Kaggle.
+
+    Uses roscoekerby/firesmoke-detection-yolo-v9 — YOLO-format fire+smoke
+    dataset. All classes remapped to class 3 (fire).
+
+    Supplements the ground-level D-Fire data with additional perspectives.
+    """
+    try:
+        import kagglehub
+    except ImportError:
+        print("ERROR: pip install kagglehub")
+        return
+
+    output = SUPP_DIR / "fire_aerial_kaggle"
+    for split in ["train", "val"]:
+        (output / "images" / split).mkdir(parents=True, exist_ok=True)
+        (output / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+    print(f"\n  Downloading fire/smoke dataset from Kaggle...")
+    try:
+        path = Path(kagglehub.dataset_download(
+            "roscoekerby/firesmoke-detection-yolo-v9"))
+        print(f"    Downloaded to: {path}")
+    except Exception as e:
+        print(f"    WARNING: Kaggle download failed: {e}")
+        return
+
+    # Discover YOLO label files
+    lbl_files = sorted(list(path.rglob("*.txt")))
+    img_files = sorted(
+        list(path.rglob("*.jpg")) + list(path.rglob("*.jpeg")) + list(path.rglob("*.png"))
+    )
+    img_map = {ip.stem: ip for ip in img_files}
+
+    # Filter out non-label txt files
+    skip_names = {"classes.txt", "notes.json", "readme.txt", "data.yaml"}
+    lbl_files = [l for l in lbl_files if l.name.lower() not in skip_names]
+
+    print(f"    Found {len(lbl_files)} labels, {len(img_files)} images")
+
+    count = 0
+    for lbl_path in lbl_files[:max_images]:
+        img_path = img_map.get(lbl_path.stem)
+        if not img_path or not img_path.exists():
+            continue
+
+        # Remap all classes to fire (class 3)
+        lines = []
+        with open(lbl_path) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    parts[0] = str(CLASS_FIRE)
+                    lines.append(" ".join(parts))
+
+        if not lines:
+            continue
+
+        split = "val" if count % 10 == 0 else "train"
+        dst_img = output / "images" / split / f"fireaerial_{img_path.name}"
+        dst_lbl = output / "labels" / split / f"fireaerial_{lbl_path.stem}.txt"
+
+        if not dst_img.exists():
+            shutil.copy2(img_path, dst_img)
+        if not dst_lbl.exists():
+            dst_lbl.write_text("\n".join(lines) + "\n")
+
+        count += 1
+
+    print(f"  Fire aerial (Kaggle) ready at: {output}")
+    print(f"  Total: {count} images")
+    for split in ["train", "val"]:
+        lbl_dir = output / "labels" / split
+        if lbl_dir.exists() and any(lbl_dir.iterdir()):
+            print(f"  {split}:")
+            print_class_distribution(lbl_dir)
+
+
 def merge_all():
     """Merge all supplementary sources into one directory."""
     print(f"\n{'=' * 65}")
@@ -619,7 +1364,17 @@ def main():
     parser.add_argument("--weapon-roboflow", action="store_true",
                         help="Download weapon data from Roboflow Universe")
     parser.add_argument("--weapon-openimages", action="store_true",
-                        help="Download weapon data from OpenImages v7")
+                        help="Download weapon data from OpenImages v7 (requires fiftyone)")
+    parser.add_argument("--weapon-openimages-direct", action="store_true",
+                        help="Download weapon data from OpenImages v7 (lightweight, no fiftyone)")
+    parser.add_argument("--weapon-youtube-gdd", action="store_true",
+                        help="Download YouTube-GDD gun detection dataset (~5K images, YOLO)")
+    parser.add_argument("--weapon-kaggle", action="store_true",
+                        help="Download weapon datasets from Kaggle (gun + handgun, ~6K images)")
+    parser.add_argument("--weapon-all-free", action="store_true",
+                        help="Download ALL free weapon sources (OpenImages + YouTube-GDD + Kaggle)")
+    parser.add_argument("--remove-synthetic-weapons", action="store_true",
+                        help="Remove synthetic weapon files from visdrone_police")
     parser.add_argument("--fire-dfire", action="store_true",
                         help="Clone D-Fire dataset from GitHub")
     parser.add_argument("--fire-flame", action="store_true",
@@ -628,6 +1383,21 @@ def main():
                         help="Prepare DroneCrowd dataset")
     parser.add_argument("--crowd-roboflow", action="store_true",
                         help="Download crowd data from Roboflow Universe")
+    # Cross-class supplementary sources
+    parser.add_argument("--import-roboflow-zip", type=str, metavar="ZIP_PATH",
+                        help="Import a manually-downloaded Roboflow YOLO ZIP")
+    parser.add_argument("--import-class", type=int, default=None,
+                        help="Target class ID for --import-roboflow-zip (required)")
+    parser.add_argument("--import-name", type=str, default="",
+                        help="Output name for --import-roboflow-zip (auto if empty)")
+    parser.add_argument("--hituav", action="store_true",
+                        help="Download HIT-UAV thermal aerial dataset (person+vehicle)")
+    parser.add_argument("--fire-aerial-kaggle", action="store_true",
+                        help="Download aerial fire/smoke dataset from Kaggle")
+    parser.add_argument("--supplement-all", action="store_true",
+                        help="Download ALL automated supplementary sources "
+                             "(weapons + HIT-UAV thermal + aerial fire)")
+
     parser.add_argument("--merge-all", action="store_true",
                         help="Merge all downloaded supplementary sources")
     parser.add_argument("--audit", type=str, metavar="DIR",
@@ -662,6 +1432,31 @@ def main():
         download_weapon_openimages(args.max_images)
         ran_something = True
 
+    if args.weapon_openimages_direct:
+        download_weapon_openimages_direct(args.max_images)
+        ran_something = True
+
+    if args.weapon_youtube_gdd:
+        download_weapon_youtube_gdd(args.max_images)
+        ran_something = True
+
+    if args.weapon_kaggle:
+        download_weapon_kaggle(args.max_images)
+        ran_something = True
+
+    if args.weapon_all_free:
+        print("\n" + "=" * 65)
+        print("  Downloading ALL free weapon sources")
+        print("=" * 65)
+        download_weapon_openimages_direct(args.max_images)
+        download_weapon_youtube_gdd(args.max_images)
+        download_weapon_kaggle(args.max_images)
+        ran_something = True
+
+    if args.remove_synthetic_weapons:
+        remove_synthetic_weapons()
+        ran_something = True
+
     if args.fire_dfire:
         download_fire_dfire(args.max_images)
         ran_something = True
@@ -685,6 +1480,33 @@ def main():
             print("ERROR: --roboflow-api-key required")
             sys.exit(1)
         download_crowd_roboflow(args.roboflow_api_key, args.max_images)
+        ran_something = True
+
+    if args.import_roboflow_zip:
+        if args.import_class is None:
+            print("ERROR: --import-class required with --import-roboflow-zip")
+            print("  Example: --import-roboflow-zip TrashIED.zip --import-class 4")
+            sys.exit(1)
+        import_roboflow_zip(args.import_roboflow_zip, args.import_class, args.import_name)
+        ran_something = True
+
+    if args.hituav:
+        download_hituav(args.max_images)
+        ran_something = True
+
+    if args.fire_aerial_kaggle:
+        download_fire_aerial_kaggle(args.max_images)
+        ran_something = True
+
+    if args.supplement_all:
+        print("\n" + "=" * 65)
+        print("  Downloading ALL automated supplementary sources")
+        print("=" * 65)
+        download_weapon_openimages_direct(args.max_images)
+        download_weapon_youtube_gdd(args.max_images)
+        download_weapon_kaggle(args.max_images)
+        download_hituav(args.max_images)
+        download_fire_aerial_kaggle(args.max_images)
         ran_something = True
 
     if args.merge_all:

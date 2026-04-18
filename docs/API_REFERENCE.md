@@ -95,7 +95,7 @@ This is the narrow-FOV confirmation sensor used by descending or facade-scanning
 - `Lidar3DConfig`
 - `Lidar3DDriver`
 
-The LiDAR driver is used for obstacle geometry and avoidance integration.
+The LiDAR driver is used for obstacle geometry and avoidance integration (navigation only, not for surveillance AI).  See `docs/ARCHITECTURE.md` sensor-adaptive architecture.
 
 ## `src.surveillance`
 
@@ -114,7 +114,7 @@ The LiDAR driver is used for obstacle geometry and avoidance integration.
 - `add_observation(observation)`
 - `fuse() -> FusedObservation | None`
 
-Current fusion is RGB + thermal.
+Current fusion is RGB + thermal.  Under the sensor-adaptive architecture, one or both may be active depending on SensorScheduler mode (see `docs/ARCHITECTURE.md`).
 
 ### `baseline_map.py`
 

@@ -86,11 +86,11 @@ Make the repo internally consistent around the Alpha-only police architecture so
 
 - remove or quarantine remaining Beta-era assumptions in active runtime paths
 - align Isaac scene generation and bridge config with the authoritative Alpha-only model
-- standardize Alpha sensor roles:
-  - wide RGB for patrol
-  - zoom EO for confirmation
-  - thermal for anomaly support
-  - LiDAR for geometry / corridor safety / avoidance
+- standardize Alpha sensor roles per the sensor-adaptive architecture:
+  - wide RGB for primary day patrol (adaptive FPS via SensorScheduler)
+  - thermal for primary night patrol and triggered day detection (occlusion, fire, confirmation)
+  - zoom EO for close inspection confirmation only
+  - LiDAR for GPS-denied navigation (SLAM) and obstacle avoidance (APF) only -- not for surveillance AI
 - make mission-policy and telemetry types first-class across all active execution surfaces
 - document one canonical police deployment config and one canonical simulation contract
 
@@ -155,55 +155,71 @@ Replace the current mostly heuristic surveillance interpretation with trained mu
 
 ### Required work
 
-- define the model stack:
-  - wide-area scene model
-  - threat-vector model
-  - zoom confirmation model
-  - crowd-risk model
+- define the model stack (sensor-adaptive architecture):
+  - **RGB police YOLO** (YOLO11s, 6 police classes) -- primary day detection
+  - **thermal police YOLO** (YOLO11s-small, person/vehicle/fire) -- primary night, triggered day
+  - **SensorScheduler policy** (~3,500 param MLP, RL-trained) -- adaptive sensor FPS control
+  - **crowd density model** (CSRNet / DM-Count) -- crowd risk estimation
 - build the training pipeline:
-  - synthetic Isaac data generation
-  - dataset schema and labeling contracts
-  - Google Colab training workflows for initial iteration
-  - ONNX / TensorRT export path for Jetson-class deployment
-- collect and curate real validation data for:
-  - RGB
-  - thermal
-  - LiDAR
-  - facade/window scenes
-  - crowd density and flow
+  - VisDrone + multi-source supplementary dataset merge
+  - thermal dataset pipeline (HIT-UAV + supplementary thermal)
+  - SensorScheduler RL training harness (PPO in scenario executor)
+  - Google Colab training workflows for RGB and thermal models
+  - ONNX / TensorRT export path for Jetson Orin Nano
+- collect and curate training data for:
+  - RGB: VisDrone, weapons (OpenImages/YouTube-GDD/Kaggle), fire (D-Fire/aerial), crowd (ShanghaiTech), explosive (Roboflow ZIPs)
+  - thermal: HIT-UAV (aerial IR, 2,898 images), supplementary thermal fire datasets
+  - NOT LiDAR detection data (LiDAR is navigation-only; no detection AI)
 - define evaluation tasks:
-  - armed-person detection
-  - unauthorized access
-  - facade/window threat detection
-  - crowd density estimation
-  - stampede-risk prediction
+  - armed-person detection (weapon_person mAP50 > 0.10)
+  - fire detection (mAP50 > 0.40)
+  - crowd detection (mAP50 > 0.15)
+  - thermal-only person/vehicle detection (night mode)
+  - SensorScheduler compute efficiency vs detection coverage tradeoff
   - confirmation accuracy from zoom EO
 
 ### Progress
 
-Infrastructure **built** (2026-03-29):
+Infrastructure **built** (2026-03-29), expanded (2026-04-18):
 
 - model adapter layer with 6 pluggable backends (`src/simulation/model_adapter.py`)
 - post-training simulation validation engine (`src/simulation/model_validator.py`)
 - YOLO training pipeline with VisDrone + supplementary merge (`scripts/train_yolo.py`)
-- Colab training notebook (`notebooks/train_yolo_police.ipynb`)
-- supplementary dataset acquisition scripts for weapon/fire/crowd (`scripts/prepare_supplementary_data.py`)
-- Isaac Sim synthetic data pipeline with domain randomization + YOLO writer (`scripts/isaac_sim/generate_synthetic_dataset.py`)
-- COCO-to-YOLO converter (`scripts/utils/coco_to_yolo.py`)
+- Colab training notebooks (`notebooks/train_yolo_police.ipynb` Day 2, `notebooks/train_yolo_police_day3.ipynb` Day 3)
+- supplementary dataset acquisition for ALL classes (`scripts/prepare_supplementary_data.py`):
+  - weapons: `--weapon-all-free` (OpenImages + YouTube-GDD + Kaggle, ~8,500+ images)
+  - fire: D-Fire + `--fire-aerial-kaggle`
+  - crowd: ShanghaiTech
+  - thermal: `--hituav` (HIT-UAV aerial thermal, 2,898 images)
+  - explosive: `--import-roboflow-zip` (universal Roboflow YOLO ZIP importer)
+  - convenience: `--supplement-all` (all automated sources in one command)
+- Isaac Sim synthetic data pipeline with domain randomization + YOLO writer
+- COCO-to-YOLO and VOC-to-YOLO converters
 - dataset audit tool (`scripts/audit_dataset.py`)
 - scenario executor wired to accept optional `detection_adapter` parameter
+- sensor-adaptive AI architecture designed (see `docs/ARCHITECTURE.md`)
+
+**Training progress:**
+
+- Day 1 (2026-03-30): YOLO11n baseline, mAP50=0.480
+- Day 2 (2026-04-04): YOLO11s `police_full_v1`, mAP50=0.593, weapon_person=0.019 (FAIL)
+- Day 3 (2026-04-18, in progress): data sweep + retrain as `police_full_v2`
 
 **Not yet done:**
 
-- actual model training execution (run the pipeline)
-- supplementary dataset downloads (run the acquisition scripts)
-- synthetic data generation (run the Isaac Sim generator)
+- `police_full_v2` training (Day 3 notebook ready, run on Colab)
+- thermal YOLO model training (HIT-UAV data acquired, pipeline not yet built)
+- SensorScheduler implementation and RL training
+- SensorScheduler integration with mission_policy.py
 - model evaluation reports and confidence calibration
 
 ### Deliverables
 
-- `src/tide` or equivalent production perception package
-- training and export pipeline
+- `police_full_v2.pt` RGB police YOLO checkpoint (6 classes)
+- `thermal_police.pt` thermal YOLO checkpoint (person/vehicle/fire)
+- `scheduler_policy.pt` SensorScheduler policy network (14 KB)
+- `src/single_drone/sensor_scheduler.py` runtime component
+- training and export pipeline for all three models
 - model cards and evaluation reports
 - confidence calibration and threshold recommendations
 
@@ -503,7 +519,7 @@ These are the risks most likely to delay deployment.
 
 ### 1. Perception gap
 
-The biggest technical risk is that facade/window/armed-threat perception may not be reliable enough on real RGB + thermal + LiDAR.
+The biggest technical risk is that facade/window/armed-threat perception may not be reliable enough on real RGB + thermal.  The sensor-adaptive architecture mitigates compute risk but the underlying detection accuracy on weapon_person and explosive_device classes remains unproven on real data.
 
 ### 2. Sensor integration gap
 
@@ -511,7 +527,7 @@ Calibration and synchronization across wide RGB, zoom EO, thermal, and LiDAR can
 
 ### 3. Edge compute gap
 
-Models that work in Colab may not meet latency or power limits on the target onboard compute.
+Models that work in Colab may not meet latency or power limits on the Jetson Orin Nano.  The sensor-adaptive architecture reduces the average compute load by 45-65% vs. always-on, but burst modes (INSPECT_DUAL, EMERGENCY) still approach Jetson thermal limits.
 
 ### 4. Swarm field reliability gap
 
@@ -525,12 +541,13 @@ If the GCS does not explain why the swarm acted the way it did, police users wil
 
 The highest-value next moves from the current state are:
 
-1. **run the training pipeline** — `train_yolo.py --setup-visdrone` then `--train` to produce the first police detection checkpoint
-2. **download supplementary datasets** — weapon (Roboflow/OpenImages), fire (D-Fire/FLAME), crowd (DroneCrowd) via `prepare_supplementary_data.py`
-3. **generate synthetic data** — run `generate_synthetic_dataset.py` for explosive_device class and aerial weapon_person supplement
-4. **validate in simulation** — `validate_model.py --compare` to prove the trained model beats heuristic baseline
-5. finish architecture hardening, especially the remaining Isaac-side Beta compatibility
-6. freeze the first-pass hardware stack for HIL work
+1. **run Day 3 notebook** — `notebooks/train_yolo_police_day3.ipynb` on Colab to train `police_full_v2` with real weapon data
+2. **validate in simulation** — `validate_model.py --yolo police_full_v2.pt --all --compare` to prove weapon_person mAP50 > 0.10
+3. **train thermal YOLO** — build thermal training pipeline using HIT-UAV data, train `thermal_police.pt`
+4. **implement SensorScheduler** — `src/single_drone/sensor_scheduler.py` with hard rails + policy network interface
+5. **train SensorScheduler** — RL training loop using scenario executor with both RGB and thermal models
+6. finish architecture hardening, especially the remaining Isaac-side Beta compatibility
+7. freeze the first-pass hardware stack for HIL work
 
 ## What Must Be True Before Any Police Pilot
 

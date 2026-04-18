@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-03-31 (Day 2 — model training in progress)
+**Last updated:** 2026-04-18 (sensor-adaptive architecture adopted, full data sweep, Day 3 ready)
 
 ## How to use this file (Claude / Codex / GPT)
 
@@ -17,11 +17,11 @@
 
 | Field | Value |
 |-------|--------|
-| **Current goal** | Resume `police_full_v1` YOLO11s training on Google Colab (epochs 2–100) |
-| **In scope** | `notebooks/train_yolo_police.ipynb`, `reports/day2/`, Day 2 validation |
-| **Out of scope** | Architecture changes, new scenarios, Isaac path |
-| **Exit criteria** | mAP50 > 0.55 on all classes; fire mAP50 > 0.40; best.pt back on disk |
-| **Handoff notes** | Upload `runs/detect/runs/detect/police_full_v1/weights/last.pt` (55MB) to Google Drive at `My Drive/SanjayMK2/checkpoints/police_full_v1_epoch1.pt` before opening Colab. Notebook is `notebooks/train_yolo_police.ipynb` (updated to Day 2 resume flow). After training, validate: `python scripts/validate_model.py --yolo best_day2.pt --all --compare 2>&1 \| tee reports/day2/validation.log` |
+| **Current goal** | Fix `weapon_person` class and retrain as `police_full_v2` |
+| **In scope** | Weapon dataset acquisition, merge, retrain from `best_day2.pt`, validation |
+| **Out of scope** | Architecture changes, new scenarios, Isaac path, model size upgrades |
+| **Exit criteria** | weapon_person mAP50 > 0.10; no regression on other classes |
+| **Handoff notes** | **Day 3 pipeline ready.** Use `--weapon-all-free` flag in `scripts/prepare_supplementary_data.py` to download ~8,500+ real weapon images from 3 free sources (OpenImages + YouTube-GDD + Kaggle). Day 3 Colab notebook at `notebooks/train_yolo_police_day3.ipynb` — run all cells to: download weapons → remove synthetics → merge → train 75 epochs as `police_full_v2`. Checkpoint: `best_day2.pt` at `runs/detect/runs/detect/police_full_v1/weights/best_day2.pt` and Google Drive `My Drive/SanjayMK2/runs/police_full_v1/weights/best.pt`. |
 
 ---
 
@@ -29,7 +29,12 @@
 
 Authoritative detail: **`Roadmap.md`** (eight phases: architecture → simulation → edge AI → policy → GCS → HIL → field → pilot).
 
-**Approximate current emphasis (as of last update):** simulation-grade Alpha-only autonomy is **implemented**; **Phase 3 (Edge AI & Perception) infrastructure is built** — model adapters, training pipeline, validation engine, dataset acquisition scripts, and Isaac Sim synthetic data generator are all in place. **Next action:** run the training pipeline (VisDrone + supplementary + synthetic data) to produce the first trained police detection model.
+**Approximate current emphasis (as of last update):** simulation-grade Alpha-only autonomy is **implemented**; **Phase 3 (Edge AI & Perception) first model trained, sensor-adaptive AI architecture adopted.**
+
+Key milestones:
+- `police_full_v1` (YOLO11s, 100 epochs) achieves mAP50=0.593 overall. 4/5 scored classes pass targets.
+- **Sensor-adaptive architecture adopted (2026-04-18):** RGB primary day, thermal triggered/primary night, LiDAR navigation-only. SensorScheduler designed with hard safety rails + RL-trained policy network. TIDE tri-modal always-on design superseded. SRO-MP Beta-era spec archived.
+- **Next action:** Run Day 3 notebook to train `police_full_v2` with real weapon data (~8,500+ images from 3 free sources).
 
 ---
 
@@ -81,10 +86,15 @@ The repo has a simulation-grade police autonomy backbone:
 
 This is still **not** a field-ready police drone product. Major gaps:
 
-- **police_full_v1 training** — YOLO11s epoch 1/100 complete (mAP50=0.406); checkpoint at `runs/detect/runs/detect/police_full_v1/weights/last.pt` (55MB); resuming on Colab for epochs 2–100
-- YOLO11n baseline trained: mAP50=0.480 (30 epochs, VisDrone only) — at `runs/detect/runs/detect/visdrone_baseline_day1/weights/best.pt`
+- **weapon_person mAP50=0.019** — critical gap; Day 3 notebook ready with ~8,500+ real weapon images from 3 free sources
+- **explosive_device** — zero instances; Roboflow ZIP importer built (`--import-roboflow-zip`); data available but not yet merged/trained
+- **thermal YOLO model** — HIT-UAV data acquired (2,898 images via `--hituav`); training pipeline not yet built
+- **SensorScheduler** — architecture designed (see `docs/ARCHITECTURE.md`); implementation not started; requires both RGB and thermal models
+- YOLO11n baseline (Day 1): mAP50=0.480 (30 epochs, VisDrone only)
+- YOLO11s police_full_v1 (Day 2): mAP50=0.593 (100 epochs, merged dataset) — at `runs/detect/runs/detect/police_full_v1/weights/best_day2.pt`
 - production-grade facade/window threat analysis
 - robust real-sensor synchronization and calibration
+- MQTT drone-to-GCS transport (designed in GCS Pipeline spec; not yet implemented)
 - hardware-in-the-loop validation
 - real-flight proof for endurance, wind, RF, GNSS, and safety
 - cleanup of remaining legacy Beta compatibility in some Isaac-facing surfaces
@@ -155,7 +165,47 @@ The codebase is a strong **simulation-led** police autonomy platform with a **co
 
 **Day 1 (2026-03-30) completed:** VisDrone bootstrapped, YOLO11n baseline trained (mAP50=0.480), 31,538-image merged dataset built (VisDrone + D-Fire + ShanghaiTech + weapon_synthetic), YOLO11s `police_full_v1` training started (1/100 epochs).
 
-**Day 2 (2026-03-31) in progress:** Resume `police_full_v1` on Google Colab A100 (epochs 2–100). Target mAP50 > 0.55. Notebook: `notebooks/train_yolo_police.ipynb`.
+**Day 2 (2026-04-04) completed:** `police_full_v1` YOLO11s trained to 100 epochs on Google Colab T4. Validation results:
+
+| Class | mAP50 | Target | Status |
+|-------|-------|--------|--------|
+| all | 0.593 | > 0.55 | PASS |
+| person | 0.440 | > 0.35 | PASS |
+| vehicle | 0.731 | > 0.65 | PASS |
+| fire | 0.780 | > 0.40 | PASS |
+| crowd | 0.995 | > 0.15 | PASS |
+| weapon_person | 0.019 | > 0.10 | FAIL |
+| explosive_device | — | — | No val data |
+
+**Day 3 (2026-04-16) in progress:** Full data sweep — weapon_person fix + supplementary data for all underrepresented classes.
+
+New functions in `scripts/prepare_supplementary_data.py`:
+
+**Weapon (class 1) — 3 automated sources (~8,500+ images):**
+- `download_weapon_openimages_direct()` — ~561 OpenImages v7 Handgun images via CSV+S3 (no FiftyOne)
+- `download_weapon_youtube_gdd()` — ~5,000 YouTube-GDD images via GitHub clone (YOLO format)
+- `download_weapon_kaggle()` — ~6,000 images from 2 Kaggle datasets (gundetection + handgun-detection, CC0)
+- `--weapon-all-free` convenience flag runs all 3
+
+**Explosive device (class 4) — Roboflow ZIP importer:**
+- `import_roboflow_zip()` — universal importer for manually-downloaded Roboflow YOLO ZIPs
+- User downloads from web UI (free account): TrashIED (~2,066), Grenade/Landmine (~933), Abandoned Bags-Drone (~840)
+- `--import-roboflow-zip <path> --import-class 4`
+
+**Aerial person+vehicle (classes 0, 2) — thermal IR from drone:**
+- `download_hituav()` — 2,898 HIT-UAV thermal IR images (60-130m altitude, day/night) via Kaggle
+- Classes: Person->0, Car/Bicycle/OtherVehicle->2. Includes `_parse_voc_xml_to_yolo_mapped()` converter.
+
+**Aerial fire (class 3):**
+- `download_fire_aerial_kaggle()` — Kaggle fire/smoke detection dataset, remapped to class 3
+
+**Utilities:**
+- `remove_synthetic_weapons()` — removes old synthetic weapon files + deprecates source dir
+- `--supplement-all` — runs ALL automated sources in one command (weapons + HIT-UAV + aerial fire)
+
+**Notebook:** `notebooks/train_yolo_police_day3.ipynb` — full pipeline with `--supplement-all` + optional Roboflow explosive imports.
+
+- **Next action:** Run Day 3 notebook on Colab. Target: weapon_person mAP50 > 0.10 with no regression.
 
 It is **not** yet a defensible claim of field-proven multimodal perception or operational readiness.
 

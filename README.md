@@ -16,14 +16,16 @@ The codebase is strongest today in simulation and autonomy scaffolding:
 
 - decentralized `CBBA + Boids` swarm coordination
 - local obstacle avoidance with `APF + HPL`
+- **sensor-adaptive AI architecture**: RGB primary day, thermal triggered/primary night, LiDAR navigation-only
 - RGB + thermal surveillance fusion and baseline-map change detection
 - threat lifecycle management with inspector assignment
 - crowd density, crowd flow, and stampede-risk analysis
+- YOLO training pipeline with multi-source dataset acquisition (weapons, fire, crowd, thermal, explosive)
 - scenario-driven simulation with 50 police-oriented scenarios
 - WebSocket GCS telemetry, threat, crowd, zone, and audit outputs
 - Isaac Sim bridge and scene tooling for the ROS 2 integration path
 
-The repo is not yet a full field-ready police drone system. Learned perception, real-sensor validation, and hardware flight proof are still incomplete.
+The repo is not yet a full field-ready police drone system. Trained models, SensorScheduler implementation, real-sensor validation, and hardware flight proof are still incomplete.
 
 ## Implemented Architecture
 
@@ -59,7 +61,7 @@ These files define the current architecture and state:
 - [docs/ISAAC_SIM_SETUP.md](docs/ISAAC_SIM_SETUP.md)
 - [docs/SIMULATION_RUN_GUIDE.md](docs/SIMULATION_RUN_GUIDE.md)
 
-Planning docs under [docs/superpowers](docs/superpowers) remain useful, but they are not the runtime source of truth.
+Planning docs under [docs/superpowers](docs/superpowers) contain the GCS Pipeline spec (MQTT + Kafka design). Earlier specs (TIDE, SRO-MP) have been archived to `docs/superpowers/_archived/` as they were superseded by the sensor-adaptive architecture.
 
 ## Important Boundary
 
