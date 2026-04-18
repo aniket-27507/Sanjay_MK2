@@ -1202,6 +1202,150 @@ def _parse_voc_xml_to_yolo_mapped(xml_path: Path, class_map: dict) -> list:
     return lines
 
 
+def download_explosive_kaggle(max_images: int = 5000):
+    """Download explosive/grenade dataset from Kaggle.
+
+    Uses alinadilawaiz/dangerous-objects-dataset — Guns, Grenades, Firearms.
+    YOLO format. Grenade class is remapped to explosive_device (class 4).
+    Gun/firearm classes are remapped to weapon_person (class 1) as bonus.
+
+    Requires: pip install kagglehub
+    """
+    try:
+        import kagglehub
+    except ImportError:
+        print("ERROR: pip install kagglehub")
+        return
+
+    output = SUPP_DIR / "explosive_kaggle"
+    for split in ["train", "val"]:
+        (output / "images" / split).mkdir(parents=True, exist_ok=True)
+        (output / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+    print(f"\n  Downloading Kaggle: alinadilawaiz/dangerous-objects-dataset...")
+    try:
+        path = Path(kagglehub.dataset_download(
+            "alinadilawaiz/dangerous-objects-dataset"))
+        print(f"    Downloaded to: {path}")
+    except Exception as e:
+        print(f"    WARNING: Kaggle download failed: {e}")
+        return
+
+    # Discover class mapping from data.yaml or classes.txt
+    class_remap = {}  # old_id -> new_id
+
+    # Try to read data.yaml for class names
+    yaml_files = list(path.rglob("data.yaml")) + list(path.rglob("*.yaml"))
+    class_names = {}
+    for yf in yaml_files:
+        try:
+            with open(yf) as f:
+                content = f.read()
+            # Simple YAML parse for names section
+            if "names:" in content:
+                import re
+                # Match patterns like "0: grenade" or "- grenade"
+                for m in re.finditer(r"(\d+):\s*['\"]?(\w[\w\s]*\w?)['\"]?", content):
+                    class_names[int(m.group(1))] = m.group(2).strip().lower()
+                break
+        except Exception:
+            continue
+
+    # Try classes.txt as fallback
+    if not class_names:
+        for cf in path.rglob("classes.txt"):
+            try:
+                with open(cf) as f:
+                    for i, line in enumerate(f):
+                        name = line.strip().lower()
+                        if name:
+                            class_names[i] = name
+                break
+            except Exception:
+                continue
+
+    if class_names:
+        print(f"    Found classes: {class_names}")
+
+    # Build remap: grenade/explosive/bomb -> class 4, gun/firearm/knife -> class 1
+    EXPLOSIVE_KEYWORDS = {"grenade", "explosive", "bomb", "ied", "mine", "landmine"}
+    WEAPON_KEYWORDS = {"gun", "pistol", "rifle", "firearm", "handgun", "shotgun",
+                       "knife", "weapon", "guns", "heavy gun", "heavyweapon"}
+
+    for old_id, name in class_names.items():
+        name_lower = name.lower().strip()
+        if any(kw in name_lower for kw in EXPLOSIVE_KEYWORDS):
+            class_remap[old_id] = CLASS_EXPLOSIVE
+        elif any(kw in name_lower for kw in WEAPON_KEYWORDS):
+            class_remap[old_id] = CLASS_WEAPON_PERSON
+
+    # If no class names found, remap all to explosive (conservative)
+    if not class_remap and not class_names:
+        print("    WARNING: Could not determine classes. Remapping all to explosive_device (4)")
+        # Will remap all discovered class IDs to explosive
+        for i in range(20):
+            class_remap[i] = CLASS_EXPLOSIVE
+
+    print(f"    Class remap: {class_remap}")
+
+    # Find all label files
+    lbl_files = sorted(list(path.rglob("*.txt")))
+    img_files = sorted(
+        list(path.rglob("*.jpg")) + list(path.rglob("*.jpeg")) + list(path.rglob("*.png"))
+    )
+    img_map = {ip.stem: ip for ip in img_files}
+
+    skip_names = {"classes.txt", "notes.json", "readme.txt", "data.yaml"}
+    lbl_files = [l for l in lbl_files if l.name.lower() not in skip_names]
+
+    print(f"    Found {len(lbl_files)} labels, {len(img_files)} images")
+
+    count = 0
+    explosive_count = 0
+    weapon_count = 0
+    for lbl_path in lbl_files[:max_images]:
+        img_path = img_map.get(lbl_path.stem)
+        if not img_path or not img_path.exists():
+            continue
+
+        lines = []
+        with open(lbl_path) as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    old_cls = int(parts[0])
+                    new_cls = class_remap.get(old_cls)
+                    if new_cls is not None:
+                        parts[0] = str(new_cls)
+                        lines.append(" ".join(parts))
+                        if new_cls == CLASS_EXPLOSIVE:
+                            explosive_count += 1
+                        elif new_cls == CLASS_WEAPON_PERSON:
+                            weapon_count += 1
+
+        if not lines:
+            continue
+
+        split = "val" if count % 10 == 0 else "train"
+        dst_img = output / "images" / split / f"expkag_{img_path.name}"
+        dst_lbl = output / "labels" / split / f"expkag_{lbl_path.stem}.txt"
+
+        if not dst_img.exists():
+            shutil.copy2(img_path, dst_img)
+        if not dst_lbl.exists():
+            dst_lbl.write_text("\n".join(lines) + "\n")
+
+        count += 1
+
+    print(f"\n  Explosive (Kaggle) ready at: {output}")
+    print(f"  Total: {count} images ({explosive_count} explosive boxes, {weapon_count} weapon boxes)")
+    for split in ["train", "val"]:
+        lbl_dir = output / "labels" / split
+        if lbl_dir.exists() and any(lbl_dir.iterdir()):
+            print(f"  {split}:")
+            print_class_distribution(lbl_dir)
+
+
 def download_fire_aerial_kaggle(max_images: int = 5000):
     """Download aerial fire/smoke detection dataset from Kaggle.
 
@@ -1390,6 +1534,8 @@ def main():
                         help="Target class ID for --import-roboflow-zip (required)")
     parser.add_argument("--import-name", type=str, default="",
                         help="Output name for --import-roboflow-zip (auto if empty)")
+    parser.add_argument("--explosive-kaggle", action="store_true",
+                        help="Download grenade/explosive dataset from Kaggle")
     parser.add_argument("--hituav", action="store_true",
                         help="Download HIT-UAV thermal aerial dataset (person+vehicle)")
     parser.add_argument("--fire-aerial-kaggle", action="store_true",
@@ -1490,6 +1636,10 @@ def main():
         import_roboflow_zip(args.import_roboflow_zip, args.import_class, args.import_name)
         ran_something = True
 
+    if args.explosive_kaggle:
+        download_explosive_kaggle(args.max_images)
+        ran_something = True
+
     if args.hituav:
         download_hituav(args.max_images)
         ran_something = True
@@ -1505,6 +1655,7 @@ def main():
         download_weapon_openimages_direct(args.max_images)
         download_weapon_youtube_gdd(args.max_images)
         download_weapon_kaggle(args.max_images)
+        download_explosive_kaggle(args.max_images)
         download_hituav(args.max_images)
         download_fire_aerial_kaggle(args.max_images)
         ran_something = True
