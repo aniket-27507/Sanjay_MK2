@@ -465,6 +465,24 @@ The most aligned runtime path is the scenario framework:
 
 This path is where the Alpha-only mission-policy architecture is implemented and tested.  The scenario executor accepts an optional `detection_adapter` parameter to swap heuristic sensors for trained YOLO models.
 
+### Known Sim-to-Real Gap (validator)
+
+The scenario validator (`scripts/validate_model.py`) uses `_render_bev()` in `model_adapter.py` to generate input frames for detection adapters.  `_render_bev()` produces a stylized abstract image (gray background + colored circles per object type) -- not photo-realistic content.
+
+This means:
+
+- **Heuristic adapters** work correctly (they query the `WorldModel` directly, never touch the render).
+- **YOLO models trained on real photos** cannot detect objects in BEV renders.  They produce P=0, R=0 across scenarios.  This is not a model quality bug -- it's that the input distribution doesn't match training.
+- **Models trained on synthetic BEV renders or Isaac Sim photorealistic output** would work.
+
+For real-photo-trained YOLO, the authoritative accuracy metric is the held-out val set mAP (computed by Ultralytics during training).  The scenario validator is meaningful only after one of:
+
+1. Isaac Sim photorealistic rendering integrated into the adapter flow (Phase 6 HIL)
+2. BEV renderer rewritten to produce photo-realistic frames (significant work)
+3. Hardware field validation with real sensor feeds (Phase 6+)
+
+This gap is documented in `reports/day3/validation_summary.md`.
+
 ### Isaac Sim path
 
 The Isaac path provides high-fidelity sensor simulation and ROS 2 topic integration.  It is partially aligned with the authoritative architecture:
