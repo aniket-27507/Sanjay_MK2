@@ -23,6 +23,12 @@ import logging
 import sys
 from pathlib import Path
 
+# Make ``src.*`` importable when this script is invoked as
+# ``python scripts/train_sensor_scheduler.py`` from the repo root.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 # Imports inside main() so that --help works even if SB3 isn't installed.
 logger = logging.getLogger(__name__)
 
