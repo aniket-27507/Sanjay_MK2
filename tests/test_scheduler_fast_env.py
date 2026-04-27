@@ -144,8 +144,9 @@ def test_reward_uses_post_rails_fps():
     # Tick 1: propose (rgb=0, thermal=15). Rails force rgb to 2.
     action = encode_action(0, 15)
     _, reward_post_rails, _, _, info = env.step(action)
-    # post-rails compute cost = 0.3 * (2 + 15) / 60 = 0.085; minus initial-tick has no switch penalty
-    expected_cost = -0.3 * (info["rgb_fps"] + info["thermal_fps"]) / 60.0
+    # post-rails compute cost = alpha * (rgb + thermal) / 60; first tick has no switch penalty
+    from src.single_drone.sensor_scheduler_rl import DEFAULT_ALPHA
+    expected_cost = -DEFAULT_ALPHA * (info["rgb_fps"] + info["thermal_fps"]) / 60.0
     # Allow tiny rounding; the key check is that we used post-rails FPS not the proposed 0+15
     assert abs(reward_post_rails - expected_cost) < 1e-3, (
         f"reward {reward_post_rails} should match post-rails compute cost {expected_cost}, "

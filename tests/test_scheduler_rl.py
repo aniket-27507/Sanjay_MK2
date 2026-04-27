@@ -144,10 +144,11 @@ def test_reward_switch_penalty_fires_on_change():
 
 
 def test_reward_first_tick_no_switch_penalty():
+    from src.single_drone.sensor_scheduler_rl import DEFAULT_ALPHA
     first = compute_reward([], rgb_fps=15, thermal_fps=0,
                            prev_rgb_fps=None, prev_thermal_fps=None)
     # No detections, no switch penalty -> only compute cost is negative
-    expected = -0.3 * (15 + 0) / 60.0
+    expected = -DEFAULT_ALPHA * (15 + 0) / 60.0
     assert first == pytest.approx(expected, rel=1e-5)
 
 

@@ -78,7 +78,7 @@ volume = modal.Volume.from_name("sanjay-mk2-models", create_if_missing=True)
     volumes={"/models": volume},
 )
 def train(
-    total_steps: int = 300_000,
+    total_steps: int = 1_000_000,
     episode_steps: int = 120,
     n_envs: int = 8,
     seed: int = 42,
@@ -207,7 +207,7 @@ def eval_policy(num_seeds: int = 3) -> str:
 
 @app.local_entrypoint()
 def main(
-    total_steps: int = 300_000,
+    total_steps: int = 1_000_000,
     episode_steps: int = 120,
     n_envs: int = 8,
     seed: int = 42,
