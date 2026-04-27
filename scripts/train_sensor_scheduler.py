@@ -50,6 +50,8 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--tb", action="store_true",
                    help="Enable TensorBoard logging at <save-dir>/tb")
+    p.add_argument("--checkpoint-every", type=int, default=10_000,
+                   help="Save policy.zip every N timesteps so an interrupt doesn't lose all progress")
     return p.parse_args()
 
 
@@ -111,8 +113,30 @@ def main():
             tensorboard_log=tb_log,
         )
 
-    logger.info("Training for %d timesteps", args.total_steps)
-    model.learn(total_timesteps=args.total_steps, reset_num_timesteps=False)
+    # Periodic checkpointing -- so KeyboardInterrupt or Colab disconnect
+    # doesn't lose all training progress.
+    from stable_baselines3.common.callbacks import CheckpointCallback
+    checkpoint_cb = CheckpointCallback(
+        save_freq=max(args.checkpoint_every // max(args.n_envs, 1), 1),
+        save_path=str(args.save_dir),
+        name_prefix="policy_ckpt",
+        save_replay_buffer=False,
+        save_vecnormalize=False,
+        verbose=1,
+    )
+
+    logger.info("Training for %d timesteps (checkpointing every %d)", args.total_steps, args.checkpoint_every)
+    try:
+        model.learn(
+            total_timesteps=args.total_steps,
+            reset_num_timesteps=False,
+            callback=checkpoint_cb,
+        )
+    except KeyboardInterrupt:
+        logger.warning("Training interrupted; saving current policy to %s", final_path)
+        model.save(final_path)
+        raise
+
     model.save(final_path)
     logger.info("Saved policy to %s", final_path)
 
