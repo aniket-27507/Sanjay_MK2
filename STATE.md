@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-04-19 (Day 3 training complete, police_full_v2 exits all targets)
+**Last updated:** 2026-04-24 (Step 5A complete: PPO training infra in place, ready for Colab run)
 
 ## How to use this file (Claude / Codex / GPT)
 
@@ -17,11 +17,11 @@
 
 | Field | Value |
 |-------|--------|
-| **Current goal** | Day 3 COMPLETE. Next: Day 4 -- thermal YOLO training or SensorScheduler implementation |
-| **In scope** | `police_full_v2` trained and validated, all 6 classes pass targets |
-| **Out of scope** | Architecture changes, new scenarios, Isaac path, model size upgrades |
-| **Exit criteria** | ACHIEVED: weapon_person mAP50=0.875 (target 0.10), explosive_device mAP50=0.802 (target 0.00), no regression on other classes |
-| **Handoff notes** | **Day 3 pipeline ready.** Use `--weapon-all-free` flag in `scripts/prepare_supplementary_data.py` to download ~8,500+ real weapon images from 3 free sources (OpenImages + YouTube-GDD + Kaggle). Day 3 Colab notebook at `notebooks/train_yolo_police_day3.ipynb` — run all cells to: download weapons → remove synthetics → merge → train 75 epochs as `police_full_v2`. Checkpoint: `best_day2.pt` at `runs/detect/runs/detect/police_full_v1/weights/best_day2.pt` and Google Drive `My Drive/SanjayMK2/runs/police_full_v1/weights/best.pt`. |
+| **Current goal** | Step 5A complete: RL training infrastructure in place. Next: Step 5B -- run PPO training on Colab |
+| **In scope** | `step_one_tick()` on ScenarioExecutor, `sensor_scheduler_rl.py` (state/action/reward), `sensor_scheduler_env.py` (Gym env), `scripts/train_sensor_scheduler.py`, `notebooks/train_sensor_scheduler.ipynb`, `tests/test_scheduler_rl.py` |
+| **Out of scope** | Local PPO training (Colab pattern), Step 5C policy integration (after weights arrive), ONNX export |
+| **Exit criteria** | ACHIEVED: 35/35 scheduler tests pass (3 Gym tests skip locally without gymnasium), 29/29 existing tests pass (zero regressions), training script smoke-tested end-to-end pending Colab run |
+| **Handoff notes** | **Step 5A complete (2026-04-24).** Decision: scenario mode (not fast pseudo-env). `ScenarioExecutor.step_one_tick()` advances sim until one sensor tick fires. `SensorSchedulerEnv` wraps the executor; only drone 0 trains, drones 1-5 use heuristic for realism. Action space: `Discrete(30)` = 6 RGB levels x 5 thermal levels. State: 17-dim Box. Reward: detection_reward (class-priority weighted) - 0.3 * compute_cost - 0.05 * switch_penalty. PPO config: MlpPolicy [64,32], ~3,500 params. Training script supports `--auto-resume` from `runs/sensor_scheduler/policy.zip`. **Next action:** Step 5B -- on Colab, run `notebooks/train_sensor_scheduler.ipynb`. 200k steps takes ~30-60 min on T4; bump to 1M for polished run. Output: `policy.zip` saved to `My Drive/SanjayMK2/runs/sensor_scheduler/policy.zip`. After Colab run, return to local for Step 5C: wrap trained policy in `RLPolicy` class, swap into `SensorScheduler`, run regression scenarios to confirm it matches/beats heuristic. |
 
 ---
 
@@ -35,7 +35,8 @@ Key milestones:
 - `police_full_v1` (YOLO11s, 100 epochs) achieves mAP50=0.593 overall. 4/5 scored classes pass targets.
 - **Sensor-adaptive architecture adopted (2026-04-18):** RGB primary day, thermal triggered/primary night, LiDAR navigation-only. SensorScheduler designed with hard safety rails + RL-trained policy network. TIDE tri-modal always-on design superseded. SRO-MP Beta-era spec archived.
 - **Day 3 complete (2026-04-19):** `police_full_v2` trained on 22K+ new real images (weapons + grenades from Kaggle). All 6 classes pass validation targets. Weapon_person: 0.019 -> 0.875 (46x improvement). Explosive_device: zero data -> 0.802 mAP50.
-- **Next action:** Day 4 -- train thermal YOLO on HIT-UAV data, OR implement SensorScheduler runtime component.
+- **Day 4 complete (2026-04-24):** `thermal_police_v1` trained on HIT-UAV + M3OT thermal data (YOLO11s, 85 epochs, 6-class police schema). Aggregate val mAP50=0.897, mAP50-95=0.505, precision=0.902, recall=0.844. ThermalYOLOAdapter default class_map fixed to police schema.
+- **Next action:** implement SensorScheduler runtime component (`src/single_drone/sensor_scheduler.py`) with hard safety rails + heuristic policy fallback; RL training loop follows.
 
 ---
 
@@ -87,8 +88,8 @@ The repo has a simulation-grade police autonomy backbone:
 
 This is still **not** a field-ready police drone product. Major gaps:
 
-- **thermal YOLO model** — HIT-UAV data acquired (2,898 images via `--hituav`); training pipeline not yet built
-- **SensorScheduler** — architecture designed (see `docs/ARCHITECTURE.md`); implementation not started; requires both RGB and thermal models
+- **thermal YOLO model** — DONE 2026-04-24. `thermal_police_v1` weights at `runs/detect/thermal_police_v1/weights/best.pt` (YOLO11s, 6-class police schema, val mAP50=0.897)
+- **SensorScheduler** — Phase A complete (rails + heuristic, 50% compute reduction on S10 baseline). Phase B infra complete (Gym env, PPO script, Colab notebook). Phase B training run + 5C policy integration pending
 - **Scenario validator sim-to-real gap** — `_render_bev()` produces abstract BEV renders that real-photo-trained YOLO cannot detect against. Documented in `reports/day3/validation_summary.md`. Authoritative accuracy = Colab val mAP. Deferred to Phase 6.
 - YOLO11n baseline (Day 1): mAP50=0.480 (30 epochs, VisDrone only)
 - YOLO11s police_full_v1 (Day 2): mAP50=0.593 (100 epochs, merged dataset)
@@ -224,7 +225,21 @@ All 6 classes pass. Zero regressions. Weapon_person went from 0.019 to 0.875 (46
 
 **Scenario validator note:** `scripts/validate_model.py` produces P=0, R=0 for real-photo-trained YOLO against abstract BEV renders. This is the sim-to-real gap, documented in `reports/day3/validation_summary.md` and `docs/ARCHITECTURE.md`. Authoritative accuracy = Colab val mAP (above). Deferred to Phase 6.
 
-- **Next action:** Day 4 -- train thermal YOLO on HIT-UAV data (unblocks SensorScheduler RL training), OR implement SensorScheduler runtime component with hard rails + heuristic policy fallback.
+**Day 4 complete (2026-04-24) — `thermal_police_v1` training results:**
+
+YOLO11s fine-tuned on HIT-UAV + M3OT thermal data, 6-class police schema (matches RGB). 85 epochs run, checkpoint dated 2026-04-21:
+
+| Metric | Value |
+|--------|-------|
+| mAP50 (all) | **0.897** |
+| mAP50-95 (all) | 0.505 |
+| precision | 0.902 |
+| recall | 0.844 |
+| best epoch | 50 (mAP50=0.909) |
+
+Weights landed at `runs/detect/thermal_police_v1/weights/best.pt`. `ThermalYOLOAdapter` default class_map updated to `SANJAY_POLICE_CLASS_MAP` (was `FLIR_ADAS_CLASS_MAP` — wrong schema for police weights). Per-class thermal breakdown pending; aggregate only from checkpoint metadata. Full Day 4 writeup + ready-to-paste Colab cell for per-class capture in `reports/day4/thermal_summary.md`.
+
+- **Next action:** implement SensorScheduler runtime (`src/single_drone/sensor_scheduler.py`) with hard safety rails + heuristic policy fallback. RL training loop follows once heuristic path works end-to-end through a scenario.
 
 It is **not** yet a defensible claim of field-proven multimodal perception or operational readiness.
 

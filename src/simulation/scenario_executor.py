@@ -47,6 +47,11 @@ from src.surveillance.world_model import WorldModel, THERMAL_SIGNATURES, OBJECT_
 from src.single_drone.sensors.rgb_camera import SimulatedRGBCamera
 from src.single_drone.sensors.thermal_camera import SimulatedThermalCamera
 from src.single_drone.sensors.zoom_camera import SimulatedZoomEOCamera
+from src.single_drone.sensor_scheduler import (
+    SensorScheduler,
+    SensorState,
+    SensorAction,
+)
 from src.surveillance.sensor_fusion import SensorFusionPipeline
 from src.surveillance.baseline_map import BaselineMap
 from src.surveillance.change_detection import ChangeDetector
@@ -295,11 +300,28 @@ class ScenarioExecutor:
         self._zoom_cameras: Dict[int, SimulatedZoomEOCamera] = {}
         self._fusion_pipelines: Dict[int, SensorFusionPipeline] = {}
 
+        # ── Sensor scheduler (Phase A: rails + heuristic, no RL) ──
+        self._sensor_schedulers: Dict[int, SensorScheduler] = {}
+        self._rgb_last_capture_t: Dict[int, float] = {}
+        self._thermal_last_capture_t: Dict[int, float] = {}
+        self._sensor_fires: Dict[int, Dict[str, int]] = {}
+        self._last_scheduler_action: Dict[int, Optional[SensorAction]] = {}
+        self._last_fused_obs: Dict[int, object] = {}  # last FusedObservation per drone
+
         for drone_id, drone in self.drones.items():
             self._rgb_cameras[drone_id] = SimulatedRGBCamera(drone_type=drone.drone_type)
             self._thermal_cameras[drone_id] = SimulatedThermalCamera()
             self._zoom_cameras[drone_id] = SimulatedZoomEOCamera()
             self._fusion_pipelines[drone_id] = SensorFusionPipeline()
+            self._sensor_schedulers[drone_id] = SensorScheduler()
+            self._rgb_last_capture_t[drone_id] = -1e9    # force fire on first tick
+            self._thermal_last_capture_t[drone_id] = -1e9
+            self._sensor_fires[drone_id] = {
+                "rgb_fire": 0, "rgb_skip": 0,
+                "thermal_fire": 0, "thermal_skip": 0,
+            }
+            self._last_scheduler_action[drone_id] = None
+            self._last_fused_obs[drone_id] = None
 
         # ── Detection pipeline (existing classes) ──
         self._baseline = BaselineMap(
@@ -399,6 +421,26 @@ class ScenarioExecutor:
 
     # ── Main Run Loop ─────────────────────────────────────────────
 
+    def get_scheduler_stats(self) -> Dict[int, Dict[str, float]]:
+        """Per-drone compute-cost stats from the SensorScheduler.
+
+        Returns a dict keyed by drone_id with:
+          rgb_fire, rgb_skip, thermal_fire, thermal_skip (int counters)
+          rgb_fire_rate, thermal_fire_rate (fraction of ticks that fired, 0-1)
+
+        Always-on baseline would be fire_rate=1.0 on both. Lower is cheaper.
+        """
+        stats: Dict[int, Dict[str, float]] = {}
+        for drone_id, counts in self._sensor_fires.items():
+            rgb_total = counts["rgb_fire"] + counts["rgb_skip"]
+            th_total = counts["thermal_fire"] + counts["thermal_skip"]
+            stats[drone_id] = {
+                **{k: float(v) for k, v in counts.items()},
+                "rgb_fire_rate": counts["rgb_fire"] / rgb_total if rgb_total else 0.0,
+                "thermal_fire_rate": counts["thermal_fire"] / th_total if th_total else 0.0,
+            }
+        return stats
+
     def run(self, realtime: bool = False) -> ScenarioResult:
         """Run the scenario to completion.
 
@@ -461,6 +503,37 @@ class ScenarioExecutor:
                 self._gcs.stop()
 
         return self._build_result()
+
+    def step_one_tick(self) -> bool:
+        """Advance the simulation until exactly one sensor tick has fired.
+
+        This is the stepping interface used by the RL Gym environment.
+        Unlike ``run()`` it does not start a GCS server and does not block.
+
+        Returns:
+            True  if a sensor tick fired and the scenario is still running.
+            False if the scenario terminated (sim_time >= duration) before
+                  another sensor tick could fire.
+        """
+        if self._sim_time >= self.scenario.duration_sec:
+            return False
+
+        dt = 1.0 / self.TICK_HZ
+        last_sensor_t = self._last_sensor_tick
+
+        while self._sim_time < self.scenario.duration_sec:
+            self._process_scheduled_spawns()
+            self._process_scheduled_faults()
+            self._tick_crowd_spawns()
+            self._tick_drones(dt)
+            self._tick_sensors()
+            self._tick_crowd()
+            self._sim_time += dt
+
+            if self._last_sensor_tick != last_sensor_t:
+                return True   # one sensor tick fired -- yield to caller
+
+        return False   # scenario ended without firing another sensor tick
 
     # ── Scheduled Events (world-only, no drone logic) ─────────────
 
@@ -1005,8 +1078,43 @@ class ScenarioExecutor:
             if det.position.distance_to(threat.position) <= 15.0:
                 hits.update(self._object_sensor_hits.get(det.object_id, set()))
 
+    def _build_sensor_state(self, drone_id: int) -> SensorState:
+        """Snapshot state for the scheduler's tick.
+
+        Scenarios don't yet encode ambient lighting, so lux defaults
+        to daylight.  Weapon confidence is pulled from the last fused
+        observation on this drone's fusion pipeline.
+        """
+        weapon_conf = 0.0
+        rgb_conf = 0.0
+        thermal_conf = 0.0
+        last_fused = self._last_fused_obs.get(drone_id)
+        if last_fused is not None:
+            for obj in last_fused.detected_objects:
+                if obj.object_type == "weapon_person":
+                    weapon_conf = max(weapon_conf, obj.confidence)
+                rgb_conf = max(rgb_conf, obj.confidence)  # coarse proxy
+        return SensorState(
+            ambient_lux=50000.0,  # TODO: read from scenario environment when schema adds it
+            mission_state=self._mission_states[drone_id],
+            weapon_class_conf=weapon_conf,
+            rgb_max_conf=rgb_conf,
+            thermal_max_conf=thermal_conf,
+        )
+
+    def _should_fire(self, last_capture_t: float, fps: int) -> bool:
+        """Rate-gate: fire if FPS>0 and enough time has elapsed."""
+        if fps <= 0:
+            return False
+        return (self._sim_time - last_capture_t) >= (1.0 / fps)
+
     def _tick_sensors(self):
-        """Tick deployed sensors, fuse observations, and update mission policy."""
+        """Tick deployed sensors, fuse observations, and update mission policy.
+
+        The SensorScheduler decides per-tick whether RGB and/or thermal
+        actually fire for each drone.  Skipped captures are counted for
+        end-of-scenario compute-cost reporting.
+        """
         if self._sim_time - self._last_sensor_tick < 1.0 / self.SENSOR_HZ:
             return
         self._last_sensor_tick = self._sim_time
@@ -1017,48 +1125,80 @@ class ScenarioExecutor:
 
             altitude = abs(drone.position.z)
 
-            # Capture — use model adapter when provided, else heuristic sensors
-            if self._detection_adapter is not None:
-                rgb_obs = self._detection_adapter.detect(
-                    drone_position=drone.position,
-                    altitude=altitude,
-                    world_model=self.world,
-                    drone_id=drone_id,
-                    sensor_type=SensorType.RGB_CAMERA,
-                    fov_deg=84.0,
-                )
-                thermal_obs = self._detection_adapter.detect(
-                    drone_position=drone.position,
-                    altitude=altitude,
-                    world_model=self.world,
-                    drone_id=drone_id,
-                    sensor_type=SensorType.THERMAL_CAMERA,
-                    fov_deg=40.0,
-                )
-            else:
-                rgb_obs = self._rgb_cameras[drone_id].capture(
-                    drone_position=drone.position,
-                    altitude=altitude,
-                    world_model=self.world,
-                    drone_id=drone_id,
-                )
-                thermal_obs = self._thermal_cameras[drone_id].capture(
-                    drone_position=drone.position,
-                    altitude=altitude,
-                    world_model=self.world,
-                    drone_id=drone_id,
-                )
-            self._record_sensor_hits(rgb_obs)
-            self._record_sensor_hits(thermal_obs)
+            # ── Scheduler decides what fires this tick ──
+            state = self._build_sensor_state(drone_id)
+            action = self._sensor_schedulers[drone_id].tick(state)
+            self._last_scheduler_action[drone_id] = action
 
-            # Fuse
+            fire_rgb = self._should_fire(self._rgb_last_capture_t[drone_id], action.rgb_fps)
+            fire_thermal = self._should_fire(self._thermal_last_capture_t[drone_id], action.thermal_fps)
+
+            rgb_obs = None
+            thermal_obs = None
+
+            # ── RGB capture (gated) ──
+            if fire_rgb:
+                if self._detection_adapter is not None:
+                    rgb_obs = self._detection_adapter.detect(
+                        drone_position=drone.position,
+                        altitude=altitude,
+                        world_model=self.world,
+                        drone_id=drone_id,
+                        sensor_type=SensorType.RGB_CAMERA,
+                        fov_deg=84.0,
+                    )
+                else:
+                    rgb_obs = self._rgb_cameras[drone_id].capture(
+                        drone_position=drone.position,
+                        altitude=altitude,
+                        world_model=self.world,
+                        drone_id=drone_id,
+                    )
+                self._rgb_last_capture_t[drone_id] = self._sim_time
+                self._sensor_fires[drone_id]["rgb_fire"] += 1
+            else:
+                self._sensor_fires[drone_id]["rgb_skip"] += 1
+
+            # ── Thermal capture (gated) ──
+            if fire_thermal:
+                if self._detection_adapter is not None:
+                    thermal_obs = self._detection_adapter.detect(
+                        drone_position=drone.position,
+                        altitude=altitude,
+                        world_model=self.world,
+                        drone_id=drone_id,
+                        sensor_type=SensorType.THERMAL_CAMERA,
+                        fov_deg=40.0,
+                    )
+                else:
+                    thermal_obs = self._thermal_cameras[drone_id].capture(
+                        drone_position=drone.position,
+                        altitude=altitude,
+                        world_model=self.world,
+                        drone_id=drone_id,
+                    )
+                self._thermal_last_capture_t[drone_id] = self._sim_time
+                self._sensor_fires[drone_id]["thermal_fire"] += 1
+            else:
+                self._sensor_fires[drone_id]["thermal_skip"] += 1
+
+            if rgb_obs is not None:
+                self._record_sensor_hits(rgb_obs)
+            if thermal_obs is not None:
+                self._record_sensor_hits(thermal_obs)
+
+            # ── Fuse only what actually fired ──
             pipeline = self._fusion_pipelines[drone_id]
-            pipeline.add_observation(rgb_obs)
-            pipeline.add_observation(thermal_obs)
+            if rgb_obs is not None:
+                pipeline.add_observation(rgb_obs)
+            if thermal_obs is not None:
+                pipeline.add_observation(thermal_obs)
             fused = pipeline.fuse()
 
             if fused is None:
                 continue
+
+            self._last_fused_obs[drone_id] = fused  # feeds next tick's SensorState
 
             # Track coverage
             for cell in fused.coverage_cells:

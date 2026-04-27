@@ -551,10 +551,13 @@ class ThermalYOLOAdapter(DetectionModelAdapter):
             )
 
         self._model = YOLO(weights_path)
-        self._class_map = class_map or FLIR_ADAS_CLASS_MAP
+        self._class_map = class_map or SANJAY_POLICE_CLASS_MAP
         self._conf_thresh = confidence_threshold
         self._img_size = img_size
-        logger.info("ThermalYOLOAdapter loaded: %s", weights_path)
+        logger.info(
+            "ThermalYOLOAdapter loaded: %s (%d classes)",
+            weights_path, len(self._class_map),
+        )
 
     def detect(
         self,
