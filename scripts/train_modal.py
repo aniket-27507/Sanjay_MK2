@@ -189,10 +189,14 @@ def eval_policy(num_seeds: int = 3) -> str:
                     rgb_active=rgb_fires, thermal_active=thermal_fires)
 
     lines = []
+    print("\n========== EVAL RESULTS ==========")
     for seed in range(num_seeds):
         a = run_episode(use_trained=False, seed=seed)
         b = run_episode(use_trained=True, seed=seed)
-        lines.append(f"seed={seed}  heuristic={a}  trained={b}")
+        line = f"seed={seed}  heuristic={a}  trained={b}"
+        print(line)
+        lines.append(line)
+    print("==================================\n")
     return "\n".join(lines)
 
 
