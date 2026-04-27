@@ -135,8 +135,12 @@ def train(
     timeout=600,
     volumes={"/models": volume},
 )
-def eval_policy(seeds: list[int] = [0, 1, 2]) -> str:
-    """Run heuristic-vs-trained eval episodes on Modal. Returns formatted text."""
+def eval_policy(num_seeds: int = 3) -> str:
+    """Run heuristic-vs-trained eval episodes on Modal. Returns formatted text.
+
+    Modal's CLI parser doesn't accept ``list[int]`` annotations, so we take
+    an integer count and run seeds 0..num_seeds-1.
+    """
     import os
     import shutil
     import subprocess
@@ -185,7 +189,7 @@ def eval_policy(seeds: list[int] = [0, 1, 2]) -> str:
                     rgb_active=rgb_fires, thermal_active=thermal_fires)
 
     lines = []
-    for seed in seeds:
+    for seed in range(num_seeds):
         a = run_episode(use_trained=False, seed=seed)
         b = run_episode(use_trained=True, seed=seed)
         lines.append(f"seed={seed}  heuristic={a}  trained={b}")
