@@ -35,12 +35,17 @@ logger = logging.getLogger(__name__)
 
 def parse_args():
     p = argparse.ArgumentParser(description="PPO training for SensorScheduler")
+    p.add_argument("--env", choices=["fast", "scenario"], default="fast",
+                   help="'fast' = pseudo-physics env with rich state variation (default, recommended). "
+                        "'scenario' = wrap real ScenarioExecutor (slower, less feature variation).")
     p.add_argument("--total-steps", type=int, default=200_000,
                    help="Total environment timesteps to train for")
+    p.add_argument("--episode-steps", type=int, default=120,
+                   help="Steps per episode in fast env (ignored in scenario mode)")
     p.add_argument("--episode-duration", type=float, default=60.0,
-                   help="Sim seconds per training episode (shorter = more diverse)")
+                   help="Sim seconds per episode in scenario mode (ignored in fast)")
     p.add_argument("--n-envs", type=int, default=1,
-                   help="Parallel envs (1 is fine; scenario sim is the bottleneck)")
+                   help="Parallel envs (raise for fast mode; keep at 1 for scenario)")
     p.add_argument("--save-dir", type=Path, default=Path("runs/sensor_scheduler"),
                    help="Where to save the policy zip and TensorBoard logs")
     p.add_argument("--resume", type=Path, default=None,
@@ -55,10 +60,16 @@ def parse_args():
     return p.parse_args()
 
 
-def build_env(episode_duration: float, seed: int):
-    """Construct one SensorSchedulerEnv. Imported lazily so --help works without gym."""
-    from src.single_drone.sensor_scheduler_env import SensorSchedulerEnv
-    return SensorSchedulerEnv(episode_duration_sec=episode_duration, seed=seed)
+def build_env(env_kind: str, episode_steps: int, episode_duration: float, seed: int):
+    """Construct one Gym env. Imported lazily so --help works without gym."""
+    if env_kind == "fast":
+        from src.single_drone.sensor_scheduler_fast_env import SensorSchedulerFastEnv
+        return SensorSchedulerFastEnv(episode_steps=episode_steps, seed=seed)
+    elif env_kind == "scenario":
+        from src.single_drone.sensor_scheduler_env import SensorSchedulerEnv
+        return SensorSchedulerEnv(episode_duration_sec=episode_duration, seed=seed)
+    else:
+        raise ValueError(f"unknown --env: {env_kind}")
 
 
 def main():
@@ -85,12 +96,18 @@ def main():
     elif args.auto_resume and final_path.exists():
         resume_from = final_path
 
-    env_kwargs = dict(episode_duration=args.episode_duration, seed=args.seed)
+    env_kwargs = dict(
+        env_kind=args.env,
+        episode_steps=args.episode_steps,
+        episode_duration=args.episode_duration,
+        seed=args.seed,
+    )
     vec_env = make_vec_env(
         env_id=lambda: build_env(**env_kwargs),
         n_envs=args.n_envs,
         seed=args.seed,
     )
+    logger.info("Training with --env %s (n_envs=%d)", args.env, args.n_envs)
 
     if resume_from is not None and resume_from.exists():
         logger.info("Resuming PPO from %s", resume_from)

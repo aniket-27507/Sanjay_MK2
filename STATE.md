@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-04-24 (Step 5A complete: PPO training infra in place, ready for Colab run)
+**Last updated:** 2026-04-25 (Step 5A v2: pivoted to fast-mode env with truth-based upscaling)
 
 ## How to use this file (Claude / Codex / GPT)
 
@@ -17,11 +17,11 @@
 
 | Field | Value |
 |-------|--------|
-| **Current goal** | Step 5A complete: RL training infrastructure in place. Next: Step 5B -- run PPO training on Colab |
-| **In scope** | `step_one_tick()` on ScenarioExecutor, `sensor_scheduler_rl.py` (state/action/reward), `sensor_scheduler_env.py` (Gym env), `scripts/train_sensor_scheduler.py`, `notebooks/train_sensor_scheduler.ipynb`, `tests/test_scheduler_rl.py` |
-| **Out of scope** | Local PPO training (Colab pattern), Step 5C policy integration (after weights arrive), ONNX export |
-| **Exit criteria** | ACHIEVED: 35/35 scheduler tests pass (3 Gym tests skip locally without gymnasium), 29/29 existing tests pass (zero regressions), training script smoke-tested end-to-end pending Colab run |
-| **Handoff notes** | **Step 5A complete (2026-04-24).** Decision: scenario mode (not fast pseudo-env). `ScenarioExecutor.step_one_tick()` advances sim until one sensor tick fires. `SensorSchedulerEnv` wraps the executor; only drone 0 trains, drones 1-5 use heuristic for realism. Action space: `Discrete(30)` = 6 RGB levels x 5 thermal levels. State: 17-dim Box. Reward: detection_reward (class-priority weighted) - 0.3 * compute_cost - 0.05 * switch_penalty. PPO config: MlpPolicy [64,32], ~3,500 params. Training script supports `--auto-resume` from `runs/sensor_scheduler/policy.zip`. **Next action:** Step 5B -- on Colab, run `notebooks/train_sensor_scheduler.ipynb`. 200k steps takes ~30-60 min on T4; bump to 1M for polished run. Output: `policy.zip` saved to `My Drive/SanjayMK2/runs/sensor_scheduler/policy.zip`. After Colab run, return to local for Step 5C: wrap trained policy in `RLPolicy` class, swap into `SensorScheduler`, run regression scenarios to confirm it matches/beats heuristic. |
+| **Current goal** | Step 5A v2 complete: fast-mode env with truth-based upscaling. Next: Step 5B -- 300k PPO run on Colab (~15-25 min on T4) |
+| **In scope** | `src/single_drone/sensor_scheduler_fast_env.py` (new), `--env fast/scenario` flag in training script, `tests/test_scheduler_fast_env.py` (10 new tests). Existing scenario env retained for Step 5C validation |
+| **Out of scope** | Local PPO training, Tier-2 measured distributions (when real-deployment data is available), Step 5C policy integration |
+| **Exit criteria** | 35/35 existing scheduler tests pass + 29/29 existing tests pass (zero regressions). 10 new fast-env tests skip locally (need gymnasium); will run on Colab. Training script `--help` shows --env flag. |
+| **Handoff notes** | **Step 5A v2 (2026-04-25).** First scenario-mode training run produced a degenerate policy: only 2 of 17 state features actually varied (lux was hardcoded, drones died from heartbeat watchdog, no detections), so PPO collapsed to "minimize compute" -- output rgb=0,thermal=15 across all states with reward=-8.675 identical to heuristic. **Pivoted to fast-mode pseudo-env** in `sensor_scheduler_fast_env.py`: every architectural feature is sampled per `reset()` (lux log-uniform 1->100k, weather, mission_state, threat density), reward uses POST-rails FPS so PPO can't game rails, synthetic detection model with class-aware P(detect) physics. **Truth-based upscaling**: every Tier-1 synthetic distribution (`_sample_lux`, `_sample_weather`, `_detect_prob_*`) is marked with replacement guidance for when measured data arrives -- policy interface stays stable. **Next action:** Step 5B on Colab. `notebooks/train_sensor_scheduler.ipynb` now uses `--env fast --total-steps 300000 --n-envs 8 --auto-resume`, ~15-25 min on T4. Output: `policy.zip` to Drive. After Colab returns weights, do Step 5C: wrap in `RLPolicy`, swap into `SensorScheduler`, regression-test in scenario_executor (which becomes the validation harness). Old scenario-mode env (`sensor_scheduler_env.py`) retained -- still useful for 5C validation. |
 
 ---
 
