@@ -205,8 +205,8 @@ class MAVSDKInterface:
     
     def _start_telemetry_tasks(self):
         """Start background telemetry subscription tasks."""
-        self._tasks.append(asyncio.create_task(self._subscribe_position()))
-        self._tasks.append(asyncio.create_task(self._subscribe_velocity()))
+        self._tasks.append(asyncio.create_task(self._subscribe_position_velocity_ned()))
+        self._tasks.append(asyncio.create_task(self._subscribe_global_position()))
         self._tasks.append(asyncio.create_task(self._subscribe_attitude()))
         self._tasks.append(asyncio.create_task(self._subscribe_battery()))
         self._tasks.append(asyncio.create_task(self._subscribe_flight_mode()))
@@ -216,8 +216,33 @@ class MAVSDKInterface:
     
     # ==================== TELEMETRY SUBSCRIPTIONS ====================
     
-    async def _subscribe_position(self):
-        """Subscribe to position telemetry."""
+    async def _subscribe_position_velocity_ned(self):
+        """Subscribe to local NED position and velocity telemetry."""
+        try:
+            async for sample in self._drone.telemetry.position_velocity_ned():
+                position = sample.position
+                velocity = sample.velocity
+                async with self._telemetry_lock:
+                    self._telemetry.position = Vector3(
+                        x=float(position.north_m),
+                        y=float(position.east_m),
+                        z=float(position.down_m),
+                    )
+                    self._telemetry.velocity = Vector3(
+                        x=float(velocity.north_m_s),
+                        y=float(velocity.east_m_s),
+                        z=float(velocity.down_m_s),
+                    )
+                    self._telemetry.altitude_rel = -float(position.down_m)
+                    self._telemetry.timestamp = time.time()
+
+                if not self._running:
+                    break
+        except Exception as e:
+            logger.error(f"Local NED telemetry subscription error: {e}")
+
+    async def _subscribe_global_position(self):
+        """Subscribe to GPS/global position telemetry without overwriting local NED."""
         try:
             async for position in self._drone.telemetry.position():
                 async with self._telemetry_lock:
@@ -225,35 +250,12 @@ class MAVSDKInterface:
                     self._telemetry.longitude = position.longitude_deg
                     self._telemetry.altitude_msl = position.absolute_altitude_m
                     self._telemetry.altitude_rel = position.relative_altitude_m
-                    
-                    # Update position in NED frame (relative altitude is -Z)
-                    self._telemetry.position = Vector3(
-                        x=0.0,  # Will be updated from local position
-                        y=0.0,
-                        z=-position.relative_altitude_m  # NED: down is positive
-                    )
                     self._telemetry.timestamp = time.time()
-                
+
                 if not self._running:
                     break
         except Exception as e:
-            logger.error(f"Position subscription error: {e}")
-    
-    async def _subscribe_velocity(self):
-        """Subscribe to velocity telemetry."""
-        try:
-            async for velocity in self._drone.telemetry.velocity_ned():
-                async with self._telemetry_lock:
-                    self._telemetry.velocity = Vector3(
-                        x=velocity.north_m_s,
-                        y=velocity.east_m_s,
-                        z=velocity.down_m_s
-                    )
-                
-                if not self._running:
-                    break
-        except Exception as e:
-            logger.error(f"Velocity subscription error: {e}")
+            logger.error(f"Global position subscription error: {e}")
     
     async def _subscribe_attitude(self):
         """Subscribe to attitude telemetry."""
@@ -708,4 +710,3 @@ class MAVSDKInterface:
         
         logger.warning("Landing timeout")
         return False
-

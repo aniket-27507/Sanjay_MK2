@@ -133,6 +133,15 @@ echo "  torch:      $TORCH_VER"
 MUJOCO_VER=$("$VENV_PATH/bin/python" -c "import mujoco; print(mujoco.__version__)" 2>&1)
 echo "  mujoco:     $MUJOCO_VER"
 
+MAVSDK_STATUS=$("$VENV_PATH/bin/python" -c "import mavsdk; print('OK')" 2>&1)
+echo "  mavsdk:     $MAVSDK_STATUS"
+
+GRPC_VER=$("$VENV_PATH/bin/python" -c "import grpc; print(grpc.__version__)" 2>&1)
+echo "  grpcio:     $GRPC_VER"
+
+PROTOBUF_VER=$("$VENV_PATH/bin/python" -c "import google.protobuf; print(google.protobuf.__version__)" 2>&1)
+echo "  protobuf:   $PROTOBUF_VER"
+
 MPS_STATUS=$("$VENV_PATH/bin/python" -c "
 import torch
 if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():

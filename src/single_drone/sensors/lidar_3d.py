@@ -108,6 +108,9 @@ class Lidar3DDriver:
             self._raw_points = points
             self._filtered_points = points
             self._obstacles = []
+            self._sector_ranges = np.full(
+                self.config.num_sectors, self.config.max_range
+            )
             return
 
         self._raw_points = points

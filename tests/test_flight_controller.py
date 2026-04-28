@@ -216,6 +216,95 @@ class TestFlightControllerWithMockedInterface:
         
         assert result == True
         assert controller.mode == FlightMode.IDLE
+
+    async def test_land_stops_offboard_before_action_land(self):
+        """Test landing exits offboard before commanding PX4 land."""
+        controller = FlightController(drone_id=0, backend="isaac_sim")
+        controller._mode = FlightMode.HOVERING
+
+        calls = []
+        controller._interface = MagicMock()
+        controller._interface._offboard_active = True
+        controller._interface.is_in_air = MagicMock(return_value=True)
+
+        async def stop_offboard():
+            calls.append("stop_offboard")
+            controller._interface._offboard_active = False
+            return True
+
+        async def land():
+            calls.append("land")
+            return True
+
+        controller._interface.stop_offboard = AsyncMock(side_effect=stop_offboard)
+        controller._interface.land = AsyncMock(side_effect=land)
+        controller._interface.wait_for_landed = AsyncMock(return_value=True)
+
+        assert await controller.land() is True
+        assert calls == ["stop_offboard", "land"]
+
+    async def test_goto_position_fails_when_offboard_start_fails(self):
+        """Navigation should fail cleanly if PX4 rejects offboard mode."""
+        controller = FlightController(drone_id=0, backend="isaac_sim")
+        controller._mode = FlightMode.HOVERING
+        controller._running = True
+
+        controller._interface = MagicMock()
+        controller._interface._offboard_active = False
+        controller._interface.get_position = MagicMock(return_value=Vector3())
+        controller._interface.start_offboard = AsyncMock(return_value=False)
+
+        result = await controller.goto_position(Vector3(10, 0, -5), timeout=0.1)
+
+        assert result is False
+        assert controller.mode == FlightMode.HOVERING
+        assert controller._status.error_message == "Failed to start offboard mode"
+
+    async def test_goto_position_times_out(self):
+        """Navigation should not hang forever when position never changes."""
+        controller = FlightController(drone_id=0, backend="isaac_sim")
+        controller._mode = FlightMode.HOVERING
+        controller._running = True
+
+        controller._interface = MagicMock()
+        controller._interface._offboard_active = False
+        controller._interface.get_position = MagicMock(return_value=Vector3())
+        controller._interface.start_offboard = AsyncMock(return_value=True)
+
+        result = await controller.goto_position(Vector3(10, 0, -5), speed=2.0, timeout=0.01)
+
+        assert result is False
+        assert controller.mode == FlightMode.HOVERING
+        assert controller._status.error_message == "Navigation timeout"
+
+    async def test_avoidance_velocity_respects_navigation_speed_limit(self):
+        """Avoidance output should still honor goto_position speed limiting."""
+        controller = FlightController(drone_id=0, backend="isaac_sim")
+        controller._mode = FlightMode.NAVIGATING
+        controller._target_position = Vector3(10, 0, 0)
+        controller._velocity_limit = 2.0
+        controller._avoidance_enabled = True
+
+        class FakeAvoidanceManager:
+            state = MagicMock(name="state")
+            is_hpl_overriding = False
+            closest_obstacle_distance = 4.0
+
+            def set_goal(self, goal):
+                self.goal = goal
+
+            def compute_avoidance(self, drone_position, drone_velocity):
+                return Vector3(10, 0, 0)
+
+        controller._avoidance_manager = FakeAvoidanceManager()
+        controller._interface = MagicMock()
+        controller._interface.get_position = MagicMock(return_value=Vector3())
+        controller._interface.get_velocity = MagicMock(return_value=Vector3())
+        controller._interface.set_velocity_ned = AsyncMock(return_value=True)
+
+        await controller._navigate_step()
+
+        controller._interface.set_velocity_ned.assert_awaited_once_with(2.0, 0.0, 0.0, 0.0)
     
     async def test_get_state(self):
         """Test getting drone state."""
@@ -258,4 +347,3 @@ class TestFlightControllerProperties:
         
         controller._status.is_healthy = False
         assert controller.is_healthy == False
-

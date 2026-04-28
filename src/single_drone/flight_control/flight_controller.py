@@ -411,6 +411,10 @@ class FlightController:
             return True
         
         await self._transition_to(FlightMode.LANDING)
+
+        if getattr(self._interface, "_offboard_active", False) is True:
+            if not await self._interface.stop_offboard():
+                logger.warning("Failed to stop offboard mode before landing")
         
         if not await self._interface.land():
             return False
@@ -418,6 +422,8 @@ class FlightController:
         # Wait for landing
         if not await self._interface.wait_for_landed():
             logger.warning("Landing timeout")
+            self._status.error_message = "Landing timeout"
+            return False
         
         await self._transition_to(FlightMode.LANDED)
         await self._transition_to(FlightMode.IDLE)
@@ -429,7 +435,8 @@ class FlightController:
         self, 
         position: Vector3, 
         speed: Optional[float] = None,
-        tolerance: Optional[float] = None
+        tolerance: Optional[float] = None,
+        timeout: Optional[float] = None,
     ) -> bool:
         """
         Navigate to a position.
@@ -438,6 +445,8 @@ class FlightController:
             position: Target position in NED frame
             speed: Maximum speed (uses config default if None)
             tolerance: Position tolerance (uses config default if None)
+            timeout: Maximum navigation time in seconds. If None, derived
+                from distance and speed with a conservative minimum.
             
         Returns:
             True when position reached
@@ -446,27 +455,50 @@ class FlightController:
             logger.warning(f"Cannot navigate from mode {self._mode}")
             return False
         
-        speed = speed or self.config.max_horizontal_speed
+        speed = max(0.1, min(speed or self.config.max_horizontal_speed, self.config.max_horizontal_speed))
         tolerance = tolerance or self.config.position_tolerance
+        start_position = self.position
+        initial_distance = start_position.distance_to(position)
+        if timeout is None:
+            timeout = max(15.0, (initial_distance / max(speed, 0.1)) * 3.0)
         
         self._target_position = position
         await self._transition_to(FlightMode.NAVIGATING)
         
         # Start offboard mode if not already
-        if not self._interface._offboard_active:
-            await self._interface.start_offboard()
+        if getattr(self._interface, "_offboard_active", False) is not True:
+            if not await self._interface.start_offboard():
+                self._status.error_message = "Failed to start offboard mode"
+                await self._transition_to(FlightMode.HOVERING)
+                return False
         
         # Wait for arrival
+        old_velocity_limit = self._velocity_limit
+        self._velocity_limit = speed
+        start_time = time.time()
         while self._running and self._mode == FlightMode.NAVIGATING:
             distance = self.position.distance_to(position)
             
             if distance <= tolerance:
                 logger.info(f"Reached position {position}")
                 await self._transition_to(FlightMode.HOVERING)
+                self._velocity_limit = old_velocity_limit
                 return True
+
+            if time.time() - start_time > timeout:
+                logger.warning(
+                    "Navigation timeout after %.1fs (remaining %.1fm)",
+                    timeout,
+                    distance,
+                )
+                self._status.error_message = "Navigation timeout"
+                await self._transition_to(FlightMode.HOVERING)
+                self._velocity_limit = old_velocity_limit
+                return False
             
             await asyncio.sleep(0.1)
         
+        self._velocity_limit = old_velocity_limit
         return False
     
     async def goto_altitude(self, altitude: float) -> bool:
@@ -691,6 +723,10 @@ class FlightController:
                 velocity = (velocity + swarm_velocity) * 0.5
             except Exception as exc:
                 logger.debug("Swarm velocity modifier skipped: %s", exc)
+
+        speed = velocity.magnitude()
+        if speed > self._velocity_limit:
+            velocity = velocity * (self._velocity_limit / speed)
         
         # Send velocity command
         await self._interface.set_velocity_ned(
@@ -859,4 +895,3 @@ class FlightController:
             is_healthy=self._status.is_healthy,
             timestamp=time.time()
         )
-

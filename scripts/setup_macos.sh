@@ -30,6 +30,7 @@ NC='\033[0m' # No Color
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_DIR"
+VENV_PATH=".venv"
 
 # Check prerequisites
 echo "📋 Checking prerequisites..."
@@ -64,14 +65,14 @@ echo -e "${GREEN}✓${NC} Python $PYTHON_VERSION"
 pyenv local "$PYTHON_VERSION"
 
 # Create virtual environment if not exists
-if [ ! -d "venv" ]; then
+if [ ! -d "$VENV_PATH" ]; then
     echo ""
     echo "🐍 Creating virtual environment..."
-    ~/.pyenv/versions/$PYTHON_VERSION/bin/python -m venv venv
+    ~/.pyenv/versions/$PYTHON_VERSION/bin/python -m venv "$VENV_PATH"
 fi
 
 # Activate virtual environment
-source venv/bin/activate
+source "$VENV_PATH/bin/activate"
 
 # Upgrade pip
 echo ""
@@ -128,9 +129,8 @@ echo -e "${GREEN}✅ Setup complete!${NC}"
 echo ""
 echo "To activate the environment:"
 echo "  cd $PROJECT_DIR"
-echo "  source venv/bin/activate"
+echo "  source .venv/bin/activate"
 echo ""
 echo "To run tests:"
 echo "  pytest tests/ -v"
 echo ""
-
