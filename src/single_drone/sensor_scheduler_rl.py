@@ -127,9 +127,14 @@ CLASS_PRIORITY = {
     "crowd":            2.0,
 }
 
-DEFAULT_ALPHA: float = 0.6   # compute-cost weight (raised from 0.3 after a
-                             # 300k run collapsed to always-on. Stronger penalty
-                             # forces the policy to discriminate via state.)
+DEFAULT_ALPHA: float = 0.8   # compute-cost weight. History:
+                             #   0.3 -> always-on collapse (300k steps)
+                             #   0.6 -> partial discrimination (1M steps);
+                             #          state-dependent but over-eager on
+                             #          thermal in 2 of 3 eval seeds.
+                             #   0.8 -> push compute penalty harder so
+                             #          weapon-class detection bonus alone
+                             #          doesn't justify always-on thermal.
 DEFAULT_BETA: float = 0.05   # switch-penalty weight
 
 
