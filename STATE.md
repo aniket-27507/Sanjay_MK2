@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-04-29 (Phase C of LiDAR world model: model + training loop ready)
+**Last updated:** 2026-04-29 (LiDAR world model v1: A+B+C+D complete; eval + ONNX export ready)
 
 ## How to use this file (Claude / Codex / GPT)
 
@@ -17,7 +17,7 @@
 
 | Field | Value |
 |-------|--------|
-| **Current goal** | LiDAR world model: predictive occupancy/risk grid 0.5-2.0 s ahead as a planner cost bias for APF/HPL. Plan in `~/.claude/plans/target-train-a-local-bubbly-dusk.md`. Phases A+B+C **done**: encoder + pose loader + dataset builder + LidarWorldModel (~80k params, MotionNet-STPN+FiLM) + weighted-focal-BCE loss + local training loop + Modal entrypoint. 55 unit tests green. Local: `python scripts/train_lidar_world_model.py --data data/lidar_world_model`. Modal: `modal run scripts/train_lidar_world_model_modal.py`. Best ckpt -> `runs/lidar_world_model/best.pt`. Next: Phase D (eval + ONNX export). |
+| **Current goal** | LiDAR world model **v1 complete** (Phases A-D). Plan in `~/.claude/plans/target-train-a-local-bubbly-dusk.md`. 64 unit tests green. End-to-end pipeline: `python scripts/build_lidar_world_dataset.py --config config/training/lidar_world_model.yaml` -> `python scripts/train_lidar_world_model.py --data data/lidar_world_model` (or `modal run scripts/train_lidar_world_model_modal.py`) -> `python scripts/eval_lidar_world_model.py --ckpt runs/lidar_world_model/best.pt --data data/lidar_world_model/test --strict --report eval.json` -> `python scripts/export_lidar_world_model_onnx.py --ckpt best.pt --out lidar_world_model.onnx`. Next plan: Jetson TensorRT engine build + AvoidanceManager cost-bias hook. |
 | **In scope** | `src/single_drone/sensor_scheduler_fast_env.py` (new), `--env fast/scenario` flag in training script, `tests/test_scheduler_fast_env.py` (10 new tests). Existing scenario env retained for Step 5C validation |
 | **Out of scope** | Local PPO training, Tier-2 measured distributions (when real-deployment data is available), Step 5C policy integration |
 | **Exit criteria** | 35/35 existing scheduler tests pass + 29/29 existing tests pass (zero regressions). 10 new fast-env tests skip locally (need gymnasium); will run on Colab. Training script `--help` shows --env flag. |

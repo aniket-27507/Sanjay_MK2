@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from src.single_drone.world_model.lidar_dataset_io import ShardWriter, WindowSample
@@ -205,3 +206,144 @@ def test_train_script_resume(tmp_path: Path):
     )
     assert result2.returncode == 0, result2.stderr
     assert "resumed from" in result2.stdout
+
+
+def test_eval_script_writes_report(tmp_path: Path):
+    data_root = tmp_path / "data"
+    _write_synthetic_dataset(data_root, n_train=8, n_val=4)
+    save_dir = tmp_path / "runs"
+
+    # Train briefly to produce a real checkpoint
+    subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "train_lidar_world_model.py"),
+            "--data",
+            str(data_root),
+            "--save-dir",
+            str(save_dir),
+            "--epochs",
+            "1",
+            "--batch-size",
+            "4",
+            "--smoke",
+            "--device",
+            "cpu",
+        ],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+    )
+
+    # Use the val split as the test split for the eval smoke
+    report_path = tmp_path / "eval.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "eval_lidar_world_model.py"),
+            "--ckpt",
+            str(save_dir / "best.pt"),
+            "--data",
+            str(data_root / "val"),
+            "--report",
+            str(report_path),
+            "--device",
+            "cpu",
+            "--batch-size",
+            "4",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"eval_lidar_world_model.py failed:\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    report = json.loads(report_path.read_text())
+    for key in (
+        "f1_per_horizon",
+        "iou_per_horizon",
+        "ece_per_horizon",
+        "front_recall_per_horizon",
+        "side_recall_per_horizon",
+        "rear_recall_per_horizon",
+        "fn_in_tube_per_horizon",
+    ):
+        assert key in report["metrics"]
+        assert len(report["metrics"][key]) == 4
+
+
+def test_onnx_export_round_trip(tmp_path: Path):
+    pytest.importorskip("onnxruntime")
+    pytest.importorskip("onnx")
+
+    data_root = tmp_path / "data"
+    _write_synthetic_dataset(data_root, n_train=4, n_val=2)
+    save_dir = tmp_path / "runs"
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "train_lidar_world_model.py"),
+            "--data",
+            str(data_root),
+            "--save-dir",
+            str(save_dir),
+            "--epochs",
+            "1",
+            "--batch-size",
+            "2",
+            "--smoke",
+            "--device",
+            "cpu",
+        ],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+    )
+
+    out = tmp_path / "lidar_world_model.onnx"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "export_lidar_world_model_onnx.py"),
+            "--ckpt",
+            str(save_dir / "best.pt"),
+            "--out",
+            str(out),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"ONNX export failed:\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert out.exists()
+    assert "max_abs_diff" in result.stdout
+
+    # Independent re-check via onnxruntime
+    import onnxruntime as ort  # type: ignore
+
+    from src.single_drone.world_model.lidar_world_model import (
+        LidarWorldModel,
+        LidarWorldModelConfig,
+    )
+
+    ckpt = torch.load(save_dir / "best.pt", map_location="cpu", weights_only=False)
+    cfg = LidarWorldModelConfig(**ckpt["model_config"])
+    model = LidarWorldModel(cfg)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+
+    inputs = torch.randn(1, cfg.history_frames, cfg.n_input_channels,
+                         cfg.n_height_bands, cfg.n_sectors)
+    motion = torch.randn(1, cfg.history_frames, cfg.motion_dim)
+
+    with torch.no_grad():
+        torch_out = model(inputs, motion).numpy()
+    sess = ort.InferenceSession(str(out), providers=["CPUExecutionProvider"])
+    onnx_out = sess.run(["logits"], {"inputs": inputs.numpy(), "motion": motion.numpy()})[0]
+    assert np.max(np.abs(torch_out - onnx_out)) < 1e-3
