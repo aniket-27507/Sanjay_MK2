@@ -15,6 +15,7 @@ import importlib
 import platform
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +29,12 @@ from src.single_drone.flight_control.isaac_sim_interface import IsaacInterfaceCo
 from src.single_drone.flight_control.flight_controller import FlightController
 
 
-AVOIDANCE_STATES = {"MONITORING", "AVOIDING", "STUCK", "EMERGENCY"}
+REACTIVE_AVOIDANCE_STATES = {"AVOIDING", "STUCK", "EMERGENCY"}
+OBSERVABLE_AVOIDANCE_STATES = {"MONITORING", *REACTIVE_AVOIDANCE_STATES}
+MIN_ACTIVE_COMMAND_DEVIATION_MPS = 0.25
+MIN_ACTIVE_PATH_DEVIATION_M = 0.20
+MAX_NEGATIVE_PATH_DEVIATION_M = 0.35
+MIN_OBSTACLE_DISTANCE_M = 8.0
 
 
 class SyntheticObstacle:
@@ -36,6 +42,53 @@ class SyntheticObstacle:
 
     def __init__(self, center: Vector3):
         self.center = center
+
+
+@dataclass
+class AvoidanceWiringReport:
+    """Metrics proving whether LiDAR input reached the avoidance command path."""
+
+    label: str
+    avoidance_enabled: bool
+    max_lidar_points: int = 0
+    max_clustered_obstacles: int = 0
+    min_obstacle_distance_m: float = float("inf")
+    avoidance_states_seen: set[str] = field(default_factory=set)
+    max_command_deviation_mps: float = 0.0
+    max_path_deviation_m: float = 0.0
+    hpl_override_count: int = 0
+    moved_m: float = 0.0
+
+    @property
+    def saw_reactive_state(self) -> bool:
+        return bool(self.avoidance_states_seen & REACTIVE_AVOIDANCE_STATES)
+
+    @property
+    def saw_observable_state(self) -> bool:
+        return bool(self.avoidance_states_seen & OBSERVABLE_AVOIDANCE_STATES)
+
+    @property
+    def saw_safety_response(self) -> bool:
+        return self.saw_reactive_state or self.hpl_override_count > 0
+
+    def print_summary(self) -> None:
+        min_dist = (
+            "inf"
+            if self.min_obstacle_distance_m == float("inf")
+            else f"{self.min_obstacle_distance_m:.2f}"
+        )
+        print(
+            f"WIRING REPORT [{self.label}] "
+            f"avoidance_enabled={self.avoidance_enabled} "
+            f"max_lidar_points={self.max_lidar_points} "
+            f"max_clustered_obstacles={self.max_clustered_obstacles} "
+            f"min_obstacle_distance_m={min_dist} "
+            f"avoidance_states_seen={sorted(self.avoidance_states_seen)} "
+            f"max_command_deviation_mps={self.max_command_deviation_mps:.2f} "
+            f"max_path_deviation_m={self.max_path_deviation_m:.2f} "
+            f"hpl_override_count={self.hpl_override_count} "
+            f"moved_m={self.moved_m:.2f}"
+        )
 
 
 def _check_python() -> None:
@@ -203,16 +256,172 @@ async def _inject_synthetic_obstacles(
     controller: FlightController,
     duration_s: float,
     obstacles: list[SyntheticObstacle],
+    report: AvoidanceWiringReport | None = None,
     interval_s: float = 0.1,
 ) -> None:
     end_time = time.time() + duration_s
     try:
         while time.time() < end_time:
             cloud = _make_obstacle_cloud_for_position(controller.position, obstacles)
+            if report is not None:
+                report.max_lidar_points = max(report.max_lidar_points, int(cloud.shape[0]))
             controller.feed_lidar_points(cloud)
             await asyncio.sleep(interval_s)
     finally:
         controller.feed_lidar_points(np.empty((0, 3), dtype=np.float32))
+
+
+async def _run_obstacle_wiring_trial(
+    controller: FlightController,
+    label: str,
+    target: Vector3,
+    obstacles: list[SyntheticObstacle],
+    timeout: float,
+    obstacle_hold_s: float,
+    enable_avoidance: bool,
+) -> AvoidanceWiringReport:
+    report = AvoidanceWiringReport(label=label, avoidance_enabled=enable_avoidance)
+
+    if controller.avoidance_manager is None:
+        controller.enable_avoidance()
+    if enable_avoidance:
+        controller.enable_avoidance(controller.avoidance_manager)
+    else:
+        controller.disable_avoidance()
+
+    start = controller.position
+    samples: list[Vector3] = []
+    injection = asyncio.create_task(
+        _inject_synthetic_obstacles(
+            controller,
+            duration_s=obstacle_hold_s,
+            obstacles=obstacles,
+            report=report,
+        )
+    )
+    navigation = asyncio.create_task(
+        controller.goto_position(
+            target,
+            speed=2.0,
+            tolerance=1.0,
+            timeout=max(timeout, 30.0),
+        )
+    )
+
+    try:
+        while not navigation.done():
+            position = controller.position
+            samples.append(position)
+            if controller.avoidance_manager is not None:
+                telemetry = controller.avoidance_manager.get_telemetry()
+                lidar = telemetry["lidar"]
+                report.max_lidar_points = max(
+                    report.max_lidar_points,
+                    int(lidar.get("raw_points", 0)),
+                    int(lidar.get("filtered_points", 0)),
+                )
+                report.max_clustered_obstacles = max(
+                    report.max_clustered_obstacles,
+                    int(lidar["obstacle_count"]),
+                )
+                report.min_obstacle_distance_m = min(
+                    report.min_obstacle_distance_m,
+                    float(telemetry["closest_obstacle_m"]),
+                )
+                report.avoidance_states_seen.add(str(telemetry["avoidance_state"]))
+                command = telemetry["velocity"] if enable_avoidance else [
+                    controller.velocity.x,
+                    controller.velocity.y,
+                    controller.velocity.z,
+                ]
+                report.max_command_deviation_mps = max(
+                    report.max_command_deviation_mps,
+                    abs(float(command[1])),
+                    abs(float(command[2])),
+                )
+                if bool(telemetry.get("hpl_overriding", False)):
+                    report.hpl_override_count += 1
+            await asyncio.sleep(0.2)
+
+        if not await navigation:
+            raise RuntimeError(f"{label} local NED move failed")
+    finally:
+        if not injection.done():
+            injection.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await injection
+
+    end = controller.position
+    report.moved_m = end.distance_to(start)
+    if samples:
+        report.max_path_deviation_m = max(
+            max(abs(sample.y - start.y), abs(sample.z - start.z))
+            for sample in samples
+        )
+
+    return report
+
+
+def _validate_active_avoidance_report(
+    report: AvoidanceWiringReport,
+    obstacle_count: int,
+) -> None:
+    if report.max_lidar_points <= 0:
+        raise RuntimeError("synthetic LiDAR injector produced no points")
+    if report.max_clustered_obstacles < min(2, obstacle_count):
+        raise RuntimeError(
+            "synthetic obstacle was not clustered by LiDAR driver "
+            f"(obstacles={report.max_clustered_obstacles})"
+        )
+    if report.min_obstacle_distance_m >= MIN_OBSTACLE_DISTANCE_M:
+        raise RuntimeError(
+            "clustered obstacle did not reach APF distance telemetry "
+            f"(closest={report.min_obstacle_distance_m:.2f}m)"
+        )
+    if not report.saw_safety_response:
+        raise RuntimeError(
+            "avoidance stack did not engage APF reactive states or HPL override "
+            f"(states={sorted(report.avoidance_states_seen)}, "
+            f"hpl_overrides={report.hpl_override_count})"
+        )
+    if report.max_command_deviation_mps < MIN_ACTIVE_COMMAND_DEVIATION_MPS:
+        raise RuntimeError(
+            "avoidance command did not measurably deviate "
+            f"(command={report.max_command_deviation_mps:.2f}m/s)"
+        )
+    if report.max_path_deviation_m < MIN_ACTIVE_PATH_DEVIATION_M:
+        raise RuntimeError(
+            "avoidance path did not measurably deviate "
+            f"(path={report.max_path_deviation_m:.2f}m)"
+        )
+
+
+def _validate_negative_control_report(report: AvoidanceWiringReport) -> None:
+    if report.max_lidar_points <= 0:
+        raise RuntimeError("negative-control LiDAR injector produced no points")
+    if report.max_path_deviation_m > MAX_NEGATIVE_PATH_DEVIATION_M:
+        raise RuntimeError(
+            "disabled-avoidance control deviated too much to be a useful baseline "
+            f"(path={report.max_path_deviation_m:.2f}m)"
+        )
+    if report.max_command_deviation_mps > MIN_ACTIVE_COMMAND_DEVIATION_MPS:
+        raise RuntimeError(
+            "disabled-avoidance command deviated unexpectedly "
+            f"(command={report.max_command_deviation_mps:.2f}m/s)"
+        )
+
+
+def _validate_positive_vs_negative_control(
+    active: AvoidanceWiringReport,
+    negative: AvoidanceWiringReport,
+) -> None:
+    path_margin = active.max_path_deviation_m - negative.max_path_deviation_m
+    command_margin = active.max_command_deviation_mps - negative.max_command_deviation_mps
+    if path_margin < 0.15 and command_margin < 0.20:
+        raise RuntimeError(
+            "active avoidance did not exceed disabled-control response "
+            f"(path_margin={path_margin:.2f}m, command_margin={command_margin:.2f}m/s)"
+        )
 
 
 async def _exercise_basic_avoidance(
@@ -251,109 +460,91 @@ async def _exercise_basic_avoidance(
         f"start={baseline_start} end={baseline_end} moved={baseline_moved:.2f}m"
     )
 
-    controller.enable_avoidance()
-    avoidance_start = controller.position
-    obstacles = _make_random_path_obstacles(
-        route_start=avoidance_start,
+    control_start = controller.position
+    control_obstacles = _make_random_path_obstacles(
+        route_start=control_start,
         move_m=move_m,
         count=obstacle_count,
         seed=obstacle_seed,
     )
-    obstacle_summary = ", ".join(
+    control_obstacle_summary = ", ".join(
         f"({obs.center.x:.1f},{obs.center.y:.1f},{obs.center.z:.1f})"
-        for obs in obstacles
+        for obs in control_obstacles
     )
-    print(f"OK generated synthetic obstacles count={len(obstacles)} centers={obstacle_summary}")
-    target = Vector3(
+    print(
+        "OK generated negative-control synthetic obstacles "
+        f"count={len(control_obstacles)} centers={control_obstacle_summary}"
+    )
+    negative_target = Vector3(
+        control_start.x + move_m,
+        control_start.y,
+        control_start.z,
+    )
+
+    negative_report = await _run_obstacle_wiring_trial(
+        controller=controller,
+        label="avoidance-disabled-control",
+        target=negative_target,
+        obstacles=control_obstacles,
+        timeout=timeout,
+        obstacle_hold_s=obstacle_hold_s,
+        enable_avoidance=False,
+    )
+    negative_report.print_summary()
+    _validate_negative_control_report(negative_report)
+    if negative_report.moved_m < max(1.0, move_m * 0.5):
+        raise RuntimeError(
+            "negative-control local NED did not change enough: "
+            f"moved={negative_report.moved_m:.2f}m"
+        )
+
+    avoidance_start = controller.position
+    active_obstacles = _make_random_path_obstacles(
+        route_start=avoidance_start,
+        move_m=move_m,
+        count=obstacle_count,
+        seed=obstacle_seed + 101,
+    )
+    active_obstacle_summary = ", ".join(
+        f"({obs.center.x:.1f},{obs.center.y:.1f},{obs.center.z:.1f})"
+        for obs in active_obstacles
+    )
+    print(
+        "OK generated active synthetic obstacles "
+        f"count={len(active_obstacles)} centers={active_obstacle_summary}"
+    )
+    active_target = Vector3(
         avoidance_start.x + move_m,
         avoidance_start.y,
         avoidance_start.z,
     )
 
-    samples: list[Vector3] = []
-    states: set[str] = set()
-    max_obstacles = 0
-    closest_obstacle_m = float("inf")
-    max_command_deviation = 0.0
-
-    injection = asyncio.create_task(
-        _inject_synthetic_obstacles(
-            controller,
-            duration_s=obstacle_hold_s,
-            obstacles=obstacles,
-        )
+    active_report = await _run_obstacle_wiring_trial(
+        controller=controller,
+        label="avoidance-enabled",
+        target=active_target,
+        obstacles=active_obstacles,
+        timeout=timeout,
+        obstacle_hold_s=obstacle_hold_s,
+        enable_avoidance=True,
     )
-    navigation = asyncio.create_task(
-        controller.goto_position(
-            target,
-            speed=2.0,
-            tolerance=1.0,
-            timeout=max(timeout, 30.0),
-        )
-    )
-
-    try:
-        while not navigation.done():
-            position = controller.position
-            samples.append(position)
-            if controller.avoidance_manager is not None:
-                telemetry = controller.avoidance_manager.get_telemetry()
-                states.add(str(telemetry["avoidance_state"]))
-                max_obstacles = max(max_obstacles, int(telemetry["lidar"]["obstacle_count"]))
-                closest_obstacle_m = min(
-                    closest_obstacle_m,
-                    float(telemetry["closest_obstacle_m"]),
-                )
-                command = telemetry["velocity"]
-                max_command_deviation = max(
-                    max_command_deviation,
-                    abs(float(command[1])),
-                    abs(float(command[2])),
-                )
-            await asyncio.sleep(0.2)
-
-        if not await navigation:
-            raise RuntimeError("avoidance local NED move failed")
-    finally:
-        if not injection.done():
-            injection.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await injection
-
-    avoidance_end = controller.position
-    moved = avoidance_end.distance_to(avoidance_start)
-    max_path_deviation = 0.0
-    if samples:
-        max_path_deviation = max(
-            max(abs(sample.y - avoidance_start.y), abs(sample.z - avoidance_start.z))
-            for sample in samples
-        )
-
-    if max_obstacles < min(2, obstacle_count) or closest_obstacle_m >= 8.0:
+    active_report.print_summary()
+    _validate_active_avoidance_report(active_report, obstacle_count)
+    _validate_positive_vs_negative_control(active_report, negative_report)
+    if active_report.moved_m < max(1.0, move_m * 0.5):
         raise RuntimeError(
-            "synthetic obstacle was not accepted by avoidance stack "
-            f"(obstacles={max_obstacles}, closest={closest_obstacle_m:.2f}m)"
+            f"avoidance local NED did not change enough: moved={active_report.moved_m:.2f}m"
         )
-    if not (states & AVOIDANCE_STATES):
-        raise RuntimeError(f"avoidance state did not react to obstacle: states={sorted(states)}")
-    if max_path_deviation < 0.20 and max_command_deviation < 0.25:
-        raise RuntimeError(
-            "avoidance command/path did not measurably deviate "
-            f"(path={max_path_deviation:.2f}m, command={max_command_deviation:.2f}m/s)"
-        )
-    if moved < max(1.0, move_m * 0.5):
-        raise RuntimeError(f"avoidance local NED did not change enough: moved={moved:.2f}m")
 
     print(
-        "OK avoidance reacted "
-        f"states={sorted(states)} obstacles={max_obstacles} "
-        f"closest={closest_obstacle_m:.2f}m "
-        f"path_deviation={max_path_deviation:.2f}m "
-        f"command_deviation={max_command_deviation:.2f}m/s"
-    )
-    print(
-        "OK avoidance local_ned changed "
-        f"start={avoidance_start} end={avoidance_end} moved={moved:.2f}m"
+        "OK LiDAR obstacle-avoidance wiring validated "
+        f"active_states={sorted(active_report.avoidance_states_seen)} "
+        f"active_obstacles={active_report.max_clustered_obstacles} "
+        f"active_closest={active_report.min_obstacle_distance_m:.2f}m "
+        f"active_path_deviation={active_report.max_path_deviation_m:.2f}m "
+        f"active_command_deviation={active_report.max_command_deviation_mps:.2f}m/s "
+        f"negative_path_deviation={negative_report.max_path_deviation_m:.2f}m "
+        f"negative_command_deviation={negative_report.max_command_deviation_mps:.2f}m/s"
     )
 
     if not await controller.land():

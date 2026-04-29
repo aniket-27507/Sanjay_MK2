@@ -15,7 +15,17 @@ Components:
 from .apf_3d import APF3DAvoidance, APF3DConfig, AvoidanceState, Obstacle3D
 from .hardware_protection import HardwareProtectionLayer, HPLConfig, HPLState
 from .tactical_planner import TacticalPlanner, PlannerConfig
-from .avoidance_manager import AvoidanceManager, AvoidanceManagerConfig
+
+
+def __getattr__(name):
+    if name in {"AvoidanceManager", "AvoidanceManagerConfig"}:
+        from .avoidance_manager import AvoidanceManager, AvoidanceManagerConfig
+
+        return {
+            "AvoidanceManager": AvoidanceManager,
+            "AvoidanceManagerConfig": AvoidanceManagerConfig,
+        }[name]
+    raise AttributeError(name)
 
 __all__ = [
     "APF3DAvoidance",

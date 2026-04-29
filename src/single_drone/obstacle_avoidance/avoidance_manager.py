@@ -64,6 +64,12 @@ class AvoidanceManagerConfig:
     # ── Swarm Broadcast ──
     broadcast_threats: bool = True      # Share threat data over mesh
 
+    # ── Real LiDAR Safety Gate ──
+    # allow_clear preserves legacy sim behavior. Real hardware configs should
+    # set this to hold, zero_velocity, or speed_cap.
+    lidar_stale_policy: str = "allow_clear"
+    max_degraded_speed_mps: float = 0.5
+
 
 class AvoidanceManager:
     """
@@ -116,6 +122,8 @@ class AvoidanceManager:
         self._current_velocity = Vector3()
         self._current_state = AvoidanceState.CLEAR
         self._hpl_overriding = False
+        self._hpl_override_count = 0
+        self._lidar_health_action = "normal"
 
         # ── Callbacks ──
         self._threat_broadcast_callback: Optional[Callable] = None
@@ -157,9 +165,20 @@ class AvoidanceManager:
         """
         self._boids_velocity = velocity
 
-    def feed_lidar_points(self, points: np.ndarray, drone_position: Optional[Vector3] = None):
+    def feed_lidar_points(
+        self,
+        points: np.ndarray,
+        drone_position: Optional[Vector3] = None,
+        frame_id: Optional[str] = None,
+        timestamp: Optional[float] = None,
+    ):
         """Feed raw 3D LiDAR point cloud."""
-        self._lidar.update_points(points, drone_position)
+        self._lidar.update_points(
+            points,
+            drone_position=drone_position,
+            frame_id=frame_id,
+            timestamp=timestamp,
+        )
 
     def on_threat_broadcast(self, callback: Callable):
         """Register callback for swarm threat broadcasts."""
@@ -206,6 +225,18 @@ class AvoidanceManager:
             lookahead = max(10.0, self._boids_velocity.magnitude() * 3.0)
             self._goal = drone_position + self._boids_velocity.normalized() * lookahead
             synthetic_goal = True
+
+        lidar_healthy = self._lidar.is_healthy
+        stale_policy = self.config.lidar_stale_policy.lower()
+        self._lidar_health_action = "normal" if lidar_healthy else stale_policy
+        if stale_policy in {"hold", "zero_velocity"} and not lidar_healthy:
+            self._current_state = AvoidanceState.EMERGENCY
+            self._hpl_overriding = True
+            self._hpl_override_count += 1
+            self._current_velocity = Vector3()
+            if synthetic_goal:
+                self._goal = None
+            return self._current_velocity
 
         # ── 1. Sensor Processing ────────────────────────────────
         obstacles = self._lidar.get_obstacles()
@@ -255,9 +286,19 @@ class AvoidanceManager:
             desired_velocity, drone_position
         )
         self._hpl_overriding = was_overridden
+        if was_overridden:
+            self._hpl_override_count += 1
+
+        if stale_policy == "speed_cap" and not lidar_healthy:
+            cap = max(0.0, float(self.config.max_degraded_speed_mps))
+            speed = safe_velocity.magnitude()
+            if speed > cap:
+                safe_velocity = safe_velocity * (cap / speed) if cap > 0.0 else Vector3()
+            self._hpl_overriding = True
+            self._hpl_override_count += 1
 
         # ── 6. Threat broadcast (swarm) ─────────────────────────
-        if was_overridden and self.config.broadcast_threats:
+        if self._hpl_overriding and self.config.broadcast_threats:
             self._broadcast_threat(drone_position, obstacles)
 
         self._current_velocity = safe_velocity
@@ -390,6 +431,8 @@ class AvoidanceManager:
             "avoidance_state": self._current_state.name,
             "hpl_state": self._hpl.state.name,
             "hpl_overriding": self._hpl_overriding,
+            "hpl_override_count": self._hpl_override_count,
+            "lidar_health_action": self._lidar_health_action,
             "closest_obstacle_m": round(self._apf.closest_obstacle_distance, 2),
             "active_sub_waypoints": len(self._active_sub_waypoints),
             "sub_waypoint_index": self._sub_waypoint_index,

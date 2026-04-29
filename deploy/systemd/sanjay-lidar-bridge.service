@@ -1,0 +1,16 @@
+[Unit]
+Description=Project Sanjay MK2 real LiDAR bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sanjay/Sanjay_MK2
+Environment=PYTHONPATH=/opt/sanjay/Sanjay_MK2
+Environment=ROS_DOMAIN_ID=10
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && source .venv/bin/activate && python scripts/run_lidar_bridge.py --config config/lidar_real.yaml --drone alpha_0 --backend mavsdk'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

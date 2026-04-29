@@ -19,6 +19,7 @@ Flight controller asynchronous state machine tests.
 
 import pytest
 import asyncio
+import numpy as np
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.core.types.drone_types import Vector3, FlightMode, DroneConfig
@@ -305,6 +306,22 @@ class TestFlightControllerWithMockedInterface:
         await controller._navigate_step()
 
         controller._interface.set_velocity_ned.assert_awaited_once_with(2.0, 0.0, 0.0, 0.0)
+
+    async def test_feed_lidar_points_forwards_current_position_to_avoidance_manager(self):
+        """LiDAR injection must preserve the controller position for clustering."""
+        controller = FlightController(drone_id=0, backend="isaac_sim")
+        controller._interface = MagicMock()
+        controller._interface.get_position = MagicMock(return_value=Vector3(3.0, 4.0, -8.0))
+        points = np.array([[4.0, 0.0, 1.0]], dtype=np.float32)
+        manager = MagicMock()
+        controller._avoidance_manager = manager
+
+        controller.feed_lidar_points(points)
+
+        manager.feed_lidar_points.assert_called_once_with(
+            points,
+            drone_position=Vector3(3.0, 4.0, -8.0),
+        )
     
     async def test_get_state(self):
         """Test getting drone state."""

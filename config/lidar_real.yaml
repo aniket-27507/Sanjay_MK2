@@ -1,0 +1,73 @@
+# =============================================================================
+# Project Sanjay MK2 - Real LiDAR Prototype Configuration
+# =============================================================================
+#
+# First hardware target:
+#   - Jetson Orin-class companion computer
+#   - Ubuntu 22.04 + ROS 2 Humble
+#   - Ouster 3D LiDAR publishing sensor_msgs/PointCloud2
+#
+# Sanjay body frame convention:
+#   x = forward, y = left, z = up
+# =============================================================================
+
+default_drone: alpha_0
+
+drones:
+  alpha_0:
+    frame_id: os_sensor
+    topics:
+      pointcloud: /ouster/points
+      odom: /mavros/local_position/odom
+    extrinsics:
+      # Translation from vehicle body origin to LiDAR origin.
+      translation_m: [0.0, 0.0, 0.0]
+      # Rotation from LiDAR sensor frame into Sanjay body frame.
+      rotation_deg:
+        roll: 0.0
+        pitch: 0.0
+        yaw: 0.0
+
+lidar:
+  model: ouster_os1
+  max_range_m: 30.0
+  min_range_m: 0.3
+  num_channels: 32
+  horizontal_fov_deg: 360.0
+  vertical_fov_deg: 45.0
+  scan_rate_hz: 10.0
+
+processing:
+  voxel_size_m: 0.12
+  ground_removal: true
+  ground_height_threshold_m: 0.3
+  cluster_eps_m: 0.8
+  cluster_min_points: 5
+  max_clusters: 50
+  num_sectors: 72
+
+health:
+  stale_timeout_s: 0.5
+  min_raw_points: 50
+  min_filtered_points: 5
+
+safety:
+  # No scan/no usable points is degraded, never clear path.
+  # Options: hold, zero_velocity, speed_cap
+  on_lidar_stale: hold
+  max_degraded_speed_mps: 0.5
+
+frames:
+  body_convention: sanjay_flu
+
+px4:
+  mavsdk_connection: udp://:14540
+  publish_obstacle_distance: true
+  obstacle_distance:
+    connection: udpout:127.0.0.1:14540
+    output_bins: 72
+    angle_offset_deg: 0.0
+    no_obstacle_encoding: max_plus_one
+
+logging:
+  root: logs/lidar

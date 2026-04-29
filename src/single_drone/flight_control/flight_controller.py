@@ -614,6 +614,26 @@ class FlightController:
             return False
         await self._interface.set_velocity_ned(vx, vy, vz, yaw_rate)
         return True
+
+    async def command_velocity_ned(
+        self,
+        vx: float,
+        vy: float,
+        vz: float,
+        yaw_deg: float = 0.0,
+        start_offboard: bool = True,
+    ) -> bool:
+        """
+        Send a direct NED velocity command.
+
+        This is intended for explicitly-gated prototype/offboard tools. Normal
+        autonomous navigation should continue using `navigate_to`.
+        """
+        if start_offboard and getattr(self._interface, "_offboard_active", False) is not True:
+            if not await self._interface.start_offboard():
+                self._status.error_message = "Failed to start offboard mode"
+                return False
+        return await self._interface.set_velocity_ned(vx, vy, vz, yaw_deg)
     
     # ==================== CALLBACKS ====================
     
@@ -856,7 +876,7 @@ class FlightController:
         """Get the attached AvoidanceManager (or None)."""
         return self._avoidance_manager
     
-    def feed_lidar_points(self, points):
+    def feed_lidar_points(self, points, frame_id=None, timestamp=None):
         """
         Feed raw 3D LiDAR points to the avoidance system.
         
@@ -866,9 +886,12 @@ class FlightController:
             points: Nx3 numpy array of (x, y, z) in body frame.
         """
         if self._avoidance_manager is not None:
-            self._avoidance_manager.feed_lidar_points(
-                points, drone_position=self.position
-            )
+            kwargs = {"drone_position": self.position}
+            if frame_id is not None:
+                kwargs["frame_id"] = frame_id
+            if timestamp is not None:
+                kwargs["timestamp"] = timestamp
+            self._avoidance_manager.feed_lidar_points(points, **kwargs)
 
     def attach_flock_coordinator(self, flock_coordinator):
         """Attach optional FlockCoordinator used for boids/cbba modifiers."""

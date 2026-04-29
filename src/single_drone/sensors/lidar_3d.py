@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional
 
 import numpy as np
 
@@ -56,6 +56,11 @@ class Lidar3DConfig:
 
     # ── Sector Mapping (for HPL) ──
     num_sectors: int = 12           # Horizontal sectors for range map
+
+    # ── Real sensor health ──
+    stale_timeout_s: float = 0.5     # Max age before LiDAR is considered stale
+    min_raw_points: int = 1          # Minimum raw points for a healthy scan
+    min_filtered_points: int = 1     # Minimum usable points after filtering
 
 
 class Lidar3DDriver:
@@ -92,10 +97,21 @@ class Lidar3DDriver:
             self.config.num_sectors, self.config.max_range
         )
         self._last_update: float = 0.0
+        self._last_pointcloud_timestamp: float = 0.0
+        self._last_pointcloud_frame: str = ""
+        self._dropped_frame_count: int = 0
+        self._last_drop_reason: str = "no_scan"
+        self._last_processing_latency_ms: float = 0.0
 
     # ── Public Interface ──────────────────────────────────────────
 
-    def update_points(self, points: np.ndarray, drone_position: Optional[Vector3] = None):
+    def update_points(
+        self,
+        points: np.ndarray,
+        drone_position: Optional[Vector3] = None,
+        frame_id: Optional[str] = None,
+        timestamp: Optional[float] = None,
+    ):
         """
         Ingest a raw 3D point cloud.
 
@@ -103,7 +119,27 @@ class Lidar3DDriver:
             points: Nx3 array of (x, y, z) in the sensor/body frame.
                     x = forward, y = left, z = up.
             drone_position: Optional world position for obstacle world-frame output.
+            frame_id: Optional source frame name for telemetry.
+            timestamp: Optional point-cloud timestamp in seconds.
         """
+        processing_start = time.time()
+        now = processing_start
+        scan_time = float(timestamp if timestamp is not None else now)
+        self._last_update = now
+        self._last_pointcloud_timestamp = scan_time
+        self._last_drop_reason = ""
+        if frame_id is not None:
+            self._last_pointcloud_frame = frame_id
+
+        points = np.asarray(points, dtype=np.float32)
+        if points.ndim != 2 or points.shape[1] < 3:
+            logger.warning("Invalid LiDAR point cloud shape: %s", points.shape)
+            self._dropped_frame_count += 1
+            self._last_drop_reason = "invalid_shape"
+            points = np.empty((0, 3), dtype=np.float32)
+        else:
+            points = points[:, :3]
+
         if points.shape[0] == 0:
             self._raw_points = points
             self._filtered_points = points
@@ -111,14 +147,34 @@ class Lidar3DDriver:
             self._sector_ranges = np.full(
                 self.config.num_sectors, self.config.max_range
             )
+            if not self._last_drop_reason:
+                self._last_drop_reason = "empty_cloud"
+            self._last_processing_latency_ms = (time.time() - processing_start) * 1000.0
             return
 
+        finite_mask = np.isfinite(points).all(axis=1)
+        if not np.all(finite_mask):
+            self._dropped_frame_count += int(points.shape[0] - np.count_nonzero(finite_mask))
+            points = points[finite_mask]
+            if points.shape[0] == 0:
+                self._last_drop_reason = "no_finite_points"
+
         self._raw_points = points
-        self._last_update = time.time()
+        if points.shape[0] == 0:
+            self._filtered_points = points
+            self._obstacles = []
+            self._sector_ranges = np.full(
+                self.config.num_sectors, self.config.max_range
+            )
+            if not self._last_drop_reason:
+                self._last_drop_reason = "empty_cloud"
+            self._last_processing_latency_ms = (time.time() - processing_start) * 1000.0
+            return
 
         # Range filter
         ranges = np.linalg.norm(points, axis=1)
         valid = (ranges >= self.config.min_range) & (ranges <= self.config.max_range)
+        self._dropped_frame_count += int(points.shape[0] - np.count_nonzero(valid))
         filtered = points[valid]
 
         # Ground removal
@@ -127,14 +183,25 @@ class Lidar3DDriver:
             filtered = filtered[non_ground]
 
         self._filtered_points = filtered
+        if filtered.shape[0] == 0:
+            self._last_drop_reason = "no_points_after_filtering"
 
         # Cluster obstacles
         self._obstacles = self._cluster_obstacles(filtered, drone_position)
 
         # Build sector range map
         self._sector_ranges = self._build_sector_ranges(filtered)
+        self._last_processing_latency_ms = (time.time() - processing_start) * 1000.0
 
-    def update_from_ros_pointcloud2(self, data: bytes, width: int, height: int):
+    def update_from_ros_pointcloud2(
+        self,
+        data: bytes,
+        width: int,
+        height: int,
+        point_step: Optional[int] = None,
+        frame_id: Optional[str] = None,
+        timestamp: Optional[float] = None,
+    ):
         """
         Parse a ROS PointCloud2 message in XYZ32F format.
 
@@ -143,8 +210,9 @@ class Lidar3DDriver:
             width, height: Dimensions of the point cloud.
         """
         n_points = width * height
-        points = np.frombuffer(data, dtype=np.float32).reshape(n_points, -1)[:, :3]
-        self.update_points(points)
+        floats_per_point = max(3, int(point_step or 12) // 4)
+        points = np.frombuffer(data, dtype=np.float32).reshape(n_points, floats_per_point)[:, :3]
+        self.update_points(points, frame_id=frame_id, timestamp=timestamp)
 
     def get_obstacles(self) -> List[Obstacle3D]:
         """Get clustered obstacles for APF."""
@@ -169,6 +237,29 @@ class Lidar3DDriver:
     @property
     def last_update_time(self) -> float:
         return self._last_update
+
+    @property
+    def scan_age_s(self) -> float:
+        if self._last_update <= 0.0:
+            return float("inf")
+        return max(0.0, time.time() - self._last_update)
+
+    @property
+    def is_healthy(self) -> bool:
+        healthy, _ = self.health_status()
+        return healthy
+
+    def health_status(self) -> tuple[bool, str]:
+        """Return current LiDAR health and a machine-readable reason."""
+        if self._last_update <= 0.0:
+            return False, "no_scan"
+        if self.scan_age_s > self.config.stale_timeout_s:
+            return False, "stale"
+        if self._raw_points.shape[0] < self.config.min_raw_points:
+            return False, "insufficient_raw_points"
+        if self._filtered_points.shape[0] < self.config.min_filtered_points:
+            return False, "insufficient_filtered_points"
+        return True, "healthy"
 
     # ── Obstacle Clustering ───────────────────────────────────────
 
@@ -308,10 +399,22 @@ class Lidar3DDriver:
     # ── Telemetry ─────────────────────────────────────────────────
 
     def get_telemetry(self) -> dict:
+        min_sector = float(np.min(self._sector_ranges)) if self._sector_ranges.size else self.config.max_range
+        age = self.scan_age_s
+        healthy, health_reason = self.health_status()
         return {
             "raw_points": self._raw_points.shape[0],
             "filtered_points": self._filtered_points.shape[0],
             "obstacle_count": len(self._obstacles),
             "sector_ranges": [round(s, 2) for s in self._sector_ranges.tolist()],
+            "min_sector_range_m": round(min_sector, 2),
             "last_update": self._last_update,
+            "lidar_age_ms": None if age == float("inf") else round(age * 1000.0, 1),
+            "lidar_healthy": healthy,
+            "lidar_stale_reason": None if healthy else health_reason,
+            "lidar_processing_latency_ms": round(self._last_processing_latency_ms, 2),
+            "last_pointcloud_frame": self._last_pointcloud_frame,
+            "pointcloud_timestamp": self._last_pointcloud_timestamp,
+            "dropped_frame_count": self._dropped_frame_count,
+            "scan_drop_reason": self._last_drop_reason or None,
         }
