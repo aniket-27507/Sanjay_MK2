@@ -1,0 +1,97 @@
+# LiDAR World Model — training configuration
+#
+# Mirrors the schema convention used by config/training/visdrone_police.yaml
+# (top-level path/train/val/test keys), extended with grid + temporal +
+# model + training + loss + eval blocks.
+#
+# Used by:
+#   scripts/build_lidar_world_dataset.py
+#   scripts/train_lidar_world_model.py
+#   scripts/eval_lidar_world_model.py
+#   scripts/export_lidar_world_model_onnx.py
+
+path: data/lidar_world_model
+train: train
+val: val
+test: test
+
+grid:
+  n_sectors: 72
+  n_height_bands: 6
+  min_range_m: 0.3
+  max_range_m: 30.0
+  height_min_m: -3.0
+  height_max_m: 3.0
+  channels: [min_range, occupancy, point_count, mean_range]
+
+temporal:
+  history_frames: 10
+  future_horizons_s: [0.5, 1.0, 1.5, 2.0]
+
+target:
+  occupancy_threshold_points: 2
+  ego_motion_compensation: true
+
+# Sources: each entry is one LiDAR log to fold into the dataset. The
+# builder dispatches on `type:` — rosbag2 directories require ROS 2,
+# while .npz files use the flat-schema described in
+# src/single_drone/world_model/lidar_dataset_io.py.
+#
+# The optional `split:` key wins over the default 70/15/15 fallback. Use
+# whole-source split assignment to avoid temporal leakage between sets.
+sources:
+  - id: 0
+    path: data/lidar_synthetic/example_run.npz
+    type: npz
+    pose_source: poses_npz
+    split: train
+  # Real Ouster bag entries look like:
+  # - id: 1
+  #   path: logs/lidar/ouster_20260420_140312
+  #   type: rosbag2
+  #   pointcloud_topic: /ouster/points
+  #   extrinsics_config: config/lidar_real.yaml
+  #   pose_source: tf
+  #   target_frame: base_link
+  #   source_frame: map
+  #   split: val
+
+dataset:
+  output_dir: data/lidar_world_model
+  max_windows_per_shard: 1024
+  default_split_ratios: [0.70, 0.15, 0.15]   # train/val/test fallback when split: not set per source
+
+# Static parameters that match the LidarWorldModel architecture in
+# src/single_drone/world_model/lidar_world_model.py. Adjust with care —
+# changes here must agree with the trained checkpoint's layer shapes.
+model:
+  channels_stem: 32
+  channels_block1: 48
+  channels_block2: 48
+  motion_film_hidden: 32
+
+training:
+  batch_size: 64
+  epochs: 30
+  lr: 3.0e-4
+  lr_min: 1.0e-5
+  weight_decay: 1.0e-4
+  motion_noise_std: 0.05
+  num_workers: 4
+  seed: 42
+
+loss:
+  focal_gamma: 2.0
+  horizon_weights: [1.0, 0.8, 0.6, 0.4]
+  sector_front_bias_k: 2.0
+  band_distance_tau: 3.0
+  pos_weight_clip: [3.0, 10.0]
+
+eval:
+  threshold: 0.5
+  trajectory_tube_radius_m: 3.0
+  acceptance:
+    f1_at_0.5s_min: 0.65
+    f1_at_2.0s_min: 0.45
+    front_recall_at_0.5s_min: 0.85
+    fn_in_tube_at_0.5s_max: 0.05
