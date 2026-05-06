@@ -666,6 +666,7 @@ class AutonomyDecision:
     reason: str
     requires_swarm_approval: bool = False
     assigned_drone_id: Optional[int] = None
+    reason_details: Dict[str, Any] = field(default_factory=dict)
 
 
 # ==============================================================

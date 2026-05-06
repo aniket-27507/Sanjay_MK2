@@ -65,7 +65,11 @@ from src.simulation.scenario_loader import (
     ScenarioDefinition, SpawnEvent, FaultEvent, CrowdConfig,
 )
 from src.simulation.model_adapter import DetectionModelAdapter
-from src.response.mission_policy import MissionPolicyConfig, MissionPolicyEngine
+from src.response.mission_policy import (
+    MissionPolicyConfig,
+    MissionPolicyContext,
+    MissionPolicyEngine,
+)
 from src.swarm.coordination.urban_patrol_patterns import UrbanPatrolPatternGenerator
 
 logger = logging.getLogger(__name__)
@@ -874,7 +878,25 @@ class ScenarioExecutor:
                 current_time=self._sim_time,
                 confirming_drone_id=plan.inspector_id,
             )
-            self._mission_states[plan.inspector_id] = DroneMissionState.REASCEND_REJOIN
+            rejoin_decision = self._mission_policy.evaluate_rejoin(
+                threat_id=threat_id,
+                inspector_id=plan.inspector_id,
+                confirmation_complete=True,
+                corridor_safe=True,
+                sector_rejoin_ready=True,
+            )
+            self._events_log.append(
+                {
+                    "time": self._sim_time,
+                    "type": "mission_policy_decision",
+                    "threat_id": threat_id,
+                    "drone_id": plan.inspector_id,
+                    "decision": rejoin_decision.decision.name,
+                    "reason": rejoin_decision.reason,
+                    "reason_details": rejoin_decision.reason_details,
+                }
+            )
+            self._mission_states[plan.inspector_id] = rejoin_decision.mission_state
             self._inspection_states[plan.inspector_id] = "reascend"
             sector = self._coordinators[plan.inspector_id].get_my_sector()
             rejoin = sector.center if sector is not None else drone.position
@@ -919,6 +941,7 @@ class ScenarioExecutor:
                 self._mission_states[drone_id] = DroneMissionState.PATROL_HIGH
                 self._inspection_states[drone_id] = "idle"
 
+        candidates = []
         for threat in self._threat_manager.get_active_threats():
             if threat.status.name in {"CONFIRMED", "CLEARED", "RESOLVED"}:
                 continue
@@ -927,17 +950,23 @@ class ScenarioExecutor:
 
             sensor_hits = self._threat_sensor_hits.get(threat.threat_id, set())
             vector = self._mission_policy.build_threat_vector(threat, sensor_hits)
-            coverage_pct = min(
-                100.0,
-                min(state.coverage_percent for state in self._coverage_states.values()) if self._coverage_states else 100.0,
-            )
+            candidates.append((threat, vector))
+
+        coverage_pct = min(
+            100.0,
+            min(state.coverage_percent for state in self._coverage_states.values()) if self._coverage_states else 100.0,
+        )
+        threat_by_id = {threat.threat_id: threat for threat, _ in candidates}
+        for vector in self._mission_policy.prioritize_threats([vector for _, vector in candidates]):
+            threat = threat_by_id[vector.threat_id]
             decision = self._mission_policy.evaluate_threat(
                 vector,
-                active_inspectors=self._active_inspector_count(),
-                sector_coverage_pct=coverage_pct,
-                corridor_safe=self._corridor_safe_for(threat.position),
-                swarm_coverage_ready=True,
-                gcs_connected=True,
+                context=MissionPolicyContext(
+                    active_inspectors=self._active_inspector_count(),
+                    sector_coverage_pct=coverage_pct,
+                    corridor_safe=self._corridor_safe_for(threat.position),
+                    swarm_coverage_ready=True,
+                ),
             )
 
             if decision.decision == AutonomyDecisionType.CROWD_RETASK:
@@ -984,6 +1013,8 @@ class ScenarioExecutor:
                     "threat_id": threat.threat_id,
                     "drone_id": assigned,
                     "recommendation": vector.inspection_recommendation.name,
+                    "policy_reason": decision.reason,
+                    "policy_reason_details": decision.reason_details,
                 }
             )
 

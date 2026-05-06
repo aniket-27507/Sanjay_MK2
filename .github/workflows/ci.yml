@@ -1,0 +1,64 @@
+name: Normal CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Core unit and policy tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install normal CI dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            numpy \
+            scipy \
+            PyYAML \
+            pytest \
+            pytest-asyncio \
+            requests \
+            websockets \
+            aiohttp \
+            psutil \
+            transforms3d
+
+      - name: Syntax check policy and scenario modules
+        run: |
+          python -m py_compile \
+            src/core/types/drone_types.py \
+            src/response/mission_policy.py \
+            src/simulation/scenario_executor.py
+
+      - name: Run normal CI test slice
+        run: |
+          python -m pytest -q \
+            tests/test_mission_policy.py \
+            tests/test_drone_types.py \
+            tests/test_scenario_framework.py \
+            tests/test_threat_manager.py \
+            tests/test_config_manager.py \
+            tests/test_change_detection.py \
+            tests/test_cbba_engine.py \
+            tests/test_boids_engine.py \
+            tests/test_formation_controller.py \
+            tests/test_flock_coordinator.py \
+            tests/test_task_generator.py
