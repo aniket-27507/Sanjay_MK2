@@ -39,5 +39,20 @@ reports/day1/*.txt
 reports/day1/*.log
 !reports/day1/STATUS.md
 
+# Stray model weights at any depth (police_full_v2.pt, thermal_police_v1.pt,
+# auto-downloaded yolo11s.pt, etc.) -- model weights should never be committed
+*.pt
+*.onnx
+*.engine
+
+# Demo media (source video typically large; samples/ is the canonical drop dir)
+samples/*.mp4
+samples/*.mov
+samples/*.avi
+# Demo viewer outputs (auto-named sanjay_demo_<mode>_<timestamp>.mp4)
+sanjay_demo_*.mp4
+# Operator-workflow demo audit runs (per-incident clips, decisions, evidence audit)
+audit_runs/
+
 # Binary documents
 *.docx
