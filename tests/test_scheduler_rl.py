@@ -153,6 +153,62 @@ def test_reward_first_tick_no_switch_penalty():
 
 
 # ────────────────────────────────────────────────────────────────────
+#  Reward breakdown (diagnostic decomposition for eval harness)
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_breakdown_total_matches_compute_reward():
+    """compute_reward must equal compute_reward_breakdown(...).total -- if
+    these drift, eval-time component sums won't match training rewards."""
+    from src.single_drone.sensor_scheduler_rl import compute_reward_breakdown
+
+    cases = [
+        ([], 0, 0, None, None),
+        ([_FakeDetection("person", 0.7)], 15, 0, 15, 0),
+        ([_FakeDetection("weapon_person", 0.9), _FakeDetection("vehicle", 0.4)],
+         30, 30, 5, 0),     # action change -> switch penalty fires
+        ([], 5, 5, 5, 5),   # idle, no change
+    ]
+    for dets, rgb, thermal, prgb, pthermal in cases:
+        r = compute_reward(dets, rgb_fps=rgb, thermal_fps=thermal,
+                           prev_rgb_fps=prgb, prev_thermal_fps=pthermal)
+        bd = compute_reward_breakdown(dets, rgb_fps=rgb, thermal_fps=thermal,
+                                      prev_rgb_fps=prgb, prev_thermal_fps=pthermal)
+        assert bd.total == pytest.approx(r, rel=1e-6)
+
+
+def test_breakdown_components_are_non_negative_pre_sign():
+    """detection_reward, compute_cost_raw, switch_penalty_raw are all magnitudes
+    (the sign is applied via .total). Eval harness depends on this."""
+    from src.single_drone.sensor_scheduler_rl import compute_reward_breakdown
+
+    bd = compute_reward_breakdown(
+        [_FakeDetection("fire", 1.0)],
+        rgb_fps=30, thermal_fps=30, prev_rgb_fps=0, prev_thermal_fps=0,
+    )
+    assert bd.detection_reward >= 0
+    assert bd.compute_cost_raw >= 0
+    assert bd.switch_penalty_raw >= 0
+    assert bd.compute_penalty == pytest.approx(bd.alpha * bd.compute_cost_raw)
+    assert bd.switch_penalty == pytest.approx(bd.beta * bd.switch_penalty_raw)
+
+
+def test_breakdown_isolates_compute_from_detection():
+    """A run with no detections should have detection_reward == 0; a
+    high-fps run with no detections should have only compute_penalty.
+    This is what proves 'always-on collapse' from a single eval pass."""
+    from src.single_drone.sensor_scheduler_rl import compute_reward_breakdown
+
+    bd = compute_reward_breakdown(
+        [], rgb_fps=30, thermal_fps=30, prev_rgb_fps=30, prev_thermal_fps=30,
+    )
+    assert bd.detection_reward == 0
+    assert bd.switch_penalty_raw == 0
+    assert bd.compute_cost_raw > 0
+    assert bd.total < 0
+
+
+# ────────────────────────────────────────────────────────────────────
 #  Gym env (skipped if gymnasium not installed)
 # ────────────────────────────────────────────────────────────────────
 

@@ -16,6 +16,7 @@ Reward shape and class priorities follow docs/ARCHITECTURE.md:251-280.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -138,6 +139,66 @@ DEFAULT_ALPHA: float = 0.8   # compute-cost weight. History:
 DEFAULT_BETA: float = 0.05   # switch-penalty weight
 
 
+@dataclass
+class RewardBreakdown:
+    """Per-component decomposition of one-tick reward.
+
+    The training loop only needs the scalar ``total``; eval / debugging
+    code reads the components to diagnose collapse modes (e.g. always-on
+    thermal, idle-policy reward floor)."""
+    detection_reward: float       # positive, weighted by class priority
+    compute_cost_raw: float       # (rgb_fps + thermal_fps) / 60, pre-alpha
+    switch_penalty_raw: float     # 0.0 or 1.0, pre-beta
+    alpha: float
+    beta: float
+
+    @property
+    def compute_penalty(self) -> float:
+        return self.alpha * self.compute_cost_raw
+
+    @property
+    def switch_penalty(self) -> float:
+        return self.beta * self.switch_penalty_raw
+
+    @property
+    def total(self) -> float:
+        return self.detection_reward - self.compute_penalty - self.switch_penalty
+
+
+def compute_reward_breakdown(
+    detected_objects: List,
+    rgb_fps: int,
+    thermal_fps: int,
+    prev_rgb_fps: Optional[int],
+    prev_thermal_fps: Optional[int],
+    alpha: float = DEFAULT_ALPHA,
+    beta: float = DEFAULT_BETA,
+) -> RewardBreakdown:
+    """Same arithmetic as compute_reward, but returns each component.
+    Use this in eval / diagnostics; training continues to call compute_reward."""
+
+    detection_reward = 0.0
+    for obj in detected_objects:
+        priority = CLASS_PRIORITY.get(obj.object_type, 1.0)
+        detection_reward += priority * float(getattr(obj, "confidence", 0.0))
+
+    compute_cost_raw = (rgb_fps + thermal_fps) / 60.0
+
+    if prev_rgb_fps is None and prev_thermal_fps is None:
+        switch_penalty_raw = 0.0
+    else:
+        changed = (rgb_fps != prev_rgb_fps) or (thermal_fps != prev_thermal_fps)
+        switch_penalty_raw = 1.0 if changed else 0.0
+
+    return RewardBreakdown(
+        detection_reward=detection_reward,
+        compute_cost_raw=compute_cost_raw,
+        switch_penalty_raw=switch_penalty_raw,
+        alpha=alpha,
+        beta=beta,
+    )
+
+
 def compute_reward(
     detected_objects: List,
     rgb_fps: int,
@@ -147,22 +208,9 @@ def compute_reward(
     alpha: float = DEFAULT_ALPHA,
     beta: float = DEFAULT_BETA,
 ) -> float:
-    """One-tick reward.  Designed for clarity, not micro-optimisation."""
-
-    # 1. Detection reward (positive)
-    detection_reward = 0.0
-    for obj in detected_objects:
-        priority = CLASS_PRIORITY.get(obj.object_type, 1.0)
-        detection_reward += priority * float(getattr(obj, "confidence", 0.0))
-
-    # 2. Compute cost (negative)
-    compute_cost = (rgb_fps + thermal_fps) / 60.0
-
-    # 3. Switch penalty (negative)
-    if prev_rgb_fps is None and prev_thermal_fps is None:
-        switch_penalty = 0.0
-    else:
-        changed = (rgb_fps != prev_rgb_fps) or (thermal_fps != prev_thermal_fps)
-        switch_penalty = 1.0 if changed else 0.0
-
-    return detection_reward - alpha * compute_cost - beta * switch_penalty
+    """One-tick reward.  Designed for clarity, not micro-optimisation.
+    Thin wrapper over compute_reward_breakdown so the two cannot drift."""
+    return compute_reward_breakdown(
+        detected_objects, rgb_fps, thermal_fps,
+        prev_rgb_fps, prev_thermal_fps, alpha, beta,
+    ).total

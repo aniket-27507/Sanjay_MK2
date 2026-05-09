@@ -34,7 +34,7 @@ import logging
 import math
 import random
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -363,6 +363,23 @@ class SensorSchedulerFastEnv(gym.Env):
             "weather": self._weather,
         }
         return self._build_obs(), float(reward), terminated, truncated, info
+
+    # ----------------------------------------------------------------
+    #  Public accessors (for eval / external policies)
+    # ----------------------------------------------------------------
+
+    def current_sensor_state(self) -> SensorState:
+        """Snapshot of the SensorState the next step() will condition on.
+
+        Public so eval harnesses can feed it to non-RL policies (e.g. the
+        deterministic HeuristicPolicy) for apples-to-apples comparison.
+        """
+        return self._current_sensor_state()
+
+    @property
+    def last_action_fps(self) -> Tuple[int, int]:
+        """(rgb_fps, thermal_fps) actually executed last tick (post-rails)."""
+        return self._last_rgb_fps, self._last_thermal_fps
 
     # ----------------------------------------------------------------
     #  Internals

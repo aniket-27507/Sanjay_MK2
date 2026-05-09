@@ -214,3 +214,54 @@ def test_random_policy_full_episode_smoke():
             break
     # Sanity: reward should be a finite float
     assert np.isfinite(total_reward)
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Public accessors used by eval harness (heuristic baseline)
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_current_sensor_state_returns_live_snapshot():
+    """The eval harness needs the live SensorState to feed HeuristicPolicy."""
+    from src.single_drone.sensor_scheduler import SensorState
+
+    env = SensorSchedulerFastEnv(seed=42)
+    env.reset()
+    state = env.current_sensor_state()
+    assert isinstance(state, SensorState)
+    # Lux + mission_state should match what reset() info reported
+    obs, info = env.reset(seed=42)
+    state2 = env.current_sensor_state()
+    assert state2.ambient_lux == info["lux"]
+    assert state2.mission_state.name == info["mission_state"]
+
+
+def test_last_action_fps_tracks_post_rails_values():
+    """The (rgb, thermal) tuple should reflect post-rails fps from last step."""
+    env = SensorSchedulerFastEnv(seed=0)
+    env.reset()
+    assert env.last_action_fps == (0, 0)   # nothing executed yet
+    # Force a step with rgb=15, thermal=0 (legal action)
+    obs, r, _, _, info = env.step(encode_action(15, 0))
+    assert env.last_action_fps == (info["rgb_fps"], info["thermal_fps"])
+
+
+def test_heuristic_policy_drives_env_apples_to_apples():
+    """The full eval-harness loop (HeuristicPolicy -> encode_action -> step)
+    must execute end-to-end and produce a finite reward, matching what
+    train_modal.py::eval_policy depends on."""
+    from src.single_drone.sensor_scheduler import HeuristicPolicy
+
+    env = SensorSchedulerFastEnv(seed=7)
+    env.reset()
+    heuristic = HeuristicPolicy()
+    total = 0.0
+    for _ in range(env._episode_steps):
+        state = env.current_sensor_state()
+        action = heuristic.decide(state)
+        idx = encode_action(action.rgb_fps, action.thermal_fps)
+        obs, r, terminated, truncated, info = env.step(idx)
+        total += r
+        if terminated or truncated:
+            break
+    assert np.isfinite(total)
