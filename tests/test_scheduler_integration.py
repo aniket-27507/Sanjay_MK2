@@ -88,3 +88,60 @@ def test_compute_savings_vs_always_on():
     stats = ex.get_scheduler_stats()
     for s in stats.values():
         assert s["thermal_skip"] >= s["thermal_fire"]
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Scenario state plumbing into SensorState (regression)
+# ────────────────────────────────────────────────────────────────────
+
+
+def test_scenario_executor_reads_ambient_lux_from_world():
+    """Scenario YAML's ``world.ambient_lux`` must reach SensorState.
+
+    Without this, the heuristic NIGHT_PATROL branch never fires in scenarios
+    and rail R1 cannot be tested end-to-end."""
+    ex = _build_executor(duration_sec=2)
+    # S10 has no ambient_lux in YAML -> should default to 50000
+    state = ex._build_sensor_state(next(iter(ex.drones)))
+    assert state.ambient_lux == 50000.0
+
+
+def test_scenario_executor_reads_night_lux_from_world():
+    """A scenario with low ambient_lux propagates into SensorState so the
+    heuristic NIGHT_PATROL branch fires."""
+    from src.simulation.scenario_loader import ScenarioLoader
+    from src.simulation.scenario_executor import ScenarioExecutor
+    s = ScenarioLoader.load(SCENARIOS_DIR / "S10N_baseline_night_patrol.yaml")
+    s.duration_sec = 2
+    ex = ScenarioExecutor(s, gcs_port=19510)
+    ex._gcs = None
+    state = ex._build_sensor_state(next(iter(ex.drones)))
+    assert state.ambient_lux == 5.0
+
+
+def test_scenario_executor_tracks_missed_detection_streak():
+    """After a baseline patrol with no spawns, missed_streak grows monotonically
+    on every drone -- but tuned heuristic must not burst (regression for the
+    earlier always-burst-on-quiet-patrol bug)."""
+    ex = _build_executor(duration_sec=10)
+    ex.run(realtime=False)
+    # S10 has zero spawns; every tick is a miss for every drone
+    for drone_id in ex.drones:
+        assert ex._missed_detection_streaks[drone_id] > 0, (
+            f"drone {drone_id}: missed_streak should grow during empty patrol"
+        )
+    # And critically: thermal must still be off (no burst triggered)
+    stats = ex.get_scheduler_stats()
+    for drone_id, s in stats.items():
+        assert s["thermal_fire"] == 0, (
+            f"drone {drone_id}: thermal fired despite no TRACK_HIGH state; "
+            f"EMERGENCY_BURST gating regressed"
+        )
+
+
+def test_scenario_executor_threat_score_zero_without_active_threats():
+    """No threats -> threat_score should be 0 across all drones."""
+    ex = _build_executor(duration_sec=2)
+    for drone_id in ex.drones:
+        state = ex._build_sensor_state(drone_id)
+        assert state.threat_score == 0.0

@@ -109,6 +109,7 @@ class ScenarioDefinition:
     # World setup
     terrain_seed: int = 42
     buildings: List[BuildingDef] = field(default_factory=list)
+    ambient_lux: float = 50000.0   # daylight default (~bright overcast)
 
     # Timed events
     spawn_schedule: List[SpawnEvent] = field(default_factory=list)
@@ -314,6 +315,7 @@ class ScenarioLoader:
             split=split_val,
             terrain_seed=int(world.get("terrain_seed", 42)),
             buildings=buildings,
+            ambient_lux=float(world.get("ambient_lux", 50000.0)),
             spawn_schedule=spawns,
             fault_schedule=faults,
             crowd=crowd,

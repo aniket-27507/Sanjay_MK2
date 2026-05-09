@@ -169,11 +169,28 @@ class HeuristicPolicy:
 
     @staticmethod
     def decide(state: SensorState) -> SensorAction:
-        """Pick a mode + FPS pair from the scheduling state machine."""
-        # Priority order matches the state-machine diagram:
-        # EMERGENCY_BURST > INSPECT_DUAL > NIGHT_PATROL > DAY_PATROL
+        """Pick a mode + FPS pair from the scheduling state machine.
 
-        if state.missed_detection_streak >= MISSED_DETECTION_BURST:
+        Priority order:
+          EMERGENCY_BURST  > INSPECT_DUAL > NIGHT_PATROL > DAY_PATROL
+
+        EMERGENCY_BURST gating (changed 2026-05-09 from pure missed_streak):
+          The burst now requires *both* (a) the drone is actively tracking
+          a known threat (mission_state == TRACK_HIGH) and (b) it has lost
+          sight of detections for at least MISSED_DETECTION_BURST ticks.
+
+          Rationale: pure-missed-streak triggered burst on every quiet
+          patrol once missed_detection_streak got wired into the scenario
+          executor.  Gating on TRACK_HIGH preserves the original intent
+          ("we lost sight of a threat we were chasing -- burn extra
+          compute to re-acquire") without firing when there is nothing
+          to chase.  Auditability: every burst decision points to an
+          active TRACK_HIGH threat in the threat manager.
+        """
+        if (
+            state.mission_state == DroneMissionState.TRACK_HIGH
+            and state.missed_detection_streak >= MISSED_DETECTION_BURST
+        ):
             return SensorAction(
                 rgb_fps=FPS_BURST,
                 thermal_fps=FPS_BURST,

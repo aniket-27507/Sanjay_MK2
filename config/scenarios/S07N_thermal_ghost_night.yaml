@@ -1,0 +1,51 @@
+# S07N — Thermal Ghost (Night)
+# Category: false_alarm
+# Tests: Hot equipment detected then CLEARED -- but at night so thermal is
+# already running per rail R1, exercising the inspection-on-night path.
+
+scenario:
+  id: S07N
+  name: Thermal Ghost (Night)
+  category: false_alarm
+  duration_sec: 300
+  description: >
+    Same as S07 but at night (ambient_lux=5). Industrial equipment with
+    high thermal signature spawns at t=20s. Validates that NIGHT_PATROL
+    transitions cleanly into INSPECT_DUAL when the ghost triggers an
+    inspection, and that thermal stays mandated by rail R1 throughout.
+  split: test
+
+world:
+  terrain_seed: 42
+  buildings: []
+  ambient_lux: 5
+
+spawn_schedule:
+  - time: 20
+    type: equipment
+    position: [510, 160, 2.0]
+    is_threat: false
+    thermal_signature: 0.75
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 0
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events:
+  - type: threat_detected
+    object_type: equipment
+    max_latency_sec: 60
+  - type: threat_cleared
+    max_latency_sec: 180
+
+metrics:
+  max_detection_latency_sec: 60
+  max_false_positive_rate: 1.0
+  min_coverage_pct: 80

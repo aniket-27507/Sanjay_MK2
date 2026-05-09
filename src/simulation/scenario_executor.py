@@ -311,6 +311,10 @@ class ScenarioExecutor:
         self._sensor_fires: Dict[int, Dict[str, int]] = {}
         self._last_scheduler_action: Dict[int, Optional[SensorAction]] = {}
         self._last_fused_obs: Dict[int, object] = {}  # last FusedObservation per drone
+        # Per-drone count of consecutive scheduler ticks with no fused detections.
+        # Reset to 0 on any detection; feeds SensorState.missed_detection_streak so
+        # heuristic can escalate (only when also TRACK_HIGH; see HeuristicPolicy).
+        self._missed_detection_streaks: Dict[int, int] = {}
 
         for drone_id, drone in self.drones.items():
             self._rgb_cameras[drone_id] = SimulatedRGBCamera(drone_type=drone.drone_type)
@@ -326,6 +330,7 @@ class ScenarioExecutor:
             }
             self._last_scheduler_action[drone_id] = None
             self._last_fused_obs[drone_id] = None
+            self._missed_detection_streaks[drone_id] = 0
 
         # ── Detection pipeline (existing classes) ──
         self._baseline = BaselineMap(
@@ -1112,9 +1117,13 @@ class ScenarioExecutor:
     def _build_sensor_state(self, drone_id: int) -> SensorState:
         """Snapshot state for the scheduler's tick.
 
-        Scenarios don't yet encode ambient lighting, so lux defaults
-        to daylight.  Weapon confidence is pulled from the last fused
-        observation on this drone's fusion pipeline.
+        Inputs sourced from runtime state:
+          - ``ambient_lux``: scenario world setting (YAML ``world.ambient_lux``)
+          - ``mission_state``: per-drone state machine
+          - ``weapon_class_conf`` / ``rgb_max_conf`` / ``thermal_max_conf``: last fused observation
+          - ``threat_score``: max score across active threats this drone owns
+            (detected by, or assigned as inspector for)
+          - ``missed_detection_streak``: consecutive empty fusions tracked in ``_tick_sensors``
         """
         weapon_conf = 0.0
         rgb_conf = 0.0
@@ -1125,12 +1134,23 @@ class ScenarioExecutor:
                 if obj.object_type == "weapon_person":
                     weapon_conf = max(weapon_conf, obj.confidence)
                 rgb_conf = max(rgb_conf, obj.confidence)  # coarse proxy
+
+        # Per-drone threat score: max over active threats this drone is
+        # responsible for. A drone is "responsible" if it detected the threat
+        # or is currently assigned as inspector.
+        threat_score = 0.0
+        for threat in self._threat_manager.get_active_threats():
+            if threat.detected_by == drone_id or threat.assigned_inspector == drone_id:
+                threat_score = max(threat_score, threat.threat_score)
+
         return SensorState(
-            ambient_lux=50000.0,  # TODO: read from scenario environment when schema adds it
+            ambient_lux=self.scenario.ambient_lux,
             mission_state=self._mission_states[drone_id],
+            threat_score=threat_score,
             weapon_class_conf=weapon_conf,
             rgb_max_conf=rgb_conf,
             thermal_max_conf=thermal_conf,
+            missed_detection_streak=self._missed_detection_streaks.get(drone_id, 0),
         )
 
     def _should_fire(self, last_capture_t: float, fps: int) -> bool:
@@ -1230,6 +1250,13 @@ class ScenarioExecutor:
                 continue
 
             self._last_fused_obs[drone_id] = fused  # feeds next tick's SensorState
+
+            # Track consecutive empty fusions for HeuristicPolicy escalation.
+            # Reset on any detection so the streak only grows during dry patrol.
+            if fused.detected_objects:
+                self._missed_detection_streaks[drone_id] = 0
+            else:
+                self._missed_detection_streaks[drone_id] += 1
 
             # Track coverage
             for cell in fused.coverage_cells:

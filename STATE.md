@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-05-09 (Step 5B eval harness fixed; ready for α=0.8 training run)
+**Last updated:** 2026-05-09 (Path B chosen: Phase B RL deferred, HeuristicPolicy enhanced for v1)
 
 ## How to use this file (Claude / Codex / GPT)
 
@@ -17,11 +17,11 @@
 
 | Field | Value |
 |-------|--------|
-| **Current goal** | **Close out Step 5B**: re-train SensorScheduler PPO at α=0.8 (1M steps), eval against the *real* HeuristicPolicy (not the constant-action straw-man baseline used previously), confirm trained ≥ heuristic across ≥7/10 seeds with state-dependent thermal use (low day_thermal, high night_thermal). |
-| **In scope** | `src/single_drone/sensor_scheduler_rl.py` (new `compute_reward_breakdown` + `RewardBreakdown` dataclass), `src/single_drone/sensor_scheduler_fast_env.py` (new public `current_sensor_state()` + `last_action_fps`), `scripts/train_modal.py::eval_policy` (rewritten: real HeuristicPolicy baseline, per-component reward decomposition, day-vs-night thermal split, default `num_seeds=10`). Tests: 3 new in `test_scheduler_rl.py` (breakdown), 3 new in `test_scheduler_fast_env.py` (accessors + heuristic round-trip). |
-| **Out of scope** | Step 5C policy integration (`RLPolicy` wrapper + scenario_executor regression). Tier-2 measured distributions. LiDAR TensorRT thread. |
-| **Exit criteria** | (1) `modal run scripts/train_modal.py --total-steps 1000000` completes; (2) `modal run scripts/train_modal.py::eval_policy --num-seeds 10` reports trained wins ≥7/10 seeds; (3) per-condition table shows `th_day/day_steps` < 0.3 and `th_night/night_steps` > 0.7 (state-dependent, not always-on); (4) detection_reward not collapsing toward zero. If exit criteria fail: tune α further (current 0.8) or add per-class compute scaling. |
-| **Handoff notes** | **2026-05-09 (this session).** Found the prior "trained loses to heuristic in 2/3 seeds @α=0.6" verdict was misleading: `eval_policy` was comparing PPO against a *constant* `(rgb=15, thermal=0)` action (`scripts/train_modal.py:178` pre-fix), not the real `HeuristicPolicy`. Rewrote eval to drive a real `HeuristicPolicy` through the same env (`HeuristicPolicy().decide(state)` -> `encode_action`), added per-component reward decomposition (`compute_reward_breakdown` returns `RewardBreakdown` with `detection_reward / compute_penalty / switch_penalty`), and per-condition (day/night) thermal-on rate. Day/night split makes always-on collapse visible from one eval pass. **All 512 tests pass, 7 skipped (gymnasium/MAVSDK not local). Three new fast-env tests will run inside Modal where gymnasium is installed. α=0.8 from commit `0bdf6134` is the current setting in `sensor_scheduler_rl.py`. **Next action**: user runs `modal run scripts/train_modal.py --total-steps 1000000` (~15-25 min on T4), then `modal run scripts/train_modal.py::eval_policy --num-seeds 10`. If exit criteria met -> Step 5C (build `RLPolicy` wrapper, slot into `SensorScheduler.__init__`, regression-test through `scenario_executor`). If not met -> α tuning or per-class compute scaling. |
+| **Current goal** | **Path B closeout**: ship the enhanced HeuristicPolicy as v1 SensorScheduler. Phase B RL is deferred (kept as research artifact, not a deployment dependency). Sanity-check confirms enhanced heuristic meets the 45-65% compute reduction target on baseline + night patrol scenarios with no rail violations. |
+| **In scope** | `src/simulation/scenario_loader.py` (+ambient_lux), `src/simulation/scenario_executor.py` (+missed_streak tracking, +threat_score from ThreatManager, +ambient_lux read), `src/single_drone/sensor_scheduler.py` (HeuristicPolicy.EMERGENCY_BURST gated on TRACK_HIGH), 2 new scenarios (S10N, S07N at lux=5), regression tests in `tests/test_sensor_scheduler.py` + `tests/test_scheduler_integration.py`. |
+| **Out of scope** | RL training/eval/integration (deferred). LiDAR TensorRT thread. Per-time-of-day lux schedules (single scalar suffices for v1). |
+| **Exit criteria** | (1) `world.ambient_lux` reaches `SensorState`; (2) `missed_detection_streak` tracked per drone; (3) `threat_score` populated from `ThreatManager.get_active_threats()`; (4) HeuristicPolicy does not burst on quiet patrol (`PATROL_HIGH + missed_streak=20 → DAY_PATROL`); (5) all existing tests pass; (6) 5B.5 sanity check shows `thermal_fire == 0` on S10/S10N baseline (compute target met). |
+| **Handoff notes** | **2026-05-09 (Path B chosen after sanity check).** Step 5B closed against fast-env (9/10 wins) but 5B.5 sanity check on real `scenario_executor` showed the trained RL policy uses 2x heuristic compute on S10 baseline (collapsed to constant `(rgb=2, thermal=5)` regardless of scenario). Root cause: fast-env reward formula uses fps-sum but Jetson cost is invocation-count, plus scenario_executor never populated `ambient_lux`/`missed_streak`/`threat_score` so the policy never saw the input variation it learned to react to. Decision: enhance HeuristicPolicy and wire the missing scenario state inputs (which were needed regardless), defer RL pending real Jetson power data + scenario-distribution training. RL infrastructure (`sensor_scheduler_rl.py`, `sensor_scheduler_fast_env.py`, `scripts/train_modal.py`, `notebooks/train_sensor_scheduler.ipynb`, `runs/sensor_scheduler/policy.zip`) **left in tree** as research artifact; not on critical path for v1. **Next action**: confirm tests pass + sanity check passes, then commit + push. |
 
 ---
 
@@ -36,7 +36,9 @@ Key milestones:
 - **Sensor-adaptive architecture adopted (2026-04-18):** RGB primary day, thermal triggered/primary night, LiDAR navigation-only. SensorScheduler designed with hard safety rails + RL-trained policy network. TIDE tri-modal always-on design superseded. SRO-MP Beta-era spec archived.
 - **Day 3 complete (2026-04-19):** `police_full_v2` trained on 22K+ new real images (weapons + grenades from Kaggle). All 6 classes pass validation targets. Weapon_person: 0.019 -> 0.875 (46x improvement). Explosive_device: zero data -> 0.802 mAP50.
 - **Day 4 complete (2026-04-24):** `thermal_police_v1` trained on HIT-UAV + M3OT thermal data (YOLO11s, 85 epochs, 6-class police schema). Aggregate val mAP50=0.897, mAP50-95=0.505, precision=0.902, recall=0.844. ThermalYOLOAdapter default class_map fixed to police schema.
-- **Next action:** implement SensorScheduler runtime component (`src/single_drone/sensor_scheduler.py`) with hard safety rails + heuristic policy fallback; RL training loop follows.
+- **Step 5B closed (2026-05-09):** trained PPO `policy.zip` (~125 KB, 17→64→32→30 MLP) wins 9/10 seeds vs real HeuristicPolicy on fast-env eval. Detection reward peaks at 291. Full report: `reports/step5/eval_2026_05_09.md`.
+- **Step 5B.5 sanity check (2026-05-09): RL policy underperforms heuristic on real scenarios.** Trained policy collapses to constant `(rgb=2, thermal=5)` on S10/S07, using 2x heuristic compute. Root cause: fps-sum reward ≠ Jetson invocation cost, plus scenario_executor wasn't populating `ambient_lux`/`missed_streak`/`threat_score`. Decision: **Path B** — enhance HeuristicPolicy, wire missing state inputs, defer RL.
+- **Path B (2026-05-09):** Phase B RL deferred. v1 ships enhanced HeuristicPolicy with `ambient_lux` + `missed_streak` + `threat_score` plumbed into scenario_executor. EMERGENCY_BURST gated on TRACK_HIGH to avoid bursting on quiet patrol once missed_streak got wired. RL infrastructure retained as research artifact.
 
 ---
 
@@ -89,7 +91,7 @@ The repo has a simulation-grade police autonomy backbone:
 This is still **not** a field-ready police drone product. Major gaps:
 
 - **thermal YOLO model** — DONE 2026-04-24. `thermal_police_v1` weights at `runs/detect/thermal_police_v1/weights/best.pt` (YOLO11s, 6-class police schema, val mAP50=0.897)
-- **SensorScheduler** — Phase A complete (rails + heuristic, 50% compute reduction on S10 baseline). Phase B infra complete (Gym env, PPO script, Colab notebook). Phase B training run + 5C policy integration pending
+- **SensorScheduler** — v1 ships enhanced HeuristicPolicy (Path B, 2026-05-09). Phase A: rails + heuristic (50% compute reduction on S10 baseline, preserved). Phase B (RL): trained but deferred — policy uses 2x heuristic compute on real scenarios despite 9/10 fast-env wins. Path B added `ambient_lux`/`missed_streak`/`threat_score` to scenario_executor and gated EMERGENCY_BURST on TRACK_HIGH. RL training pipeline retained as research artifact.
 - **Scenario validator sim-to-real gap** — `_render_bev()` produces abstract BEV renders that real-photo-trained YOLO cannot detect against. Documented in `reports/day3/validation_summary.md`. Authoritative accuracy = Colab val mAP. Deferred to Phase 6.
 - YOLO11n baseline (Day 1): mAP50=0.480 (30 epochs, VisDrone only)
 - YOLO11s police_full_v1 (Day 2): mAP50=0.593 (100 epochs, merged dataset)
@@ -239,7 +241,7 @@ YOLO11s fine-tuned on HIT-UAV + M3OT thermal data, 6-class police schema (matche
 
 Weights landed at `runs/detect/thermal_police_v1/weights/best.pt`. `ThermalYOLOAdapter` default class_map updated to `SANJAY_POLICE_CLASS_MAP` (was `FLIR_ADAS_CLASS_MAP` — wrong schema for police weights). Per-class thermal breakdown pending; aggregate only from checkpoint metadata. Full Day 4 writeup + ready-to-paste Colab cell for per-class capture in `reports/day4/thermal_summary.md`.
 
-- **Next action:** implement SensorScheduler runtime (`src/single_drone/sensor_scheduler.py`) with hard safety rails + heuristic policy fallback. RL training loop follows once heuristic path works end-to-end through a scenario.
+- **Next action (after Path B lands):** Phase 6 hardware-integration thread (Jetson + real sensors) to replace synthetic compute model with measured invocation latency, OR Phase 3 thermal model deployment to Jetson. RL revisit only if measured Jetson data justifies it.
 
 It is **not** yet a defensible claim of field-proven multimodal perception or operational readiness.
 

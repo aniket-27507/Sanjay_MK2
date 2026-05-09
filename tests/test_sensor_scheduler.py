@@ -140,23 +140,64 @@ def test_heuristic_inspect_dual_on_inspection_state():
     assert action.thermal_fps == FPS_HIGH
 
 
-def test_heuristic_emergency_burst_on_missed_streak():
-    state = SensorState(ambient_lux=50000.0, missed_detection_streak=5)
+def test_heuristic_emergency_burst_requires_track_high_and_missed_streak():
+    """EMERGENCY_BURST gated on (mission_state == TRACK_HIGH) AND (missed_streak >= 3).
+    Both conditions necessary -- the burst is the response to losing sight of an
+    actively-tracked threat, not to dry patrol generally."""
+    state = SensorState(
+        ambient_lux=50000.0,
+        mission_state=DroneMissionState.TRACK_HIGH,
+        missed_detection_streak=5,
+    )
     action = HeuristicPolicy.decide(state)
     assert action.mode == SensorMode.EMERGENCY_BURST
     assert action.rgb_fps == FPS_BURST
     assert action.thermal_fps == FPS_BURST
 
 
-def test_heuristic_emergency_beats_inspection_priority():
-    """Missed-streak is the highest-priority branch (loss of target is urgent)."""
+def test_heuristic_no_burst_on_quiet_patrol():
+    """Pure PATROL_HIGH with high missed_streak must NOT trigger burst.
+
+    This is the regression that motivated the gating change: once
+    missed_detection_streak got wired into scenario_executor, the old
+    rule ('missed_streak >= 3 -> burst') fired on every quiet patrol
+    after ~1.5s of no detections. New rule requires TRACK_HIGH too.
+    """
+    state = SensorState(
+        ambient_lux=50000.0,
+        mission_state=DroneMissionState.PATROL_HIGH,
+        missed_detection_streak=20,   # very long dry patrol
+    )
+    action = HeuristicPolicy.decide(state)
+    assert action.mode == SensorMode.DAY_PATROL, (
+        f"missed_streak alone must not trigger burst on PATROL_HIGH; got {action.mode}"
+    )
+    assert action.thermal_fps == FPS_OFF
+
+
+def test_heuristic_track_high_without_missed_streak_no_burst():
+    """TRACK_HIGH alone (no missed streak) is just active tracking, not burst."""
+    state = SensorState(
+        ambient_lux=50000.0,
+        mission_state=DroneMissionState.TRACK_HIGH,
+        missed_detection_streak=0,
+    )
+    action = HeuristicPolicy.decide(state)
+    assert action.mode != SensorMode.EMERGENCY_BURST
+
+
+def test_heuristic_inspection_beats_emergency_when_not_track_high():
+    """Under the new gating, INSPECT_DUAL fires for inspection states regardless
+    of missed_streak (since they're not TRACK_HIGH).  This documents that the
+    priority order is now EMERGENCY_BURST > INSPECT_DUAL > NIGHT > DAY only
+    when EMERGENCY_BURST's gating conditions are met."""
     state = SensorState(
         ambient_lux=50000.0,
         mission_state=DroneMissionState.DESCEND_CONFIRM,
-        missed_detection_streak=5,
+        missed_detection_streak=10,
     )
     action = HeuristicPolicy.decide(state)
-    assert action.mode == SensorMode.EMERGENCY_BURST
+    assert action.mode == SensorMode.INSPECT_DUAL
 
 
 # ────────────────────────────────────────────────────────────────────

@@ -1,0 +1,41 @@
+# S10N — Baseline Normal Patrol (Night)
+# Category: baseline
+# Tests: Same as S10 but at night (lux=5). Verifies NIGHT_PATROL mode +
+# rail R1 (low-lux thermal mandatory) hold across a full duty cycle.
+
+scenario:
+  id: S10N
+  name: Normal Patrol No Threats (Night)
+  category: baseline
+  duration_sec: 300
+  description: >
+    Same hexagonal patrol as S10 but at night (ambient_lux=5, well below
+    NIGHT_LUX_THRESHOLD=10). Establishes baseline night metrics: thermal
+    must remain active per rail R1 across all six Alpha drones.
+    Zero threats expected.
+  split: test
+
+world:
+  terrain_seed: 42
+  buildings: []
+  ambient_lux: 5
+
+spawn_schedule: []
+
+crowd:
+  enabled: false
+
+faults: []
+
+fleet:
+  num_alpha: 6
+  num_beta: 0
+  formation_center: [500, 500]
+  patrol_pattern: hexagonal
+
+expected_events: []
+
+metrics:
+  max_detection_latency_sec: 999
+  max_false_positive_rate: 0.0
+  min_coverage_pct: 85
