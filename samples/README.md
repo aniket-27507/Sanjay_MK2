@@ -27,6 +27,107 @@ python scripts/demo_operator_workflow.py `
 python scripts/demo_operator_workflow.py --rgb-source 0 --rgb-model yolo11s.pt
 ```
 
+### With the dashboard bridge (operator classifies in browser)
+
+Add `--gcs-port 8765`, then in a second terminal start the dashboard:
+
+```powershell
+# Terminal 1: AI workflow with bridge
+python scripts/demo_operator_workflow.py `
+    --rgb-source 0 `
+    --rgb-model runs/detect/police_full_v2/weights/best.pt `
+    --gcs-port 8765
+
+# Terminal 2: dashboard dev server
+npm --prefix gcs-dashboard run dev
+# Browser opens at http://localhost:3000 → click "AI Incident Review" tab
+```
+
+When an alert fires, the cv2 window AND the dashboard both show the incident.
+Pressing S/T/D on the keyboard OR clicking SAFE/THREAT/DISMISS in the browser
+both work. Decisions are persisted to `audit_runs/<ts>/decisions.jsonl`
+plus the dashboard's `aiIncidentHistory`.
+
+---
+
+## Field-test setup: phone as drone-camera, laptop as edge compute
+
+Validates real-world detection from a drone-equivalent altitude (balcony /
+rooftop / 2nd-floor window pointed down at street activity) **without
+needing an actual drone**. Same software, same model, same operator
+workflow — only the camera source changes from local webcam to a phone
+streaming over WiFi.
+
+### One-time phone setup
+
+1. Install **IP Webcam** by Pavel Khlebovich from Play Store (free, ~3M installs).
+2. Open the app, scroll to the bottom, tap **Start server**.
+3. The app shows the URL it's serving on, e.g. `http://192.168.1.42:8080`. Note this.
+
+### Both devices on the same WiFi
+
+Phone and laptop must be on the same WiFi network. Confirm by pinging the phone's
+IP from the laptop:
+
+```powershell
+ping 192.168.1.42   # use the IP from your IP Webcam screen
+```
+
+### Run the demo
+
+```powershell
+# Terminal 1: AI workflow against the phone's stream
+python scripts/demo_operator_workflow.py `
+    --rgb-source http://192.168.1.42:8080/video `
+    --rgb-model runs/detect/police_full_v2/weights/best.pt `
+    --conf-threshold 0.20 `
+    --alert-threshold 0.40 `
+    --operator-timeout-sec 0 `
+    --gcs-port 8765
+
+# Terminal 2: dashboard
+npm --prefix gcs-dashboard run dev
+```
+
+Open http://localhost:3000 → click **AI Incident Review** → green "CONNECTED"
+badge confirms the bridge is live. Position the phone on the balcony pointing
+down at the street, walk into frame with bags/props, watch alerts fire in the
+dashboard. Click SAFE / THREAT / DISMISS in the browser as appropriate.
+
+### Architecture for the test
+
+```
+┌──────────────┐   WiFi (HTTP video)   ┌────────────────┐
+│  PHONE       │ ─────────────────────► │  LAPTOP         │
+│  (balcony)   │                        │                 │
+│  - camera    │                        │  - YOLO infer   │
+│  - encoder   │                        │  - dashboard    │
+│  - WiFi out  │                        │  - audit log    │
+└──────────────┘                        └────────────────┘
+```
+
+Phone is **camera only**. Laptop runs the AI, hosts the dashboard, writes the
+audit log + per-incident clips. WiFi between them is the "wire" that on a real
+drone would be the internal MIPI/USB bus connecting the camera to the onboard
+Jetson Orin Nano.
+
+### Pre-flight checklist (do tonight, before the morning test)
+
+- [ ] IP Webcam installed on the phone, server starts cleanly.
+- [ ] Laptop pings the phone's IP successfully.
+- [ ] `runs/detect/police_full_v2/weights/best.pt` is on the laptop.
+- [ ] `npm --prefix gcs-dashboard run dev` starts without errors.
+- [ ] Browser at http://localhost:3000 shows "CONNECTED" badge after the AI
+  workflow starts.
+- [ ] Walk past the phone with a person-shaped silhouette → alert fires in browser
+  → SAFE / THREAT click writes to `audit_runs/<ts>/decisions.jsonl`.
+
+If all six tick, the morning test is ready to run.
+
+---
+
+## Demo viewer (without dashboard, single window)
+
 The window opens on the desktop and shows the live feed with bounding boxes.
 When a weapon is detected (or any person, if running stock yolo as a smoke test),
 a red banner pops up. The operator presses **S** (SAFE), **T** (THREAT), or

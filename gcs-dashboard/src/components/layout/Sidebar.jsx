@@ -7,6 +7,7 @@ const TABS = [
   { id: 'cameras', icon: '\u25A3', label: 'Camera Feeds' },
   { id: 'crowd', icon: '\u2630', label: 'Crowd Analysis' },
   { id: 'command', icon: '\u26A0', label: 'Incident Command' },
+  { id: 'ai-incidents', icon: '\u25CE', label: 'AI Incident Review' },
   { id: 'zones', icon: '\u2B21', label: 'Zone Editor' },
   { id: 'evidence', icon: '\u25CF', label: 'Evidence' },
   { id: 'audit', icon: '\u2263', label: 'Audit Log' },

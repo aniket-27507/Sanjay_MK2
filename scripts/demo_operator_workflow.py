@@ -70,14 +70,18 @@ Usage examples
 from __future__ import annotations
 
 import argparse
+import asyncio
+import base64
 import json
 import logging
+import queue
 import sys
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -334,6 +338,152 @@ def fit_to_pane(img: np.ndarray, pane_w: int, pane_h: int) -> np.ndarray:
 
 
 # ════════════════════════════════════════════════════════════════════
+#  GCS dashboard bridge (embedded WebSocket server)
+# ════════════════════════════════════════════════════════════════════
+
+
+class GCSDashboardBridge:
+    """Embedded WebSocket server that bridges the AI workflow to a browser
+    dashboard (gcs-dashboard/).
+
+    Design:
+      - Runs an asyncio loop in a background thread.
+      - The AI thread calls broadcast_*() to push messages to all connected
+        dashboard clients (cross-thread via run_coroutine_threadsafe).
+      - When a client sends an ``incident_decision`` message, the bridge
+        enqueues (incident_id, decision) onto ``decision_queue`` for the AI
+        thread to drain on its next loop iteration.
+
+    Protocol (JSON over WebSocket):
+      Server -> Client:
+        ``{"type": "ai_incident", "incident_id", "triggered_at", "class",
+           "confidence", "thumbnail_b64", "session_id"}``
+        ``{"type": "ai_incident_resolved", "incident_id", "decision",
+           "decided_at", "latency_sec", "decided_by"}``
+        ``{"type": "audit", "timestamp", "level", "source", "action",
+           "detail"}``
+      Client -> Server:
+        ``{"type": "incident_decision", "incident_id", "decision":
+           "SAFE"|"THREAT"|"DISMISSED"}``
+    """
+
+    def __init__(self, port: int = 8765):
+        self.port = port
+        self.decision_queue: "queue.Queue[Tuple[str, str]]" = queue.Queue()
+        self._clients: Set[Any] = set()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+        self._ready = threading.Event()
+
+    def start(self, wait_ready_sec: float = 3.0) -> None:
+        """Start the background server thread; block until it's ready (or timeout)."""
+        self._thread = threading.Thread(target=self._run, daemon=True, name="gcs-bridge")
+        self._thread.start()
+        self._ready.wait(timeout=wait_ready_sec)
+
+    def stop(self) -> None:
+        self._running = False
+        # Give the loop a moment to notice
+        if self._loop is not None:
+            try:
+                self._loop.call_soon_threadsafe(lambda: None)
+            except Exception:
+                pass
+
+    @property
+    def client_count(self) -> int:
+        return len(self._clients)
+
+    def broadcast(self, payload: dict) -> None:
+        """Thread-safe: schedule a broadcast on the asyncio loop."""
+        if self._loop is None or not self._running:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._broadcast(payload), self._loop)
+        except RuntimeError:
+            pass   # loop closed during shutdown; safe to ignore
+
+    async def _broadcast(self, payload: dict) -> None:
+        if not self._clients:
+            return
+        msg = json.dumps(payload)
+        await asyncio.gather(
+            *(c.send(msg) for c in list(self._clients)),
+            return_exceptions=True,
+        )
+
+    def _run(self) -> None:
+        self._running = True
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+        try:
+            try:
+                import websockets.asyncio.server as ws_server
+                _serve = None
+            except (ImportError, AttributeError):
+                ws_server = None
+                from websockets.server import serve as _serve   # noqa: F401
+        except ImportError:
+            logging.error("websockets package not installed -- pip install websockets")
+            self._running = False
+            self._ready.set()
+            return
+
+        async def handler(ws):
+            self._clients.add(ws)
+            logging.info("GCS dashboard client connected (%d total)", len(self._clients))
+            try:
+                async for raw in ws:
+                    try:
+                        msg = json.loads(raw)
+                    except (ValueError, TypeError):
+                        continue
+                    if msg.get("type") == "incident_decision":
+                        inc_id = msg.get("incident_id")
+                        decision = msg.get("decision", "").upper()
+                        if inc_id and decision in ("SAFE", "THREAT", "DISMISSED"):
+                            self.decision_queue.put((inc_id, decision))
+            except Exception:
+                pass
+            finally:
+                self._clients.discard(ws)
+                logging.info("GCS dashboard client disconnected (%d remaining)", len(self._clients))
+
+        async def serve_forever():
+            if ws_server is not None:
+                async with ws_server.serve(handler, "0.0.0.0", self.port):
+                    logging.info("GCS dashboard bridge listening on ws://0.0.0.0:%d", self.port)
+                    self._ready.set()
+                    while self._running:
+                        await asyncio.sleep(0.5)
+            else:
+                from websockets.server import serve as legacy_serve
+                async with legacy_serve(handler, "0.0.0.0", self.port):
+                    logging.info("GCS dashboard bridge listening on ws://0.0.0.0:%d", self.port)
+                    self._ready.set()
+                    while self._running:
+                        await asyncio.sleep(0.5)
+
+        try:
+            self._loop.run_until_complete(serve_forever())
+        except OSError as e:
+            logging.error("GCS dashboard bridge failed to start (port %d): %s",
+                          self.port, e)
+            self._ready.set()
+        except Exception as e:
+            if self._running:
+                logging.error("GCS dashboard bridge error: %s", e)
+        finally:
+            try:
+                self._loop.close()
+            except Exception:
+                pass
+            self._running = False
+
+
+# ════════════════════════════════════════════════════════════════════
 #  Capture + inference
 # ════════════════════════════════════════════════════════════════════
 
@@ -496,15 +646,29 @@ def parse_args() -> argparse.Namespace:
                    help="Inference device: 'cpu', 'cuda:0', etc.")
     p.add_argument("--no-loop", action="store_true",
                    help="Don't loop file sources on EOF (useful for one-pass video tests)")
+    p.add_argument("--gcs-port", type=int, default=0,
+                   help="If non-zero, also serve incidents to a browser dashboard on this "
+                        "WebSocket port (gcs-dashboard/ connects to ws://localhost:8765 by default). "
+                        "Operator can then classify SAFE/THREAT/DISMISS in the browser.")
     return p.parse_args()
 
 
-def emit_audit_callback(audit_log_handle):
+def emit_audit_callback(audit_log_handle, bridge: Optional["GCSDashboardBridge"] = None):
+    """Audit callback that writes to JSONL and (optionally) broadcasts to dashboard."""
     def _cb(event_type: str, detail: str):
         ts = time.time()
         line = json.dumps({"ts": ts, "event_type": event_type, "detail": detail})
         audit_log_handle.write(line + "\n")
         audit_log_handle.flush()
+        if bridge is not None:
+            bridge.broadcast({
+                "type": "audit",
+                "timestamp": ts * 1000,   # ms for JS Date()
+                "level": "info",
+                "source": "evidence_recorder",
+                "action": event_type.upper(),
+                "detail": detail,
+            })
     return _cb
 
 
@@ -521,7 +685,16 @@ def main() -> int:
     audit_log_handle = open(audit_log_path, "w", encoding="utf-8")
     decisions_log_handle = open(decisions_log_path, "w", encoding="utf-8")
 
-    recorder = EvidenceRecorder(audit_callback=emit_audit_callback(audit_log_handle))
+    # Optional: spin up the embedded dashboard bridge before the recorder so
+    # EvidenceRecorder audit events also broadcast to the dashboard.
+    bridge: Optional[GCSDashboardBridge] = None
+    if args.gcs_port:
+        bridge = GCSDashboardBridge(port=args.gcs_port)
+        bridge.start()
+        logging.info("Dashboard bridge ready on ws://localhost:%d (open gcs-dashboard/ in your browser)",
+                     args.gcs_port)
+
+    recorder = EvidenceRecorder(audit_callback=emit_audit_callback(audit_log_handle, bridge))
 
     rgb_cap = open_source(args.rgb_source, "RGB")
     thermal_cap = open_source(args.thermal_source, "Thermal") if args.thermal_source else None
@@ -636,9 +809,36 @@ def main() -> int:
                 logging.warning("INCIDENT %s opened: %s @ conf=%.2f", inc_id,
                                 alert_det.class_name, alert_det.confidence)
 
+                # Push to dashboard (if connected)
+                if bridge is not None:
+                    bridge.broadcast({
+                        "type": "ai_incident",
+                        "incident_id": inc_id,
+                        "triggered_at": state.active_incident.triggered_at * 1000,
+                        "class": alert_det.class_name,
+                        "confidence": alert_det.confidence,
+                        "thumbnail_b64": base64.b64encode(thumb).decode("ascii"),
+                        "session_id": session_id,
+                    })
+
         # Write current RGB frame to incident clip if recording
         if incident_writer is not None and rgb_frame is not None:
             incident_writer.write(rgb_frame)
+
+        # ── Drain operator decisions from dashboard (if any) ──
+        if bridge is not None and not bridge.decision_queue.empty():
+            try:
+                while True:
+                    inc_id, decision = bridge.decision_queue.get_nowait()
+                    if (state.active_incident is not None
+                            and state.active_incident.incident_id == inc_id
+                            and state.active_incident.decision is None):
+                        _finalise_incident(state, recorder, decision,
+                                           decisions_log_handle, incident_writer_path,
+                                           bridge=bridge, decided_by="dashboard")
+                        incident_post_roll_until = time.time() + INCIDENT_POST_ROLL_SEC
+            except queue.Empty:
+                pass
 
         # ── Operator timeout (disabled when --operator-timeout-sec <= 0) ──
         if (args.operator_timeout_sec > 0
@@ -647,7 +847,8 @@ def main() -> int:
             elapsed = time.time() - state.active_incident.triggered_at
             if elapsed > args.operator_timeout_sec:
                 _finalise_incident(state, recorder, "AUTO_THREAT",
-                                   decisions_log_handle, incident_writer_path)
+                                   decisions_log_handle, incident_writer_path,
+                                   bridge=bridge)
                 incident_post_roll_until = time.time() + INCIDENT_POST_ROLL_SEC
 
         # Close incident clip writer once post-roll elapses
@@ -723,15 +924,18 @@ def main() -> int:
         elif state.active_incident is not None and state.active_incident.decision is None:
             if key in (ord("s"), ord("S")):
                 _finalise_incident(state, recorder, "SAFE",
-                                   decisions_log_handle, incident_writer_path)
+                                   decisions_log_handle, incident_writer_path,
+                                   bridge=bridge, decided_by="keyboard")
                 incident_post_roll_until = time.time() + INCIDENT_POST_ROLL_SEC
             elif key in (ord("t"), ord("T")):
                 _finalise_incident(state, recorder, "THREAT",
-                                   decisions_log_handle, incident_writer_path)
+                                   decisions_log_handle, incident_writer_path,
+                                   bridge=bridge, decided_by="keyboard")
                 incident_post_roll_until = time.time() + INCIDENT_POST_ROLL_SEC
             elif key in (ord("d"), ord("D")):
                 _finalise_incident(state, recorder, "DISMISSED",
-                                   decisions_log_handle, incident_writer_path)
+                                   decisions_log_handle, incident_writer_path,
+                                   bridge=bridge, decided_by="keyboard")
                 incident_post_roll_until = time.time() + INCIDENT_POST_ROLL_SEC
 
     # ── Cleanup ──
@@ -742,6 +946,8 @@ def main() -> int:
         thermal_cap.release()
     cv2.destroyAllWindows()
     recorder.stop_all()
+    if bridge is not None:
+        bridge.stop()
 
     # Write session summary (EvidenceRecorder snapshot, the same shape GCS produces)
     sessions_summary_path.write_text(json.dumps(recorder.to_dict(), indent=2))
@@ -774,13 +980,20 @@ def _finalise_incident(
     decision: str,
     decisions_log_handle,
     clip_path: Optional[Path],
+    bridge: Optional["GCSDashboardBridge"] = None,
+    decided_by: str = "operator",
 ) -> None:
-    """Stamp the incident with the decision, log it, stop recording session."""
+    """Stamp the incident with the decision, log it, stop recording session.
+
+    If ``bridge`` is supplied, also broadcast an ``ai_incident_resolved`` event
+    so connected dashboards remove the pending card and update the audit feed.
+    """
     inc = state.active_incident
     if inc is None:
         return
     inc.decision = decision
     inc.decided_at = time.time()
+    inc.decided_by = decided_by
     if inc.session_id:
         recorder.stop_recording(inc.session_id)
     decisions_log_handle.write(inc.to_jsonl() + "\n")
@@ -789,9 +1002,18 @@ def _finalise_incident(
     state.last_decision = decision
     state.decision_flash_until = time.time() + 1.5
     state.active_incident = None
-    logging.info("INCIDENT %s decided: %s (latency %.2fs, clip=%s)",
-                 inc.incident_id, decision,
+    logging.info("INCIDENT %s decided: %s by=%s (latency %.2fs, clip=%s)",
+                 inc.incident_id, decision, decided_by,
                  inc.latency_sec or -1.0, clip_path)
+    if bridge is not None:
+        bridge.broadcast({
+            "type": "ai_incident_resolved",
+            "incident_id": inc.incident_id,
+            "decision": decision,
+            "decided_at": (inc.decided_at or 0) * 1000,
+            "latency_sec": inc.latency_sec,
+            "decided_by": decided_by,
+        })
 
 
 if __name__ == "__main__":

@@ -48,6 +48,10 @@ const useGCSState = create((set, get) => ({
   /* ── Alerts banner ── */
   activeAlerts: [],    // unacknowledged alerts
 
+  /* ── AI incidents (from demo_operator_workflow.py) ── */
+  aiIncidents: [],         // pending incidents awaiting operator classify
+  aiIncidentHistory: [],   // last 200 resolved incidents
+
   /* ── Scenario ── */
   scenario: {
     scenario_id: null,
@@ -294,6 +298,46 @@ const useGCSState = create((set, get) => ({
         break;
       }
 
+      /* ── AI incident appearing (operator decision required) ── */
+      case 'ai_incident': {
+        if (!msg.incident_id) break;
+        // Avoid duplicate cards if the same id arrives twice
+        const existing = get().aiIncidents.find((i) => i.incident_id === msg.incident_id);
+        if (existing) break;
+        const incident = {
+          incident_id: msg.incident_id,
+          triggered_at: msg.triggered_at || now,
+          class: msg.class || 'unknown',
+          confidence: msg.confidence || 0,
+          thumbnail_b64: msg.thumbnail_b64 || null,
+          session_id: msg.session_id || null,
+        };
+        set({
+          aiIncidents: [...get().aiIncidents, incident],
+          lastMessageAt: now,
+        });
+        break;
+      }
+
+      /* ── AI incident resolved (remove pending card, push to history) ── */
+      case 'ai_incident_resolved': {
+        if (!msg.incident_id) break;
+        const pending = get().aiIncidents.find((i) => i.incident_id === msg.incident_id);
+        const resolved = {
+          ...(pending || { incident_id: msg.incident_id }),
+          decision: msg.decision || 'UNKNOWN',
+          decided_at: msg.decided_at || now,
+          latency_sec: msg.latency_sec ?? null,
+          decided_by: msg.decided_by || 'operator',
+        };
+        set({
+          aiIncidents: get().aiIncidents.filter((i) => i.incident_id !== msg.incident_id),
+          aiIncidentHistory: [resolved, ...get().aiIncidentHistory].slice(0, 200),
+          lastMessageAt: now,
+        });
+        break;
+      }
+
       default:
         /* Unknown message type — silently ignore */
         break;
@@ -308,6 +352,37 @@ const useGCSState = create((set, get) => ({
       threats: get().threats.map((t) =>
         t.id === id ? { ...t, acknowledged: true } : t,
       ),
+    });
+  },
+
+  /**
+   * Classify a pending AI incident.
+   * @param {string} incidentId
+   * @param {'SAFE'|'THREAT'|'DISMISSED'} decision
+   * @param {(payload: object) => void} wsSend  the send() returned by useWebSocket
+   */
+  classifyIncident: (incidentId, decision, wsSend) => {
+    if (wsSend) {
+      wsSend({
+        type: 'incident_decision',
+        incident_id: incidentId,
+        decision,
+      });
+    }
+    // Optimistic local update so the card disappears even before the
+    // server's ai_incident_resolved echoes back.
+    const pending = get().aiIncidents.find((i) => i.incident_id === incidentId);
+    if (!pending) return;
+    const resolved = {
+      ...pending,
+      decision,
+      decided_at: Date.now(),
+      decided_by: 'dashboard',
+      latency_sec: (Date.now() - (pending.triggered_at || Date.now())) / 1000,
+    };
+    set({
+      aiIncidents: get().aiIncidents.filter((i) => i.incident_id !== incidentId),
+      aiIncidentHistory: [resolved, ...get().aiIncidentHistory].slice(0, 200),
     });
   },
 

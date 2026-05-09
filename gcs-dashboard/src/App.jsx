@@ -10,6 +10,7 @@ import ZoneEditor from './components/command/ZoneEditor';
 import EvidencePanel from './components/evidence/EvidencePanel';
 import AuditLogViewer from './components/audit/AuditLogViewer';
 import ScenarioPanel from './components/scenarios/ScenarioPanel';
+import AIIncidentReview from './components/command/AIIncidentReview';
 
 export default function App() {
   const { connected, latencyMs, send } = useWebSocket();
@@ -25,6 +26,8 @@ export default function App() {
         return <StampedeRiskPanel />;
       case 'command':
         return <IncidentCommand wsSend={send} />;
+      case 'ai-incidents':
+        return <AIIncidentReview wsSend={send} />;
       case 'zones':
         return <ZoneEditor wsSend={send} />;
       case 'evidence':
