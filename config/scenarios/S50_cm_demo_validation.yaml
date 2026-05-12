@@ -1,0 +1,274 @@
+# S50_cm_demo_validation — CM Demo Autonomy Validation (3 Drones, 200m Hex)
+# Category: demo
+# Tests: Hex sector assignment, GPS patrol, obstacle avoidance, drone failure recovery
+# Environment: Urban park (Ganeshguri proxy), 10-15m altitude, obstacle-rich
+#
+# Demo sequence:
+#   1. Auto-takeoff from deployment center to 12m
+#   2. CBBA assigns 2 of 6 hex sectors per drone
+#   3. GPS waypoint patrol within sectors, Boids for spacing
+#   4. LiDAR obstacle avoidance when approaching trees/buildings
+#   5. Drone 2 killed at t=90s -> remaining 2 re-assign to 3 sectors each
+#   6. RTL at t=240s
+#
+# Physics: Tier 1+2 enabled (wind, GPS noise, battery, IMU, atmosphere, LiDAR noise)
+
+scenario:
+  id: S50_cm_demo_validation
+  name: CM Demo Autonomy Validation
+  category: baseline
+  duration_sec: 300
+  description: >
+    3-drone validation scenario for CM Assam demo. 200m hexagonal patrol zone
+    in an obstacle-rich urban park environment at 10-15m altitude. Tests
+    autonomous sector assignment, patrol, obstacle avoidance, drone failure
+    recovery, and RTL. Physics Tier 1+2 enabled.
+  split: test
+
+world:
+  terrain_seed: 42
+  buildings:
+    # Real OSM + infill buildings from Ganeshguri Blender scene
+    # Extracted via bounding-box analysis, converted BL→NED→YAML coords
+    # 46 buildings within 300m of patrol center, sorted by height
+    - center: [431, 578]
+      width: 16
+      depth: 8
+      height: 20
+    - center: [365, 477]
+      width: 13
+      depth: 12
+      height: 19
+    - center: [365, 571]
+      width: 17
+      depth: 8
+      height: 18
+    - center: [484, 593]
+      width: 19
+      depth: 16
+      height: 18
+    - center: [534, 522]
+      width: 16
+      depth: 19
+      height: 17
+    - center: [402, 576]
+      width: 16
+      depth: 8
+      height: 17
+    - center: [344, 523]
+      width: 15
+      depth: 14
+      height: 16
+    - center: [514, 592]
+      width: 17
+      depth: 9
+      height: 16
+    - center: [390, 464]
+      width: 15
+      depth: 19
+      height: 16
+    - center: [413, 567]
+      width: 22
+      depth: 16
+      height: 16
+    - center: [443, 426]
+      width: 21
+      depth: 19
+      height: 15
+    - center: [354, 420]
+      width: 25
+      depth: 17
+      height: 15
+    - center: [495, 510]
+      width: 21
+      depth: 10
+      height: 15
+    - center: [430, 584]
+      width: 13
+      depth: 20
+      height: 15
+    - center: [399, 576]
+      width: 10
+      depth: 16
+      height: 15
+    - center: [478, 504]
+      width: 9
+      depth: 10
+      height: 15
+    - center: [436, 552]
+      width: 9
+      depth: 19
+      height: 14
+    - center: [429, 566]
+      width: 13
+      depth: 17
+      height: 14
+    - center: [360, 573]
+      width: 23
+      depth: 15
+      height: 13
+    - center: [403, 605]
+      width: 17
+      depth: 17
+      height: 13
+    - center: [754, 451]
+      width: 4
+      depth: 4
+      height: 12
+    - center: [448, 449]
+      width: 3
+      depth: 3
+      height: 12
+    - center: [445, 485]
+      width: 10
+      depth: 18
+      height: 12
+    - center: [556, 447]
+      width: 9
+      depth: 17
+      height: 12
+    - center: [538, 592]
+      width: 24
+      depth: 15
+      height: 12
+    - center: [365, 531]
+      width: 15
+      depth: 17
+      height: 12
+    - center: [531, 558]
+      width: 14
+      depth: 10
+      height: 12
+    - center: [509, 590]
+      width: 10
+      depth: 11
+      height: 10
+    - center: [538, 584]
+      width: 23
+      depth: 15
+      height: 10
+    - center: [346, 553]
+      width: 18
+      depth: 14
+      height: 10
+    - center: [451, 444]
+      width: 20
+      depth: 21
+      height: 10
+    - center: [518, 602]
+      width: 16
+      depth: 17
+      height: 10
+    - center: [506, 576]
+      width: 12
+      depth: 19
+      height: 10
+    - center: [388, 576]
+      width: 17
+      depth: 11
+      height: 9
+    - center: [436, 580]
+      width: 18
+      depth: 18
+      height: 9
+    - center: [511, 523]
+      width: 24
+      depth: 9
+      height: 8
+    - center: [382, 570]
+      width: 21
+      depth: 11
+      height: 8
+    - center: [522, 442]
+      width: 12
+      depth: 8
+      height: 8
+    - center: [372, 600]
+      width: 16
+      depth: 17
+      height: 8
+    - center: [534, 459]
+      width: 14
+      depth: 20
+      height: 7
+    - center: [467, 571]
+      width: 23
+      depth: 20
+      height: 7
+    - center: [555, 533]
+      width: 18
+      depth: 11
+      height: 6
+    - center: [516, 487]
+      width: 16
+      depth: 12
+      height: 6
+
+spawn_schedule:
+  # Simulated threat at t=120s for task allocation test
+  - time: 120
+    type: person
+    position: [530, 470, 8]
+    is_threat: true
+    thermal_signature: 0.85
+
+crowd:
+  enabled: false
+
+faults:
+  # Kill drone 2 at t=90s to test re-assignment
+  - time: 90
+    drone_id: 2
+    type: disable
+    description: "Simulated drone failure — test sector re-assignment"
+
+fleet:
+  num_alpha: 3
+  num_beta: 0
+  formation_center: [446, 489]
+  patrol_pattern: hexagonal
+  patrol_altitude: 12.0
+  formation_spacing: 30.0
+
+# Physics configuration
+physics:
+  enabled: true
+  altitude_m: 12
+  hex_radius_m: 200
+  wind:
+    base_speed_ms: 6.0
+    base_direction_deg: 210
+    gust_max_ms: 4.0
+    gust_probability_per_sec: 0.12
+    turbulence_intensity: 0.25
+    drone_mass_kg: 0.5
+  gps:
+    horizontal_sigma_m: 2.5
+    multipath_extra_sigma_m: 4.0
+  battery:
+    capacity_mah: 2200
+    cell_count: 3
+  atmosphere:
+    temperature_c: 33.0
+    relative_humidity_pct: 88.0
+    station_altitude_asl_m: 55.0
+
+expected_events:
+  - type: sector_assignment_complete
+    max_latency_sec: 10
+  - type: patrol_coverage_80pct
+    max_latency_sec: 60
+  - type: drone_failure_detected
+    max_latency_sec: 5
+  - type: sector_reassignment_complete
+    max_latency_sec: 15
+  - type: threat_detected
+    max_latency_sec: 45
+
+metrics:
+  max_detection_latency_sec: 45
+  max_false_positive_rate: 0.05
+  min_coverage_pct: 85
+  max_sector_reassignment_sec: 15
+  min_obstacle_clearance_m: 2.0
+  max_gps_track_error_m: 5.0

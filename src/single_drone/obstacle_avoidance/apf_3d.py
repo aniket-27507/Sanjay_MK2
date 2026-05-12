@@ -172,6 +172,7 @@ class APF3DAvoidance:
         self._last_attractive = Vector3()
         self._last_repulsive = Vector3()
         self._closest_obstacle_dist: float = float("inf")
+        self._sector_min_range: float = float("inf")
 
     # ── Public Interface ──────────────────────────────────────────
 
@@ -186,6 +187,14 @@ class APF3DAvoidance:
     def update_obstacles(self, obstacles: List[Obstacle3D]):
         """Feed clustered obstacles from the deployed LiDAR stack."""
         self._obstacles = obstacles
+
+    def update_sector_min_range(self, min_range: float):
+        """Override closest-obstacle distance with sector-based minimum range.
+
+        Bounding-sphere clusters underestimate distance for wall-like obstacles.
+        This provides an accurate distance from the LiDAR sector range map.
+        """
+        self._sector_min_range = min_range
 
     def update_voxels(self, voxels: List[OccupancyVoxel]):
         """Feed occupied voxels from OctoMap / RTAB-Map."""
@@ -449,7 +458,7 @@ class APF3DAvoidance:
 
     def _compute_min_distance(self, pos: np.ndarray) -> float:
         """Compute distance to closest obstacle from any source."""
-        min_d = float("inf")
+        min_d = self._sector_min_range
 
         for obs in self._obstacles:
             d = np.linalg.norm(pos - obs.position.to_array()) - obs.radius

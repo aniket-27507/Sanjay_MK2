@@ -241,6 +241,8 @@ class AvoidanceManager:
         # ── 1. Sensor Processing ────────────────────────────────
         obstacles = self._lidar.get_obstacles()
         self._apf.update_obstacles(obstacles)
+        sector_ranges = self._lidar.get_sector_ranges()
+        self._apf.update_sector_min_range(float(np.min(sector_ranges)))
 
         # ── 2. Determine effective goal ─────────────────────────
         effective_goal = self._get_effective_goal()

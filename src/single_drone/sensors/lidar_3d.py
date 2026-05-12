@@ -294,24 +294,27 @@ class Lidar3DDriver:
             if cluster_points.shape[0] < self.config.cluster_min_points:
                 continue
 
-            center = cluster_points.mean(axis=0)
-            # Bounding sphere radius
-            dists = np.linalg.norm(cluster_points - center, axis=1)
-            radius = float(np.max(dists)) + 0.1  # Small padding
+            point_ranges = np.linalg.norm(cluster_points, axis=1)
+            nearest_idx = int(np.argmin(point_ranges))
+            nearest_point = cluster_points[nearest_idx]
+            nearest_range = float(point_ranges[nearest_idx])
 
-            # Convert center to world frame if drone position given
             if drone_position is not None:
                 world_center = Vector3(
-                    x=drone_position.x + center[0],
-                    y=drone_position.y + center[1],
-                    z=drone_position.z + center[2],
+                    x=drone_position.x + nearest_point[0],
+                    y=drone_position.y + nearest_point[1],
+                    z=drone_position.z + nearest_point[2],
                 )
             else:
-                world_center = Vector3(x=float(center[0]), y=float(center[1]), z=float(center[2]))
+                world_center = Vector3(
+                    x=float(nearest_point[0]),
+                    y=float(nearest_point[1]),
+                    z=float(nearest_point[2]),
+                )
 
             obstacles.append(Obstacle3D(
                 position=world_center,
-                radius=radius,
+                radius=0.5,
                 confidence=min(cluster_points.shape[0] / 20.0, 1.0),
             ))
 

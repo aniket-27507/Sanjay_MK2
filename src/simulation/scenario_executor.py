@@ -28,7 +28,8 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from enum import Enum, auto
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -71,14 +72,74 @@ from src.response.mission_policy import (
     MissionPolicyEngine,
 )
 from src.swarm.coordination.urban_patrol_patterns import UrbanPatrolPatternGenerator
+from src.simulation.physics.environment import PhysicsEnvironment, PhysicsConfig
+from src.simulation.physics.servo_lidar_model import ServoLiDARModel, ScanPoint
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Ray-AABB Intersection (Slab Method) ───────────────────────
+
+def _ray_aabb_hit(
+    ox: float, oy: float, oz: float,
+    dx: float, dy: float, dz: float,
+    x0: float, y0: float, z0: float,
+    x1: float, y1: float, z1: float,
+) -> Optional[float]:
+    """Slab method ray-AABB intersection. Returns hit distance or None.
+
+    If the ray origin is inside the AABB, returns the exit distance (t_far)
+    so the LiDAR sees the nearest wall from inside.
+    """
+    t_near = -1e10
+    t_far = 1e10
+    for o, d, lo, hi in ((ox, dx, x0, x1), (oy, dy, y0, y1), (oz, dz, z0, z1)):
+        if abs(d) < 1e-9:
+            if o < lo or o > hi:
+                return None
+        else:
+            t1 = (lo - o) / d
+            t2 = (hi - o) / d
+            if t1 > t2:
+                t1, t2 = t2, t1
+            t_near = max(t_near, t1)
+            t_far = min(t_far, t2)
+            if t_near > t_far:
+                return None
+    if t_far < 0:
+        return None
+    if t_near < 0:
+        return t_far
+    return t_near
+
+
+# ─── Servo LiDAR Scan State Machine ────────────────────────────
+
+class _ServoScanPhase(Enum):
+    CONTINUOUS_2D = auto()
+    HOVER_SWEEP = auto()
+    AVOIDANCE_ACTIVE = auto()
+
+
+@dataclass
+class _ServoScanState:
+    phase: _ServoScanPhase = field(default_factory=lambda: _ServoScanPhase.CONTINUOUS_2D)
+    sweep_elapsed: float = 0.0
+    sweep_rays: list = field(default_factory=list)
+    rays_processed: int = 0
+    accumulated_returns: list = field(default_factory=list)
+    last_sweep_time: float = -10.0
+    SWEEP_COOLDOWN: float = 3.0
+    avoidance_clear_ticks: int = 0
+    AVOIDANCE_CLEAR_EXIT: int = 15
+
 
 # ─── Lightweight Drone Sim (kinematic, no physics) ───────────────
 
 ALPHA_ALTITUDE = 65.0
 ALPHA_INSPECTION_ALTITUDE = 35.0
 CRUISE_SPEED = 5.0  # m/s
+DRONE_RADIUS = 4.5  # center-to-rotor-tip at 2x visual scale (real ~1.7m, Blender 2x = 4.4m + margin)
 
 
 @dataclass
@@ -206,19 +267,31 @@ class ScenarioExecutor:
         scenario: ScenarioDefinition,
         gcs_port: int = 8765,
         detection_adapter: DetectionModelAdapter | None = None,
+        physics_config: PhysicsConfig | None = None,
     ):
         self.scenario = scenario
         self.gcs_port = gcs_port
         self._detection_adapter = detection_adapter
+        self._physics = PhysicsEnvironment(physics_config)
 
         # ── World ──
         self.world = WorldModel(width=1000.0, height=1000.0, cell_size=5.0)
         self.world.generate_terrain(seed=scenario.terrain_seed)
 
         # Add scenario-specific buildings to terrain grid (remap to world coords)
+        # Full geometry list for collision detection and obstacle avoidance
+        self._building_geom: List[Dict] = []
+        self._building_list: List[tuple] = []
         for b in scenario.buildings:
             bx, by = b.center[0] - self.world.width / 2.0, b.center[1] - self.world.height / 2.0
             self._place_building(bx, by, b.width, b.depth, b.height)
+            char_width = max(b.width, b.depth)
+            self._building_list.append((Vector3(bx, by, 0), char_width))
+            self._building_geom.append({
+                "cx": bx, "cy": by,
+                "hw": b.width / 2.0, "hd": b.depth / 2.0,
+                "height": b.height,
+            })
 
         # ── Drones ──
         # World coordinate system: origin at (-width/2, -height/2),
@@ -228,13 +301,22 @@ class ScenarioExecutor:
         raw_cx, raw_cy = scenario.fleet.formation_center
         cx = raw_cx - self.world.width / 2.0
         cy = raw_cy - self.world.height / 2.0
-        hex_pos = _hex_positions(cx, cy, 60.0, scenario.fleet.num_alpha)
+        patrol_alt = scenario.fleet.patrol_altitude or ALPHA_ALTITUDE
+        spacing = scenario.fleet.formation_spacing or 60.0
+        hex_pos = _hex_positions(cx, cy, spacing, scenario.fleet.num_alpha)
         for i, (hx, hy) in enumerate(hex_pos):
             self.drones[i] = SimDrone(
                 drone_id=i,
                 drone_type=DroneType.ALPHA,
-                position=Vector3(hx, hy, -ALPHA_ALTITUDE),
+                position=Vector3(hx, hy, -patrol_alt),
             )
+            self._physics.register_drone(i)
+
+        # Per-drone servo LiDAR scan state (scan-then-move)
+        self._servo_scan_states: Dict[int, _ServoScanState] = {
+            did: _ServoScanState() for did in self.drones
+        }
+
         if scenario.fleet.num_beta:
             logger.info(
                 "Scenario %s requests %d legacy Beta drone(s); ignored by Alpha-only v1 executor",
@@ -248,21 +330,24 @@ class ScenarioExecutor:
         self._avoidance_managers: Dict[int, object] = {}  # AvoidanceManager per drone
         self._waypoint_index = 0
 
+        # Store effective patrol altitude for use throughout the executor
+        self._patrol_altitude = patrol_alt
+
         # Build POI-based waypoints for forced-goal guidance.
         # cx, cy are already in world coords. YAML positions need remapping.
         hw, hh = self.world.width / 2.0, self.world.height / 2.0
         self._mission_waypoints: List[Vector3] = [
-            Vector3(max(-490, min(490, cx)), max(-490, min(490, cy)), -ALPHA_ALTITUDE)
+            Vector3(max(-490, min(490, cx)), max(-490, min(490, cy)), -patrol_alt)
         ]
         for s in scenario.spawn_schedule:
             wx, wy = s.position[0] - hw, s.position[1] - hh
-            self._mission_waypoints.append(Vector3(max(-490, min(490, wx)), max(-490, min(490, wy)), -ALPHA_ALTITUDE))
+            self._mission_waypoints.append(Vector3(max(-490, min(490, wx)), max(-490, min(490, wy)), -patrol_alt))
         for b in scenario.buildings:
             bx, by = b.center[0] - hw, b.center[1] - hh
-            self._mission_waypoints.append(Vector3(max(-490, min(490, bx)), max(-490, min(490, by)), -ALPHA_ALTITUDE))
+            self._mission_waypoints.append(Vector3(max(-490, min(490, bx)), max(-490, min(490, by)), -patrol_alt))
         if scenario.crowd.enabled:
             ccx, ccy = scenario.crowd.center[0] - hw, scenario.crowd.center[1] - hh
-            self._mission_waypoints.append(Vector3(max(-490, min(490, ccx)), max(-490, min(490, ccy)), -ALPHA_ALTITUDE))
+            self._mission_waypoints.append(Vector3(max(-490, min(490, ccx)), max(-490, min(490, ccy)), -patrol_alt))
 
         # Initialize coordinators (sync wrapper for async init)
         import asyncio
@@ -293,6 +378,8 @@ class ScenarioExecutor:
                 if self.drones[drone_id].drone_type == DroneType.ALPHA:
                     am_cfg = AvoidanceManagerConfig()
                     am_cfg.control_rate_hz = self.TICK_HZ
+                    am_cfg.lidar.ground_removal = False
+                    am_cfg.lidar.max_range = 12.0
                     mgr = AvoidanceManager(drone_id=drone_id, config=am_cfg)
                     self._avoidance_managers[drone_id] = mgr
         except ImportError:
@@ -428,6 +515,188 @@ class ScenarioExecutor:
                     self.world.terrain[r, c] = TerrainType.BUILDING.value
                     self.world.elevation[r, c] = height
 
+    # ── Building Collision Avoidance ─────────────────────────────
+
+    def _is_inside_building(self, pos: Vector3) -> Optional[Dict]:
+        """Return the building dict if any part of the drone (including rotors) would be inside."""
+        alt = abs(pos.z)
+        detect = DRONE_RADIUS + 3.0  # detect when rotor tips are within 3m of wall
+        for bg in self._building_geom:
+            if (abs(pos.x - bg["cx"]) < bg["hw"] + detect and
+                abs(pos.y - bg["cy"]) < bg["hd"] + detect and
+                alt < bg["height"] + 2.0):
+                return bg
+        return None
+
+    def _deflect_from_building(self, pos: Vector3, vel: Vector3, bg: Dict) -> tuple:
+        """Push drone center far enough that rotor tips clear the wall by >=3m."""
+        clearance = DRONE_RADIUS + 5.0  # rotor tip + 5m visual gap
+        dx = pos.x - bg["cx"]
+        dy = pos.y - bg["cy"]
+
+        new_x, new_y, new_z = pos.x, pos.y, pos.z
+        vx, vy, vz = vel.x, vel.y, vel.z
+
+        sign_x = 1.0 if dx >= 0 else -1.0
+        sign_y = 1.0 if dy >= 0 else -1.0
+
+        if abs(dx) < bg["hw"] + clearance:
+            new_x = bg["cx"] + sign_x * (bg["hw"] + clearance)
+            vx = sign_x * max(abs(vx), 1.0)
+        if abs(dy) < bg["hd"] + clearance:
+            new_y = bg["cy"] + sign_y * (bg["hd"] + clearance)
+            vy = sign_y * max(abs(vy), 1.0)
+
+        return (
+            Vector3(new_x, new_y, new_z),
+            Vector3(vx, vy, vz),
+        )
+
+    # ── Servo LiDAR Raycasting Pipeline ──────────────────────────
+
+    def _cast_lidar_rays(
+        self,
+        drone: SimDrone,
+        rays: List[Tuple[float, float, np.ndarray]],
+        heading_rad: float,
+        max_range: float,
+    ) -> List[Tuple[float, float, float, bool]]:
+        """Raycast LiDAR rays against building AABBs.
+
+        Returns (h_angle_deg, tilt_deg, true_range_m, hit) for ServoLiDARModel.
+        """
+        cos_h = math.cos(heading_rad)
+        sin_h = math.sin(heading_rad)
+        ox, oy, oz = drone.position.x, drone.position.y, drone.position.z
+
+        # Pre-filter buildings within LiDAR range
+        nearby = []
+        for bg in self._building_geom:
+            dist = math.hypot(ox - bg["cx"], oy - bg["cy"])
+            if dist < max_range + math.hypot(bg["hw"], bg["hd"]) + 5.0:
+                nearby.append(bg)
+
+        results: List[Tuple[float, float, float, bool]] = []
+        for h_deg, tilt_deg, dir_body in rays:
+            # Body→NED rotation (yaw only, body z-up → NED z-down)
+            wx = dir_body[0] * cos_h - dir_body[1] * sin_h
+            wy = dir_body[0] * sin_h + dir_body[1] * cos_h
+            wz = -dir_body[2]
+
+            best_t = max_range + 1.0
+            hit = False
+
+            for bg in nearby:
+                # Building AABB in NED: z from -height (top) to 0 (ground)
+                t = _ray_aabb_hit(
+                    ox, oy, oz, wx, wy, wz,
+                    bg["cx"] - bg["hw"], bg["cy"] - bg["hd"], -bg["height"],
+                    bg["cx"] + bg["hw"], bg["cy"] + bg["hd"], 0.0,
+                )
+                if t is not None and 0.0 < t < best_t:
+                    best_t = t
+                    hit = True
+
+            # Ground plane (z=0)
+            if abs(wz) > 1e-8:
+                t_ground = -oz / wz
+                if 0.0 < t_ground < best_t:
+                    best_t = t_ground
+                    hit = True
+
+            results.append((h_deg, tilt_deg, best_t if hit else max_range + 1.0, hit))
+
+        return results
+
+    def _scan_points_to_body_array(
+        self, points: List[ScanPoint],
+    ) -> Optional[np.ndarray]:
+        """Convert ScanPoints to Nx3 body-frame array for Lidar3DDriver."""
+        valid = [p for p in points if not p.is_false]
+        if not valid:
+            return None
+        return np.array([[p.x, p.y, p.z] for p in valid], dtype=np.float32)
+
+    def _servo_lidar_tick(
+        self, drone_id: int, dt: float,
+    ) -> Tuple[Optional[np.ndarray], bool]:
+        """Run one tick of the servo LiDAR scan-then-move state machine.
+
+        Returns (body_frame_point_cloud, should_hover).
+        The point cloud is in body frame for Lidar3DDriver.
+        """
+        drone = self.drones[drone_id]
+        scan = self._servo_scan_states[drone_id]
+        servo = self._physics.get_servo_lidar(drone_id)
+        heading_rad = math.radians(drone.heading)
+        max_range = servo.config.max_range_m
+
+        if scan.phase == _ServoScanPhase.CONTINUOUS_2D:
+            rays = servo.continuous_2d_scan_rays()
+            raw = self._cast_lidar_rays(drone, rays, heading_rad, max_range)
+            points, sectors = servo.process_returns(raw)
+            cloud = self._scan_points_to_body_array(points)
+
+            cooldown_ok = (self._sim_time - scan.last_sweep_time) > scan.SWEEP_COOLDOWN
+            if cooldown_ok and servo.should_investigate(sectors):
+                scan.phase = _ServoScanPhase.HOVER_SWEEP
+                scan.sweep_elapsed = 0.0
+                scan.sweep_rays = servo.generate_full_sweep_rays()
+                scan.rays_processed = 0
+                scan.accumulated_returns = []
+                return cloud, True
+
+            return cloud, False
+
+        elif scan.phase == _ServoScanPhase.HOVER_SWEEP:
+            sweep_dur = servo.sweep_duration_sec()
+            progress = min(scan.sweep_elapsed / max(sweep_dur, 0.01), 1.0)
+            target_rays = min(int(progress * len(scan.sweep_rays)), len(scan.sweep_rays))
+
+            if target_rays > scan.rays_processed:
+                new_rays = scan.sweep_rays[scan.rays_processed:target_rays]
+                raw = self._cast_lidar_rays(drone, new_rays, heading_rad, max_range)
+                scan.accumulated_returns.extend(raw)
+                scan.rays_processed = target_rays
+
+            scan.sweep_elapsed += dt
+
+            if scan.sweep_elapsed >= sweep_dur:
+                points, sectors = servo.process_returns(scan.accumulated_returns)
+                cloud = self._scan_points_to_body_array(points)
+                scan.phase = _ServoScanPhase.AVOIDANCE_ACTIVE
+                scan.last_sweep_time = self._sim_time
+                return cloud, True
+
+            return None, True
+
+        elif scan.phase == _ServoScanPhase.AVOIDANCE_ACTIVE:
+            rays = servo.continuous_2d_scan_rays()
+            raw = self._cast_lidar_rays(drone, rays, heading_rad, max_range)
+            points, sectors = servo.process_returns(raw)
+            cloud = self._scan_points_to_body_array(points)
+
+            mgr = self._avoidance_managers.get(drone_id)
+            apf_clear = True
+            if mgr and hasattr(mgr, "get_telemetry"):
+                avt = mgr.get_telemetry()
+                apf_clear = avt.get("avoidance_state", "CLEAR") == "CLEAR"
+
+            if not servo.should_investigate(sectors):
+                scan.phase = _ServoScanPhase.CONTINUOUS_2D
+                scan.avoidance_clear_ticks = 0
+            elif apf_clear:
+                scan.avoidance_clear_ticks += 1
+                if scan.avoidance_clear_ticks >= scan.AVOIDANCE_CLEAR_EXIT:
+                    scan.phase = _ServoScanPhase.CONTINUOUS_2D
+                    scan.avoidance_clear_ticks = 0
+            else:
+                scan.avoidance_clear_ticks = 0
+
+            return cloud, False
+
+        return None, False
+
     # ── Main Run Loop ─────────────────────────────────────────────
 
     def get_scheduler_stats(self) -> Dict[int, Dict[str, float]]:
@@ -449,6 +718,110 @@ class ScenarioExecutor:
                 "thermal_fire_rate": counts["thermal_fire"] / th_total if th_total else 0.0,
             }
         return stats
+
+    def run_and_export_telemetry(
+        self, output_path: str, sample_hz: float = 5.0,
+    ) -> ScenarioResult:
+        """Run the scenario and export per-tick telemetry for Blender replay.
+
+        Samples drone state and threat info at *sample_hz* and writes a JSON
+        file at *output_path* containing a ``frames`` array suitable for
+        ``blender_scenario_bridge.replay_scenario()``.
+        """
+        import json as _json
+
+        dt = 1.0 / self.TICK_HZ
+        sample_interval = 1.0 / sample_hz
+        last_sample_t = -sample_interval  # force first sample
+
+        frames: List[dict] = []
+
+        logger.info(
+            "═══ Telemetry export: %s (%ss @ %.0f Hz) → %s ═══",
+            self.scenario.id, self.scenario.duration_sec, sample_hz, output_path,
+        )
+
+        self._gcs = GCSServer(port=self.gcs_port)
+        self._gcs.start()
+        self._push_scenario_status("running")
+
+        try:
+            while self._sim_time < self.scenario.duration_sec:
+                self._process_scheduled_spawns()
+                self._process_scheduled_faults()
+                self._tick_crowd_spawns()
+                self._tick_drones(dt)
+                self._tick_sensors()
+                self._tick_crowd()
+                self._push_to_gcs()
+
+                if self._sim_time - last_sample_t >= sample_interval - 1e-6:
+                    last_sample_t = self._sim_time
+                    frame = {
+                        "sim_time": round(self._sim_time, 3),
+                        "drones": {},
+                        "threats": [],
+                    }
+                    for did, d in self.drones.items():
+                        drone_frame: Dict = {
+                            "position": [d.position.x, d.position.y, d.position.z],
+                            "heading": round(d.heading, 2),
+                            "mode": d.mode.name,
+                            "mission_state": self._mission_states[did].name,
+                            "active": d.active,
+                            "battery": round(d.battery, 4),
+                        }
+                        scan_st = self._servo_scan_states.get(did)
+                        if scan_st:
+                            drone_frame["servo_scan_phase"] = scan_st.phase.name
+                        mgr = self._avoidance_managers.get(did)
+                        if mgr and hasattr(mgr, "get_telemetry"):
+                            avt = mgr.get_telemetry()
+                            drone_frame["avoidance_state"] = avt.get("avoidance_state", "NONE")
+                            drone_frame["hpl_state"] = avt.get("hpl_state", "PASSIVE")
+                            drone_frame["closest_obstacle_m"] = avt.get("closest_obstacle_m", 999)
+                            drone_frame["hpl_overriding"] = avt.get("hpl_overriding", False)
+                        frame["drones"][str(did)] = drone_frame
+                    for t in self._threat_manager.get_active_threats():
+                        frame["threats"].append({
+                            "threat_id": t.threat_id,
+                            "position": [t.position.x, t.position.y, t.position.z],
+                            "threat_level": t.threat_level.name,
+                            "status": t.status.name,
+                            "threat_score": round(getattr(t, "threat_score", 0.0), 3),
+                        })
+                    frames.append(frame)
+
+                self._sim_time += dt
+        except KeyboardInterrupt:
+            logger.info("Telemetry export interrupted")
+        finally:
+            self._push_scenario_status("completed")
+            if self._gcs:
+                self._gcs.stop()
+
+        telemetry = {
+            "scenario_id": self.scenario.id,
+            "scenario_name": self.scenario.name,
+            "duration_sec": self.scenario.duration_sec,
+            "sample_hz": sample_hz,
+            "num_frames": len(frames),
+            "buildings": [
+                {"cx": bg["cx"], "cy": bg["cy"],
+                 "hw": bg["hw"], "hd": bg["hd"],
+                 "height": bg["height"]}
+                for bg in self._building_geom
+            ],
+            "frames": frames,
+        }
+
+        import os
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "w") as f:
+            _json.dump(telemetry, f)
+        logger.info("Wrote %d telemetry frames to %s", len(frames), output_path)
+
+        return self._build_result()
 
     def run(self, realtime: bool = False) -> ScenarioResult:
         """Run the scenario to completion.
@@ -759,7 +1132,13 @@ class ScenarioExecutor:
                         speed=CRUISE_SPEED,
                     )
 
+                # Servo LiDAR scan-then-move: raycast against buildings,
+                # apply noise, feed to APF+HPL avoidance pipeline
+                lidar_cloud, should_hover = self._servo_lidar_tick(drone_id, dt)
+
                 if mgr is not None:
+                    cloud_to_feed = lidar_cloud if lidar_cloud is not None else np.empty((0, 3), dtype=np.float32)
+                    mgr.feed_lidar_points(cloud_to_feed, drone_position=drone.position)
                     mgr.set_boids_velocity(desired_velocity)
                     if desired_goal is not None:
                         mgr.set_goal(desired_goal)
@@ -767,19 +1146,37 @@ class ScenarioExecutor:
                         drone_position=drone.position,
                         drone_velocity=drone.velocity,
                     )
+                    if should_hover:
+                        velocity = Vector3()
                 else:
-                    velocity = desired_velocity
+                    velocity = Vector3() if should_hover else desired_velocity
 
-                # Kinematic step
-                drone.position = Vector3(
-                    drone.position.x + velocity.x * dt,
-                    drone.position.y + velocity.y * dt,
-                    drone.position.z + velocity.z * dt,
+                # Physics-aware step (wind, GPS noise, battery, atmosphere)
+                phys = self._physics.apply_physics(
+                    drone_id=drone.drone_id,
+                    true_position=drone.position,
+                    commanded_velocity=velocity,
+                    dt=dt,
+                    buildings=self._building_list,
                 )
-                if abs(velocity.x) > 0.01 or abs(velocity.y) > 0.01:
-                    drone.heading = math.degrees(math.atan2(velocity.y, velocity.x))
-                drone.velocity = velocity
-                drone.battery = max(0.0, drone.battery - 0.002 * dt)
+
+                new_pos = phys.actual_position
+                new_vel = phys.actual_velocity
+
+                # Hard collision check — deflect if inside building volume
+                colliding_bldg = self._is_inside_building(new_pos)
+                if colliding_bldg is not None:
+                    new_pos, new_vel = self._deflect_from_building(
+                        new_pos, new_vel, colliding_bldg)
+
+                drone.position = new_pos
+                if abs(new_vel.x) > 0.01 or abs(new_vel.y) > 0.01:
+                    drone.heading = math.degrees(math.atan2(new_vel.y, new_vel.x))
+                drone.velocity = new_vel
+                drone.battery = phys.battery_soc_pct
+                if phys.should_rtl and drone.mode != FlightMode.RETURN_TO_LAUNCH:
+                    logger.warning("Drone %d battery RTL triggered (%.1f%%)", drone.drone_id, phys.battery_soc_pct)
+                    drone.mode = FlightMode.RETURN_TO_LAUNCH
 
         self._advance_active_inspections()
 
@@ -795,7 +1192,8 @@ class ScenarioExecutor:
                     dx = d.position.x - goal.x
                     dy = d.position.y - goal.y
                     dists.append(math.sqrt(dx * dx + dy * dy))
-            if dists and sum(1 for d in dists if d < 30.0) >= 3:
+            threshold = max(1, (len(dists) + 1) // 2)
+            if dists and sum(1 for d in dists if d < 30.0) >= threshold:
                 self._waypoint_index = (self._waypoint_index + 1) % len(self._mission_waypoints)
 
     def _get_current_goal(self) -> Optional[Vector3]:

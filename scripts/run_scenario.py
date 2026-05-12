@@ -78,6 +78,10 @@ def main():
         help="Path to YOLO weights (.pt) or ONNX model to use instead of heuristic sensors",
     )
     parser.add_argument(
+        "--export-telemetry", type=str, metavar="PATH",
+        help="Export per-tick telemetry to JSON file for Blender replay",
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true",
         help="Verbose logging",
     )
@@ -161,7 +165,10 @@ def main():
             scenario, gcs_port=args.gcs_port,
             detection_adapter=detection_adapter,
         )
-        result = executor.run(realtime=args.realtime)
+        if args.export_telemetry:
+            result = executor.run_and_export_telemetry(args.export_telemetry)
+        else:
+            result = executor.run(realtime=args.realtime)
         results.append(result)
 
         # Brief summary

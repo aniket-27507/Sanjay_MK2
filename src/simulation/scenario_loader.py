@@ -77,6 +77,8 @@ class FleetConfig:
     num_beta: int = 0
     formation_center: tuple[float, float] = (500.0, 500.0)
     patrol_pattern: str = "hexagonal"
+    patrol_altitude: Optional[float] = None
+    formation_spacing: Optional[float] = None
 
 
 @dataclass
@@ -280,6 +282,8 @@ class ScenarioLoader:
             num_beta=int(fleet_raw.get("num_beta", 0)),
             formation_center=tuple(fleet_raw.get("formation_center", [500, 500])),
             patrol_pattern=fleet_raw.get("patrol_pattern", "hexagonal"),
+            patrol_altitude=fleet_raw.get("patrol_altitude"),
+            formation_spacing=fleet_raw.get("formation_spacing"),
         )
 
         # ── Expected events ──
