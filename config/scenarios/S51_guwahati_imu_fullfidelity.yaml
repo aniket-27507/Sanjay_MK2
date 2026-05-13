@@ -1,0 +1,207 @@
+# S51_guwahati_imu_fullfidelity — Full-Fidelity IMU Validation (Guwahati June)
+# Category: validation
+# Tests: Synthetic IMU accuracy, flight dynamics, magnetometer, monsoon effects
+# Environment: Ganeshguri Blender scene, all Tier 1-3 physics
+#
+# Purpose:
+#   Generate accurate synthetic IMU data at 400Hz for:
+#   - EKF/navigation filter development
+#   - PX4 SITL preparation
+#   - Hardware bench test comparison (MPU-6050 on Pixhawk Mini)
+#   - Autonomy validation under realistic Guwahati conditions
+#
+# Run via Blender:
+#   blender ganeshguri_sanjay_mk2.blend --background --python scripts/blender/blender_sim_e2e.py -- --profile june_clear --duration 300
+#
+# Weather profiles available:
+#   june_clear            - Hot clear pre-monsoon day (33°C, 82% humidity)
+#   june_premonsoon_burst - Sudden thunderstorm with heavy rain + wind
+#   june_monsoon_steady   - Active monsoon with steady moderate rain
+#   night_clear           - Clear night (25°C, calm wind)
+
+scenario:
+  id: S51_guwahati_imu_fullfidelity
+  name: Guwahati Full-Fidelity IMU Validation
+  category: validation
+  duration_sec: 300
+  description: >
+    3-drone hex patrol at Ganeshguri with full Tier 1-3 physics.
+    Generates 400Hz IMU + 100Hz magnetometer data with realistic
+    flight dynamics, Guwahati IGRF field, urban magnetic anomalies,
+    and optional monsoon weather effects. Outputs CSV, ROS2 bag,
+    and PX4 ulog for EKF development and hardware comparison.
+  split: test
+
+world:
+  terrain_seed: 42
+  ambient_lux: 50000  # bright sun for june_clear
+  environment:
+    location: Ganeshguri, Guwahati, Assam
+    latitude: 26.1445
+    longitude: 91.7362
+    elevation_asl_m: 55
+    timezone: Asia/Kolkata
+
+  # Geomagnetic field (IGRF-13, epoch 2026)
+  geomagnetic:
+    total_intensity_nt: 46200
+    declination_deg: -0.1
+    inclination_deg: 39.5
+    north_nt: 35600
+    east_nt: -60
+    down_nt: 29400
+
+  # Buildings from S50 (same Ganeshguri scene)
+  buildings_source: S50_cm_demo_validation
+
+  # Climate profile
+  climate:
+    temperature_c: 33
+    humidity_pct: 82
+    wind_speed_ms: 3.5
+    wind_direction_deg: 225
+    rain_intensity_mmhr: 0
+    air_density_kg_m3: 1.15
+
+fleet:
+  num_drones: 3
+  type: alpha
+  formation: hex_sector_patrol
+  patrol_altitude_m: 12
+  hex_radius_m: 200
+  max_speed_ms: 3.0
+  sector_assignment:
+    drone_0: [0, 1]
+    drone_1: [2, 3]
+    drone_2: [4, 5]
+
+hardware:
+  frame:
+    mass_kg: 0.50
+    arm_length_m: 0.12
+    drag_coefficient: 0.12
+    cross_section_m2: 0.06
+  flight_controller: pixhawk_mini
+  companion: raspberry_pi
+  battery:
+    type: lipo_3s
+    capacity_mah: 2200
+    internal_resistance_ohm: 0.08
+    rtl_threshold_pct: 20
+    critical_threshold_pct: 10
+  imu:
+    model: MPU-6050
+    gyro_bias_instability_dps: 0.04
+    gyro_random_walk_dps_sqrt_hz: 0.005
+    accel_vibration_amplitude_ms2: 0.8
+    accel_vibration_freq_hz: 120
+    sample_rate_hz: 400
+  magnetometer:
+    model: QMC5883L
+    noise_density_ut: 0.2
+    hard_iron_offset_ut: [12.0, -8.0, 5.0]
+    motor_interference_ut: 5.0
+    sample_rate_hz: 100
+  lidar:
+    model: RPLiDAR_A1
+    type: 2d_servo
+    max_range_m: 12
+    horiz_fov_deg: 360
+    servo_tilt_range_deg: 60
+    servo_tilt_steps: 13
+    scan_time_sec: 3.5
+  gps:
+    model: u-blox_NEO-6M
+    cep_sigma_m: 2.5
+    update_rate_hz: 5
+  comms:
+    type: wifi_mesh
+    freq_ghz: 2.4
+    tx_power_dbm: 20
+
+physics:
+  enabled: true
+  tier: 3
+  # Tier 1
+  wind:
+    base_speed_ms: 3.5
+    base_direction_deg: 225
+    gust_max_ms: 5.0
+    turbulence_intensity: 0.25
+    building_turbulence_multiplier: 2.0
+  gps_noise:
+    position_sigma_m: 2.5
+    multipath_near_buildings: true
+  battery:
+    temperature_adjusted: true
+    load_dependent_sag: true
+  # Tier 2
+  imu_noise:
+    gyro_bias_walk: true
+    accel_prop_vibration: true
+    temperature_drift: true
+  atmosphere:
+    temperature_c: 33
+    humidity_pct: 82
+    altitude_asl_m: 55
+    thrust_efficiency_model: true
+  lidar_noise:
+    false_returns: true
+    dropout: true
+    servo_backlash: true
+  # Tier 3
+  flight_dynamics:
+    enabled: true
+    model: simplified_6dof
+    attitude_controller: pd_px4
+  magnetometer:
+    igrf_field: true
+    building_anomalies: true
+    powerline_interference: true
+    motor_interference: true
+  monsoon:
+    enabled: false  # toggle per weather profile
+    model: stochastic_burst
+  rf_environment:
+    enabled: true
+    wifi_propagation: log_distance
+    gps_urban_canyon: true
+  highrate_imu:
+    enabled: true
+    rate_hz: 400
+    mag_rate_hz: 100
+    interpolation: cubic_hermite
+
+events:
+  - time: 0
+    type: deploy
+    description: Operator sets hex center, drones auto-takeoff staggered
+  - time: 15
+    type: patrol_start
+    description: All drones at altitude, CBBA assigns sectors, patrol begins
+  - time: 90
+    type: drone_kill
+    target: drone_2
+    description: Kill drone 2 mid-patrol, test CBBA reassignment
+  - time: 240
+    type: rtl
+    description: All drones return to deployment center
+  - time: 300
+    type: sim_end
+
+outputs:
+  telemetry_json: true
+  imu_csv_400hz: true
+  imu_ulog: true
+  imu_rosbag2: true
+  blender_animation: true
+  lidar_pointclouds: true
+
+validation_metrics:
+  sector_coverage_pct: 85
+  obstacle_collisions: 0
+  reassignment_time_sec: 10
+  gps_track_error_m: 5.0
+  battery_at_rtl_pct: 40
+  imu_drift_deg_per_min: 2.0
+  mag_heading_error_deg: 5.0
