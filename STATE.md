@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-05-09 (Path B chosen: Phase B RL deferred, HeuristicPolicy enhanced for v1)
+**Last updated:** 2026-05-13 (laptop-webcam validation harness added for `police_full_v2`)
 
 ## How to use this file (Claude / Codex / GPT)
 
@@ -39,6 +39,8 @@ Key milestones:
 - **Step 5B closed (2026-05-09):** trained PPO `policy.zip` (~125 KB, 17→64→32→30 MLP) wins 9/10 seeds vs real HeuristicPolicy on fast-env eval. Detection reward peaks at 291. Full report: `reports/step5/eval_2026_05_09.md`.
 - **Step 5B.5 sanity check (2026-05-09): RL policy underperforms heuristic on real scenarios.** Trained policy collapses to constant `(rgb=2, thermal=5)` on S10/S07, using 2x heuristic compute. Root cause: fps-sum reward ≠ Jetson invocation cost, plus scenario_executor wasn't populating `ambient_lux`/`missed_streak`/`threat_score`. Decision: **Path B** — enhance HeuristicPolicy, wire missing state inputs, defer RL.
 - **Path B (2026-05-09):** Phase B RL deferred. v1 ships enhanced HeuristicPolicy with `ambient_lux` + `missed_streak` + `threat_score` plumbed into scenario_executor. EMERGENCY_BURST gated on TRACK_HIGH to avoid bursting on quiet patrol once missed_streak got wired. RL infrastructure retained as research artifact.
+- **`police_full_v3` landed (2026-05-13):** YOLO11s, 150 epochs resumed from `police_full_v3/last.pt` on Drive, trained against `config/training/visdrone_police.yaml`. Embedded checkpoint date 2026-05-12T20:43. Weights placed at `runs/detect/police_full_v3/weights/{best,last}.pt` (19.19 MB each). 6-class police schema preserved. Per-class val mAP not yet captured — pending Colab summary.
+- **Webcam validation (2026-05-13):** `scripts/validate_webcam.py` runs the local `police_full_v3` weights against the laptop webcam (live preview, screenshot/record hotkeys, JSON session summary). Resolves weights via worktree-aware lookup so the default path works from any `.claude/worktrees/*` checkout. Smoke run on this machine: 1280x720 @ ~13 fps CPU-only inference, 6-class police schema, expected baseline before stepping outside for real overhead/handheld trials.
 
 ---
 
