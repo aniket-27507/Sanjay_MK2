@@ -41,6 +41,10 @@ from scipy.optimize import minimize
 from src.single_drone.planning.corridor_generator import Polytope
 from src.single_drone.planning.minco import Trajectory
 
+# Swarm penalty is imported lazily inside `gcopter_optimize` to avoid a
+# circular dependency at import time (`src.swarm.swarm_penalty` itself
+# imports `Trajectory` from this package).
+
 
 @dataclass
 class GCopterConfig:
@@ -70,6 +74,8 @@ def gcopter_optimize(
     bc_end: np.ndarray,
     polytopes: Sequence[Polytope],
     config: Optional[GCopterConfig] = None,
+    swarm_neighbours: Optional[Sequence[tuple]] = None,
+    swarm_config: Optional[object] = None,
 ) -> Trajectory:
     """Run L-BFGS-B over (q_interior, T) and return the optimised Trajectory.
 
@@ -89,6 +95,15 @@ def gcopter_optimize(
         Exactly M polytopes — one per trajectory segment.
     config : GCopterConfig
         Weights, limits, and iteration budget. Default if None.
+    swarm_neighbours : optional sequence of (Trajectory, t_offset)
+        Neighbour MINCO trajectories with their t=0 offset in this drone's
+        clock. When present, the ellipsoidal swarm penalty from
+        `src.swarm.swarm_penalty` is added to the cost and gradient — used
+        by Rig 2 to drive inter-drone collision avoidance through the same
+        L-BFGS loop.
+    swarm_config : optional SwarmPenaltyConfig
+        Forwarded to the swarm penalty. Default config used if None and
+        swarm_neighbours is non-empty.
 
     Returns
     -------
@@ -97,6 +112,20 @@ def gcopter_optimize(
     """
     if config is None:
         config = GCopterConfig()
+
+    # Resolve swarm penalty lazily to avoid an import cycle.
+    swarm_compute = None
+    sw_neighbours: Sequence[tuple] = ()
+    sw_cfg = None
+    if swarm_neighbours:
+        from src.swarm.swarm_penalty import (
+            SwarmPenaltyConfig,
+            compute_swarm_cost_and_grad,
+        )
+
+        swarm_compute = compute_swarm_cost_and_grad
+        sw_neighbours = list(swarm_neighbours)
+        sw_cfg = swarm_config if swarm_config is not None else SwarmPenaltyConfig()
 
     waypoints = np.asarray(initial_waypoints, dtype=np.float64).copy()
     durations = np.asarray(initial_durations, dtype=np.float64).ravel().copy()
@@ -141,6 +170,12 @@ def gcopter_optimize(
         if traj is None:
             return 1.0e12, np.zeros_like(x)
         cost, grad_q, grad_T = _cost_and_grad(traj, polytopes, config)
+        if swarm_compute is not None and sw_neighbours:
+            sc, sgq, sgT = swarm_compute(traj, sw_neighbours, sw_cfg)
+            cost += sc
+            if M > 1:
+                grad_q = grad_q + sgq
+            grad_T = grad_T + sgT
         grad = np.empty_like(x)
         if M > 1:
             grad[:n_q] = grad_q.ravel()

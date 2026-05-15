@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-05-15 (**MINCO pivot Phase 0 + Phase 1 Rig 1** — APF/A*/Boids/servo-LiDAR being replaced by MINCO + depth camera; clean-room GCOPTER port in `src/single_drone/planning/`; Rig 1 corridor benchmark live)
+**Last updated:** 2026-05-16 (**MINCO pivot Phases 0–4 validation rigs landed** — Rigs 1–6 CLI + tests in `src/validation/`; gcopter optimizer extended with optional swarm-neighbour penalty; 162 tests passing across the planning + validation surface)
 
 ## How to use this file (Claude / Codex / GPT)
 
@@ -17,11 +17,11 @@
 
 | Field | Value |
 |-------|--------|
-| **Current goal** | **MINCO pivot** — replace APF/A*/Boids/servo-2D-LiDAR with MINCO trajectory optimization + OAK-D Lite depth camera (clean-room Python port of ZJU-FAST-Lab GCOPTER). Phase 0 (core math) and Phase 1 (Rig 1 corridor benchmark) complete; Phases 2–5 pending. |
-| **In scope** | `src/single_drone/planning/` (`voxel_map`, `sfc_gen`, `corridor_generator`, `minco`, `gcopter`, `flatness`), `src/validation/` (`obstacle_gen`, `metrics`, `rig1_corridor_benchmark`), `docs/MINCO_PIVOT.md` (authoritative spec), `CLAUDE.md` (pivot finalized in §1, §2, §5, §10). |
+| **Current goal** | **MINCO pivot** — Phases 0–4 (math + Rigs 1–6) complete; remaining work is Phase 5 integration (`avoidance_manager`/`scenario_executor` refactor) and real OAK-D Lite hardware path. |
+| **In scope** | `src/single_drone/planning/` (`voxel_map`, `sfc_gen`, `corridor_generator`, `minco`, `gcopter`, `flatness`), `src/validation/` (Rigs 1–6 + supporting infra `obstacle_gen`, `metrics`, `broadcast_channel`, `vio_drift_model`, `motor_model`, `depth_noise_model`, `plots`), `src/swarm/` (`trajectory_broadcast`, `swarm_penalty`), `docs/MINCO_PIVOT.md` (authoritative spec), `CLAUDE.md` (pivot finalized in §1, §2, §5, §10). |
 | **Out of scope** | Migrating active runtime paths off APF/Boids (Phase 5); GPL'd EGO-Planner code (we only port MIT-licensed MINCO core); real OAK-D Lite hardware integration (requires `depthai` SDK, deferred). |
-| **Exit criteria** | (1) `voxel_map.py` (28 tests), `sfc_gen.py` (10), `corridor_generator.py` (11), `minco.py` (16), `gcopter.py` (6), `flatness.py` (10), e2e (1), `obstacle_gen.py` + `metrics.py` (10), `rig1_corridor_benchmark.py` (5) — **97 tests passing**. (2) CLI `python -m src.validation.rig1_corridor_benchmark` produces a JSON results file with per-density success rate + timing breakdown. (3) `docs/MINCO_PIVOT.md` in main tree; `CLAUDE.md` reflects pivot. |
-| **Handoff notes** | **2026-05-15:** Phase 0 closed-form polynomial solve verified against the canonical minimum-snap polynomial `p(t) = 35t⁴ − 84t⁵ + 70t⁶ − 20t⁷`. Phase 1 Rig 1 CLI runs end-to-end (RRT → FIRI → MINCO → flatness), 6.5 s per trial at density 0.05 with maxiter=10 on a Mac. The MINCO stage (~5.9 s) dominates because L-BFGS uses scipy's finite-difference gradients; this is the well-known Phase-1-exit gap to the 50 ms target. **Analytical gradients are the next major performance milestone (planned).** Blender validation (2026-05-14) remains green and untouched. |
+| **Exit criteria** | (1) All six rig CLIs (`rig1_corridor_benchmark`, `rig2_swarm_avoidance`, `rig3_vio_perimeter`, `rig4_mission_response`, `rig5_endurance`, `rig6_disturbance`) runnable via `python -m src.validation.rigN_…` and producing JSON metrics. (2) `gcopter_optimize` accepts an optional `swarm_neighbours` kwarg so the same L-BFGS loop drives both single-drone and swarm-coupled optimisation. (3) Test suite green: **162 tests passing** across Phase 0 planning core, Phase 0.5 analytical gradients, and Phases 1–4 rigs. |
+| **Handoff notes** | **2026-05-16:** Rigs 2–6 landed in one pass. Rig 2 uses the new `swarm_neighbours` hook through `gcopter_optimize`; Rig 3 builds on the existing `vio_drift_model` with an inter-agent residual filter; Rig 4 isolates the CBBA-style assignment latency with a distance-only bid; Rig 5 reuses `BatteryModel` + `MotorWear` and exercises battery-relay / drone-down / graceful-degradation / cascading-failure scenarios; Rig 6 stacks `WindModel` + `depth_noise_model` over a PD-tracked MINCO trajectory. **Known caveat:** `src/simulation/physics/battery_model.py` has a 1000× drain bug (Ah/mAh confusion in `tick()`) — surfaced while testing Rig 5 relay; the rig faithfully consumes the existing model, fix belongs in a separate physics-cleanup task. |
 
 ---
 
@@ -70,11 +70,28 @@ The old `6 Alpha + 1 Beta` concept is **not** the authoritative target.
 
 Verified against the canonical minimum-snap polynomial; 72 unit tests across the package + 1 end-to-end pipeline test.
 
-### Phase 1 — validation rigs scaffolding (2026-05-15)
+### Phases 1–4 — validation rigs (2026-05-16)
 
+**Supporting infrastructure:**
 - `src/validation/obstacle_gen.py` — random obstacle field at target density, random pillars, clear-zone helper
 - `src/validation/metrics.py` — `MetricsCollector` with timing context manager, JSON export, label-grouped summarisation
-- `src/validation/rig1_corridor_benchmark.py` — Rig 1 CLI (`python -m src.validation.rig1_corridor_benchmark`) — sweeps obstacle density, records per-trial RRT/FIRI/MINCO timings, corridor leak, thrust, tilt, velocity
+- `src/validation/broadcast_channel.py` — simulated WiFi mesh with latency, jitter, packet loss, bandwidth tracking
+- `src/validation/vio_drift_model.py` — random-walk + bias + jump drift model with inter-agent correction hook
+- `src/validation/motor_model.py` — linear thrust degradation over flight hours
+- `src/validation/depth_noise_model.py` — stereo σ ∝ r² noise + range cap + dropout
+- `src/swarm/trajectory_broadcast.py` — MINCO ↔ wire serialisation + per-drone `SwarmBroadcaster`
+- `src/swarm/swarm_penalty.py` — ellipsoidal inter-drone penalty with analytical gradient
+- `src/single_drone/planning/gcopter.py` — extended with optional `swarm_neighbours` kwarg routing swarm cost+grad into the same L-BFGS loop
+
+**Rig CLIs:**
+- `src/validation/rig1_corridor_benchmark.py` — corridor escape benchmark; sweeps obstacle density, records per-trial RRT/FIRI/MINCO timings, corridor leak, thrust, tilt, velocity
+- `src/validation/rig2_swarm_avoidance.py` — swarm scaling 3→50, scenarios head_on/crossing/converge/patrol, per-agent replan time, near-miss/collision counts, broadcast bandwidth
+- `src/validation/rig3_vio_perimeter.py` — hex-patrol VIO drift with correction ON/OFF, perimeter deviation, time-to-failure
+- `src/validation/rig4_mission_response.py` — threat-detect→inspect→regroup pipeline with CBBA-style distance bid; coverage during inspection window
+- `src/validation/rig5_endurance.py` — 30-min endurance with battery+motor drain, scenarios normal/relay/drone_down/graceful_degrade/cascading_failure
+- `src/validation/rig6_disturbance.py` — wind (calm/breezy/windy) + fog/rain/sensor_fail over a PD-tracked MINCO trajectory; corridor breach + sensor-failure flags
+
+**Test count:** 162 tests passing across Phase 0 planning core + Phase 0.5 analytical gradients + Phases 1–4 rigs (Rig 1: 5, Rig 2: 8, Rig 3: 8, Rig 4: 8, Rig 5: 10, Rig 6: 9).
 
 ### Legacy stack (being replaced — see `docs/MINCO_PIVOT.md` §4.1)
 
@@ -108,14 +125,11 @@ The repo still contains the simulation-grade police autonomy backbone built befo
 
 ## What is not finished
 
-### MINCO pivot — remaining phases (2026-05-15)
+### MINCO pivot — remaining phases (2026-05-16)
 
-- **Analytical gradients for MINCO L-BFGS** — current FD-only optimisation is ~5–22 s per trial at M=7 segments on Mac; the Phase-1 exit target is < 50 ms at density 0.30. Largest single performance lever before rigs scale up.
-- **Phase 2 — swarm trajectory broadcast** (`src/swarm/trajectory_broadcast.py`, `src/swarm/swarm_penalty.py`, Rig 2 scaling 3→50)
-- **Phase 3 — VIO drift + perimeter fencing** (`src/validation/vio_drift_model.py`, Rig 3)
-- **Phase 4 — mission response / endurance / disturbance** (Rigs 4–6; reuses existing `battery_model.py` and `wind_model.py`)
 - **Phase 5 — integration refactor** (`avoidance_manager` to orchestrate MINCO pipeline, `scenario_executor` to consume MINCO trajectories, `flight_controller` trajectory-tracking mode, legacy modules → `src/_legacy/`)
 - **Real OAK-D Lite hardware path** — `depth_camera.py` driver + DepthAI SDK; deferred until simulation pipeline is fully wired
+- **`battery_model.py` drain math** — `tick()` divides `current * dt` by 3600 (yields Ah, not mAh) then subtracts from a mAh-denominated remaining capacity, so drain is 1000× too slow. Surfaced by Rig 5 relay testing; fix is a one-line `* 1000` but lives outside MINCO pivot scope.
 
 ### Pre-existing gaps
 
@@ -138,8 +152,8 @@ The repo still contains the simulation-grade police autonomy backbone built befo
 
 ### MINCO planning core (authoritative for new work, not yet wired into runtime)
 
-- `src/single_drone/planning/` — full clean-room port; 72 unit + 1 e2e + 5 rig-smoke tests passing
-- `src/validation/` — Rig 1 live, Rigs 2–6 pending
+- `src/single_drone/planning/` — full clean-room port; 72 unit + 1 e2e + analytical gradients tests passing; `gcopter_optimize` accepts optional `swarm_neighbours` for multi-agent runs
+- `src/validation/` — Rigs 1–6 live, 162 tests across full validation surface
 - Reference: `docs/MINCO_PIVOT.md` (full spec, BOM, implementation order)
 
 ### Legacy active runtime (Phase 5 will refactor onto MINCO)
