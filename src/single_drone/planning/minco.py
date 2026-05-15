@@ -43,9 +43,10 @@ for Multicopters" (IEEE T-RO 2022). Clean-room Python port.
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
+from scipy.linalg import lu_factor, lu_solve
 
 
 def M_matrix(s: int, T: float, deriv_max: int) -> np.ndarray:
@@ -87,6 +88,43 @@ def Q_matrix(s: int, T: float) -> np.ndarray:
             power = i + j - 2 * s - 1
             Q[i, j] = coef_i * coef_j * (T ** power) / power
     return Q
+
+
+def M_matrix_dT(s: int, T: float, deriv_max: int) -> np.ndarray:
+    """Entry-wise derivative of M_matrix(s, T, deriv_max) with respect to T.
+
+    M[j, i] = i! / (i-j)! · T^{i-j}  for i >= j
+        ⇒  ∂M/∂T[j, i] = i! / (i-j-1)! · T^{i-j-1}  for i > j; else 0.
+
+    Returns an (deriv_max+1, 2s+2) matrix.
+    """
+    deg = 2 * s + 1
+    out = np.zeros((deriv_max + 1, deg + 1), dtype=np.float64)
+    for j in range(deriv_max + 1):
+        for i in range(j + 1, deg + 1):
+            out[j, i] = (math.factorial(i) / math.factorial(i - j - 1)) * (
+                T ** (i - j - 1)
+            )
+    return out
+
+
+def Q_matrix_dT(s: int, T: float) -> np.ndarray:
+    """Entry-wise derivative of Q_matrix(s, T) with respect to T.
+
+    Q[i, j] = coef_ij · T^{p} / p  with p = i+j-2s-1 ≥ 1
+        ⇒  ∂Q/∂T[i, j] = coef_ij · T^{p-1}.
+    """
+    deg = 2 * s + 1
+    out = np.zeros((deg + 1, deg + 1), dtype=np.float64)
+    if T < 0.0:
+        return out
+    for i in range(s + 1, deg + 1):
+        coef_i = math.factorial(i) / math.factorial(i - s - 1)
+        for j in range(s + 1, deg + 1):
+            coef_j = math.factorial(j) / math.factorial(j - s - 1)
+            power = i + j - 2 * s - 1
+            out[i, j] = coef_i * coef_j * (T ** (power - 1))
+    return out
 
 
 class Trajectory:
@@ -156,26 +194,28 @@ class Trajectory:
         self.knot_times = np.concatenate(([0.0], np.cumsum(durations)))
         self.total_time = float(self.knot_times[-1])
 
-        self.coeffs = self._solve_coefficients()
+        # caches populated by _solve_coefficients_and_cache for gradient methods
+        self._N: int = M * (2 * self.s + 2)  # total coefficient count
+        self._m_constraints: int = 2 * (self.s + 1) + (M - 1) * (self.s + 2)
+        self._A_constraints: Optional[np.ndarray] = None  # (m, N)
+        self._kkt_matrix: Optional[np.ndarray] = None  # (N+m, N+m)
+        self._kkt_lu: Optional[tuple] = None  # scipy lu_factor result
+        self._kkt_solution: Optional[np.ndarray] = None  # (N+m, D), stacked [c; λ]
+
+        self.coeffs = self._solve_coefficients_and_cache()
 
     # ------------------------------------------------------------------
-    # Coefficient solve (closed-form, per-call)
+    # Coefficient solve + KKT caching (for gradient computations)
     # ------------------------------------------------------------------
-    def _solve_coefficients(self) -> np.ndarray:
+    def _solve_coefficients_and_cache(self) -> np.ndarray:
         s, M, D = self.s, self.M, self.D
-        deg_plus_1 = 2 * s + 2  # number of coefficients per segment
-        N = M * deg_plus_1
-
-        # Constraint count:
-        #   start BCs:       s+1
-        #   end BCs:         s+1
-        #   per interior knot (M-1 of them): pos-left + pos-right + s deriv continuity = s+2
-        n_constraints = 2 * (s + 1) + (M - 1) * (s + 2)
+        deg_plus_1 = 2 * s + 2
+        N = self._N
+        n_constraints = self._m_constraints
 
         A_mat = np.zeros((n_constraints, N), dtype=np.float64)
         d_mat = np.zeros((n_constraints, D), dtype=np.float64)
 
-        # Q block-diagonal
         Q_mat = np.zeros((N, N), dtype=np.float64)
         for k in range(M):
             Qk = Q_matrix(s, float(self.durations[k]))
@@ -183,35 +223,28 @@ class Trajectory:
             Q_mat[row : row + deg_plus_1, row : row + deg_plus_1] = Qk
 
         row = 0
-
-        # Start BCs
         M_start = M_matrix(s, 0.0, s)
         A_mat[row : row + s + 1, 0:deg_plus_1] = M_start
         d_mat[row : row + s + 1, :] = self.bc_start
         row += s + 1
 
-        # End BCs
         M_end = M_matrix(s, float(self.durations[-1]), s)
         A_mat[row : row + s + 1, (M - 1) * deg_plus_1 : M * deg_plus_1] = M_end
         d_mat[row : row + s + 1, :] = self.bc_end
         row += s + 1
 
-        # Interior knots
         for k in range(M - 1):
             Tk = float(self.durations[k])
             Ml = M_matrix(s, Tk, s)
             Mr = M_matrix(s, 0.0, s)
             col_l = k * deg_plus_1
             col_r = (k + 1) * deg_plus_1
-            # pos pin from left segment
             A_mat[row, col_l : col_l + deg_plus_1] = Ml[0]
             d_mat[row, :] = self.waypoints[k + 1]
             row += 1
-            # pos pin from right segment
             A_mat[row, col_r : col_r + deg_plus_1] = Mr[0]
             d_mat[row, :] = self.waypoints[k + 1]
             row += 1
-            # derivative continuity j=1..s
             for j in range(1, s + 1):
                 A_mat[row, col_l : col_l + deg_plus_1] = Ml[j]
                 A_mat[row, col_r : col_r + deg_plus_1] = -Mr[j]
@@ -220,7 +253,6 @@ class Trajectory:
 
         assert row == n_constraints, f"row={row} != n_constraints={n_constraints}"
 
-        # KKT system
         N_kkt = N + n_constraints
         K = np.zeros((N_kkt, N_kkt), dtype=np.float64)
         K[:N, :N] = 2.0 * Q_mat
@@ -229,9 +261,174 @@ class Trajectory:
         rhs = np.zeros((N_kkt, D), dtype=np.float64)
         rhs[N:, :] = d_mat
 
-        sol = np.linalg.solve(K, rhs)
+        lu = lu_factor(K)
+        sol = lu_solve(lu, rhs)
+
+        # cache for gradients
+        self._A_constraints = A_mat
+        self._kkt_matrix = K
+        self._kkt_lu = lu
+        self._kkt_solution = sol
+
         c_flat = sol[:N, :]
         return c_flat.reshape(M, deg_plus_1, D)
+
+    # ------------------------------------------------------------------
+    # KKT perturbation builders (for energy_grad + evaluate_with_grad)
+    # ------------------------------------------------------------------
+    def _dKz_dT(self, k: int) -> np.ndarray:
+        """Returns the (N+m, D) right-hand side `(∂K/∂T_k) · z`.
+
+        Used by `dc_dT_k` via implicit-function differentiation
+        K · ∂z/∂T_k = -(∂K/∂T_k) · z. Exploits sparsity rather than
+        building the full ∂K/∂T_k explicitly.
+        """
+        s = self.s
+        M = self.M
+        deg_plus_1 = 2 * s + 2
+        N = self._N
+        m = self._m_constraints
+        D = self.D
+        z = self._kkt_solution
+        c = z[:N, :]
+        lam = z[N:, :]
+
+        out = np.zeros((N + m, D), dtype=np.float64)
+
+        # 1) top block: 2 · (∂Q/∂T_k) · c — only segment k's coeffs contribute
+        dQ_seg = Q_matrix_dT(s, float(self.durations[k]))
+        row = k * deg_plus_1
+        out[row : row + deg_plus_1, :] += 2.0 * (dQ_seg @ c[row : row + deg_plus_1, :])
+
+        # 2) top block: (∂A/∂T_k)^T · λ
+        # 3) bottom block: (∂A/∂T_k) · c
+        M_dT = M_matrix_dT(s, float(self.durations[k]), s)  # (s+1, deg_plus_1)
+        if k == M - 1:
+            row_block = s + 1  # constraint-row index of end BC
+            col = (M - 1) * deg_plus_1
+            # ∂A · c → bottom rows
+            out[N + row_block : N + row_block + s + 1, :] += (
+                M_dT @ c[col : col + deg_plus_1, :]
+            )
+            # (∂A)^T · λ → top rows
+            out[col : col + deg_plus_1, :] += (
+                M_dT.T @ lam[row_block : row_block + s + 1, :]
+            )
+        else:
+            base = 2 * (s + 1) + k * (s + 2)
+            col_l = k * deg_plus_1
+            # deriv-0 row of M_dT → constraint row `base` (pos-pin-left)
+            out[N + base, :] += M_dT[0] @ c[col_l : col_l + deg_plus_1, :]
+            out[col_l : col_l + deg_plus_1, :] += np.outer(M_dT[0], lam[base, :])
+            # deriv-j rows (j=1..s) → constraint rows base+1+j (continuity)
+            for j in range(1, s + 1):
+                cr = base + 1 + j
+                out[N + cr, :] += M_dT[j] @ c[col_l : col_l + deg_plus_1, :]
+                out[col_l : col_l + deg_plus_1, :] += np.outer(M_dT[j], lam[cr, :])
+
+        return out
+
+    def dc_dq_interior(self, k_knot: int) -> np.ndarray:
+        """∂c/∂q_{k_knot, d}, returned as a flat (N,) vector independent of d.
+
+        The same vector applies to every spatial dimension: ∂c[:, d]/∂q[k_knot, d]
+        is this vector; cross-dim derivatives are zero.
+        """
+        s = self.s
+        M = self.M
+        N = self._N
+        m = self._m_constraints
+        if not (0 <= k_knot < M - 1):
+            raise ValueError(f"k_knot must be in [0, {M - 1})")
+        base = 2 * (s + 1) + k_knot * (s + 2)
+        e = np.zeros(N + m, dtype=np.float64)
+        e[N + base] = 1.0      # pos-pin-left
+        e[N + base + 1] = 1.0  # pos-pin-right
+        u = lu_solve(self._kkt_lu, e)
+        return u[:N]
+
+    def dc_dT_segment(self, k_seg: int) -> np.ndarray:
+        """∂c/∂T_{k_seg} as an (N, D) matrix."""
+        if not (0 <= k_seg < self.M):
+            raise ValueError(f"k_seg must be in [0, {self.M})")
+        rhs = -self._dKz_dT(k_seg)
+        u = lu_solve(self._kkt_lu, rhs)
+        return u[: self._N, :]
+
+    def dc_dq_interior_all(self) -> list:
+        """Cache + return [dc_dq_interior(k) for k in range(M-1)]."""
+        if getattr(self, "_dc_dq_cache", None) is None:
+            self._dc_dq_cache = [self.dc_dq_interior(k) for k in range(self.M - 1)]
+        return self._dc_dq_cache
+
+    def dc_dT_segment_all(self) -> list:
+        """Cache + return [dc_dT_segment(k) for k in range(M)]."""
+        if getattr(self, "_dc_dT_cache", None) is None:
+            self._dc_dT_cache = [self.dc_dT_segment(k) for k in range(self.M)]
+        return self._dc_dT_cache
+
+    def _monomial_basis(self, tau: float, deriv_order: int) -> np.ndarray:
+        """Returns (2s+2,) vector b such that c_seg^T @ b = p^(deriv)(tau)."""
+        deg = 2 * self.s + 1
+        b = np.zeros(deg + 1, dtype=np.float64)
+        if deriv_order > deg:
+            return b
+        for i in range(deriv_order, deg + 1):
+            fac = math.factorial(i) // math.factorial(i - deriv_order)
+            b[i] = fac * (tau ** (i - deriv_order))
+        return b
+
+    def evaluate_segment_with_grad(
+        self,
+        k_seg: int,
+        tau: float,
+        deriv_order: int,
+        dc_dq_list: Optional[list] = None,
+        dc_dT_list: Optional[list] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Evaluate p^(deriv)(tau) at local time tau within segment k_seg.
+
+        Returns
+        -------
+        value : (D,) ndarray
+            Polynomial value (or derivative).
+        grad_q : (M-1, D) ndarray
+            grad_q[k_int, d] = ∂value[d]/∂q[k_int, d].
+            (Off-diagonal in dimension is zero — value[d] depends only on q[:, d].)
+        grad_T : (M, D) ndarray
+            grad_T[k_T, d] = ∂value[d]/∂T_{k_T} at fixed tau.
+            The caller adds the ∂tau/∂T_k_seg = s_frac chain term separately.
+        p_deriv_next : (D,) ndarray
+            Next-derivative value at the same point — used by the caller to
+            evaluate the ∂/∂tau chain for T_k_seg.
+        """
+        s = self.s
+        M = self.M
+        D = self.D
+        deg_plus_1 = 2 * s + 2
+        b = self._monomial_basis(tau, deriv_order)
+        b_next = self._monomial_basis(tau, deriv_order + 1)
+        c_seg = self.coeffs[k_seg]  # (deg+1, D)
+        value = c_seg.T @ b
+        p_deriv_next = c_seg.T @ b_next
+
+        if dc_dq_list is None:
+            dc_dq_list = self.dc_dq_interior_all()
+        if dc_dT_list is None:
+            dc_dT_list = self.dc_dT_segment_all()
+
+        seg_slice = slice(k_seg * deg_plus_1, (k_seg + 1) * deg_plus_1)
+
+        grad_q = np.zeros((max(M - 1, 0), D), dtype=np.float64)
+        for k_int in range(M - 1):
+            slice_dot = float(b @ dc_dq_list[k_int][seg_slice])
+            grad_q[k_int, :] = slice_dot  # diagonal in d
+
+        grad_T = np.zeros((M, D), dtype=np.float64)
+        for k_T in range(M):
+            grad_T[k_T, :] = b @ dc_dT_list[k_T][seg_slice, :]
+
+        return value, grad_q, grad_T, p_deriv_next
 
     # ------------------------------------------------------------------
     # Evaluation
@@ -264,7 +461,7 @@ class Trajectory:
         return result
 
     # ------------------------------------------------------------------
-    # Energy (control-effort integral)
+    # Energy (control-effort integral) + analytical gradient
     # ------------------------------------------------------------------
     def energy(self) -> float:
         total = 0.0
@@ -274,6 +471,54 @@ class Trajectory:
                 ck = self.coeffs[k, :, d]
                 total += float(ck @ Qk @ ck)
         return total
+
+    def energy_grad(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Return (∂E/∂q_interior, ∂E/∂T) for the energy integral.
+
+        Shapes: (M-1, D) and (M,).
+
+        Math
+        ----
+        Let E = c^T Q c with c, Q stacked across segments (Q block-diagonal).
+        With M segments and waypoints q (interior + fixed end-points):
+            ∂E/∂q  = 2 (Q c)^T (∂c/∂q)
+            ∂E/∂T_k = 2 (Q c)^T (∂c/∂T_k)  +  c^T (∂Q/∂T_k) c
+        where ∂c/∂q comes from K(T) z = b(q): only b depends on q.
+        ∂c/∂T_k comes from K(T) z = b: K · ∂z/∂T_k = -(∂K/∂T_k) · z.
+        K's LU factor is cached on the trajectory.
+        """
+        s, M, D = self.s, self.M, self.D
+        N = self._N
+
+        # Q c (segment-block evaluation)
+        deg_plus_1 = 2 * s + 2
+        c_flat = self.coeffs.reshape(N, D)
+        Qc = np.zeros_like(c_flat)
+        for k in range(M):
+            Qk = Q_matrix(s, float(self.durations[k]))
+            row = k * deg_plus_1
+            Qc[row : row + deg_plus_1, :] = Qk @ c_flat[row : row + deg_plus_1, :]
+
+        # ∂E/∂q_int
+        grad_q = np.zeros((max(M - 1, 0), D), dtype=np.float64)
+        for k in range(M - 1):
+            dcdq = self.dc_dq_interior(k)  # (N,)
+            for d in range(D):
+                grad_q[k, d] = 2.0 * float(Qc[:, d] @ dcdq)
+
+        # ∂E/∂T
+        grad_T = np.zeros(M, dtype=np.float64)
+        for kk in range(M):
+            dcdT = self.dc_dT_segment(kk)  # (N, D)
+            piece1 = 2.0 * float(np.sum(Qc * dcdT))
+            dQ_seg = Q_matrix_dT(s, float(self.durations[kk]))
+            row = kk * deg_plus_1
+            c_seg = c_flat[row : row + deg_plus_1, :]
+            piece2 = 0.0
+            for d in range(D):
+                piece2 += float(c_seg[:, d] @ dQ_seg @ c_seg[:, d])
+            grad_T[kk] = piece1 + piece2
+        return grad_q, grad_T
 
     # ------------------------------------------------------------------
     # Decision-variable convenience

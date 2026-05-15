@@ -135,12 +135,17 @@ def gcopter_optimize(
         except (ValueError, np.linalg.LinAlgError):
             return None
 
-    def cost(x: np.ndarray) -> float:
+    def cost_and_grad(x: np.ndarray):
         q_int, T = unflatten(x)
         traj = build_traj(q_int, T)
         if traj is None:
-            return 1.0e12
-        return _evaluate_cost(traj, polytopes, config)
+            return 1.0e12, np.zeros_like(x)
+        cost, grad_q, grad_T = _cost_and_grad(traj, polytopes, config)
+        grad = np.empty_like(x)
+        if M > 1:
+            grad[:n_q] = grad_q.ravel()
+        grad[n_q : n_q + M] = grad_T
+        return cost, grad
 
     if M > 1:
         x0 = np.concatenate([waypoints[1:-1].ravel(), durations])
@@ -152,9 +157,10 @@ def gcopter_optimize(
     ] * M
 
     result = minimize(
-        cost,
+        cost_and_grad,
         x0,
         method="L-BFGS-B",
+        jac=True,
         bounds=bounds,
         options={"maxiter": config.maxiter, "ftol": config.ftol},
     )
@@ -194,7 +200,6 @@ def _corridor_velocity_penalty(
         A_k = polytopes[k].A
         b_k = polytopes[k].b
         n = max(2, int(config.n_quad))
-        # trapezoidal: weights w_i = Tk / (n-1), with halved at endpoints
         weights = np.full(n, Tk / (n - 1))
         weights[0] *= 0.5
         weights[-1] *= 0.5
@@ -211,3 +216,114 @@ def _corridor_velocity_penalty(
             excess = max(0.0, v_sq - v_max_sq)
             total += config.w_velocity * (excess * excess) * weights[i]
     return total
+
+
+def _cost_and_grad(
+    traj: Trajectory,
+    polytopes: Sequence[Polytope],
+    config: GCopterConfig,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Total cost and its analytical gradient.
+
+    Returns
+    -------
+    cost : float
+    grad_q : (M-1, D) ndarray  — gradient w.r.t. interior waypoints
+    grad_T : (M,) ndarray      — gradient w.r.t. segment durations
+
+    Math
+    ----
+    The cost is
+
+        J = w_T * Σ T_k + w_e * E + w_c * Σ_seg Σ_quad w_i · relu²(A·p − b)
+                                + w_v * Σ_seg Σ_quad w_i · relu²(‖v‖² − v_max²)
+
+    where p = p_k(tau_i), v = p'_k(tau_i), tau_i = (i / (n−1)) · T_k.
+
+    Analytical gradient pieces:
+        ∂T_k/∂T_k = 1
+        ∂E/∂(q, T)             — Trajectory.energy_grad (implicit KKT)
+        ∂p_k(tau)/∂q[k_int, d] — diagonal in d via monomial basis · ∂c/∂q
+        ∂p_k(tau)/∂T_{k_T}     — monomial basis · ∂c/∂T_{k_T}, plus
+                                 (k_T == k_seg) · ∂p/∂tau · s_frac
+                                 (since tau = s · T_k_seg)
+        ∂w_i/∂T_k_seg          — (1 / (n−1)) (halved at endpoints)
+    """
+    s = traj.s
+    M = traj.M
+    D = traj.D
+    n_q_int = max(M - 1, 0)
+    grad_q = np.zeros((n_q_int, D), dtype=np.float64)
+    grad_T = np.full(M, config.w_time, dtype=np.float64)
+
+    # 1) time + energy
+    cost = config.w_time * float(np.sum(traj.durations))
+    cost += config.w_energy * traj.energy()
+    eg_q, eg_T = traj.energy_grad()
+    grad_q += config.w_energy * eg_q
+    grad_T += config.w_energy * eg_T
+
+    # 2) corridor + velocity penalties — cache dc/dq and dc/dT once
+    dc_dq_list = traj.dc_dq_interior_all()
+    dc_dT_list = traj.dc_dT_segment_all()
+    v_max_sq = config.v_max ** 2
+    n_quad = max(2, int(config.n_quad))
+
+    for k_seg in range(M):
+        T_seg = float(traj.durations[k_seg])
+        A_pl = polytopes[k_seg].A
+        b_pl = polytopes[k_seg].b
+        step = T_seg / (n_quad - 1)
+        for i_q in range(n_quad):
+            s_frac = i_q / (n_quad - 1)
+            tau = s_frac * T_seg
+            w_i = step
+            dw_i_dTseg = 1.0 / (n_quad - 1)
+            if i_q == 0 or i_q == n_quad - 1:
+                w_i *= 0.5
+                dw_i_dTseg *= 0.5
+
+            # position p and its gradients at tau
+            p_val, gq_p, gT_p, p_deriv1 = traj.evaluate_segment_with_grad(
+                k_seg, tau, 0, dc_dq_list, dc_dT_list
+            )
+            # velocity v and its gradients at tau
+            v_val, gq_v, gT_v, v_deriv1 = traj.evaluate_segment_with_grad(
+                k_seg, tau, 1, dc_dq_list, dc_dT_list
+            )
+
+            # corridor: f = relu²(A p - b)
+            residual = A_pl @ p_val - b_pl
+            relu_r = np.maximum(residual, 0.0)
+            f_corr = float(np.sum(relu_r * relu_r))
+            cost += config.w_corridor * f_corr * w_i
+
+            # ∂f_corr/∂p[d] = 2 (A^T relu_r)[d]
+            df_dp = 2.0 * (A_pl.T @ relu_r)  # (D,)
+
+            # ∂(w_i f_corr)/∂q[k_int, d]: diagonal in d
+            grad_q += config.w_corridor * w_i * (gq_p * df_dp[None, :])
+            # ∂(w_i f_corr)/∂T_{k_T}
+            grad_T += config.w_corridor * w_i * (gT_p @ df_dp)
+            # ∂w_i/∂T_seg contribution
+            grad_T[k_seg] += config.w_corridor * dw_i_dTseg * f_corr
+            # tau chain: ∂p/∂tau = velocity = p_deriv1, ∂tau/∂T_seg = s_frac
+            grad_T[k_seg] += config.w_corridor * w_i * float(df_dp @ p_deriv1) * s_frac
+
+            # velocity penalty: g = relu²(‖v‖² - v_max²)
+            v_sq = float(np.dot(v_val, v_val))
+            excess = max(0.0, v_sq - v_max_sq)
+            f_vel = excess * excess
+            cost += config.w_velocity * f_vel * w_i
+            if excess > 0.0:
+                # ∂f_vel/∂v[d] = 2 excess · 2 v[d] = 4 excess v[d]
+                dg_dv = 4.0 * excess * v_val  # (D,)
+                grad_q += config.w_velocity * w_i * (gq_v * dg_dv[None, :])
+                grad_T += config.w_velocity * w_i * (gT_v @ dg_dv)
+                grad_T[k_seg] += config.w_velocity * dw_i_dTseg * f_vel
+                # ∂v/∂tau = acceleration = v_deriv1
+                grad_T[k_seg] += (
+                    config.w_velocity * w_i * float(dg_dv @ v_deriv1) * s_frac
+                )
+
+    return cost, grad_q, grad_T

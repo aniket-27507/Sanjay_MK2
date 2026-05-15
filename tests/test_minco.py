@@ -225,6 +225,203 @@ class TestValidation:
             )
 
 
+class TestEnergyGradient:
+    """check_grad against FD for the analytical energy gradient.
+
+    Phase A of the Rigs-2-6 plan: analytical gradients must match scipy's
+    central-difference reference to ~1e-6 relative.
+    """
+
+    @staticmethod
+    def _energy_at(x, M, D, s, durations_init, bc_start, bc_end, start, end):
+        # Decision: interior waypoints (M-1, D) flattened
+        if M > 1:
+            q_int = x.reshape(M - 1, D)
+            wps = np.vstack([start[None, :], q_int, end[None, :]])
+        else:
+            wps = np.vstack([start[None, :], end[None, :]])
+        traj = Trajectory(wps, durations_init, bc_start, bc_end, s=s)
+        return traj.energy()
+
+    @staticmethod
+    def _grad_q_at(x, M, D, s, durations_init, bc_start, bc_end, start, end):
+        if M > 1:
+            q_int = x.reshape(M - 1, D)
+            wps = np.vstack([start[None, :], q_int, end[None, :]])
+        else:
+            wps = np.vstack([start[None, :], end[None, :]])
+        traj = Trajectory(wps, durations_init, bc_start, bc_end, s=s)
+        gq, _ = traj.energy_grad()
+        return gq.ravel()
+
+    @staticmethod
+    def _energy_at_T(T, q_int, s, bc_start, bc_end, start, end):
+        M = T.size
+        if M > 1:
+            wps = np.vstack([start[None, :], q_int, end[None, :]])
+        else:
+            wps = np.vstack([start[None, :], end[None, :]])
+        traj = Trajectory(wps, T, bc_start, bc_end, s=s)
+        return traj.energy()
+
+    @staticmethod
+    def _grad_T_at(T, q_int, s, bc_start, bc_end, start, end):
+        M = T.size
+        if M > 1:
+            wps = np.vstack([start[None, :], q_int, end[None, :]])
+        else:
+            wps = np.vstack([start[None, :], end[None, :]])
+        traj = Trajectory(wps, T, bc_start, bc_end, s=s)
+        _, gT = traj.energy_grad()
+        return gT
+
+    @staticmethod
+    def _compare_grad_fd(analytical, fd, label, rel_tol=1e-4, abs_tol=1e-3):
+        """Asserts ||a - fd|| / (||a|| + abs_tol) <= rel_tol.
+
+        Element-wise relative error is the right metric here because the
+        gradient magnitudes are O(1e5) for moderate trajectories; an absolute
+        check_grad threshold makes no sense at that scale.
+        """
+        a = np.asarray(analytical, dtype=np.float64).ravel()
+        f = np.asarray(fd, dtype=np.float64).ravel()
+        num = np.linalg.norm(a - f)
+        den = np.linalg.norm(a) + abs_tol
+        rel = num / den
+        assert rel < rel_tol, (
+            f"{label}: relative grad error {rel:.3e} exceeds {rel_tol:.3e} "
+            f"(||a-fd||={num:.3e}, ||a||={np.linalg.norm(a):.3e})"
+        )
+
+    def _fd_grad_q(self, wps, T, bc_start, bc_end, s, eps=1e-5):
+        M = T.size
+        D = wps.shape[1]
+        gq = np.zeros((M - 1, D))
+        for k in range(M - 1):
+            for d in range(D):
+                wp_p = wps.copy(); wp_p[k + 1, d] += eps
+                wp_m = wps.copy(); wp_m[k + 1, d] -= eps
+                Ep = Trajectory(wp_p, T, bc_start, bc_end, s=s).energy()
+                Em = Trajectory(wp_m, T, bc_start, bc_end, s=s).energy()
+                gq[k, d] = (Ep - Em) / (2 * eps)
+        return gq
+
+    def _fd_grad_T(self, wps, T, bc_start, bc_end, s, eps=1e-5):
+        gT = np.zeros_like(T)
+        for k in range(T.size):
+            Tp = T.copy(); Tp[k] += eps
+            Tm = T.copy(); Tm[k] -= eps
+            Ep = Trajectory(wps, Tp, bc_start, bc_end, s=s).energy()
+            Em = Trajectory(wps, Tm, bc_start, bc_end, s=s).energy()
+            gT[k] = (Ep - Em) / (2 * eps)
+        return gT
+
+    def test_grad_q_three_segment(self) -> None:
+        s, D = 3, 3
+        bc_start = _zero_bc(s, D)
+        bc_start[0] = [0.0, 0.0, 0.0]
+        bc_end = _zero_bc(s, D)
+        bc_end[0] = [10.0, 0.0, 0.0]
+        q_int = np.array([[3.0, 1.0, 0.0], [7.0, -1.0, 0.0]])
+        T = np.array([1.0, 1.0, 1.0])
+        wps = np.vstack([np.array([[0.0, 0.0, 0.0]]), q_int, np.array([[10.0, 0.0, 0.0]])])
+        traj = Trajectory(wps, T, bc_start, bc_end, s=s)
+        gq, _ = traj.energy_grad()
+        gq_fd = self._fd_grad_q(wps, T, bc_start, bc_end, s)
+        self._compare_grad_fd(gq, gq_fd, "grad_q (M=3)")
+
+    def test_grad_q_five_segment(self) -> None:
+        s, D = 3, 3
+        bc_start = _zero_bc(s, D)
+        bc_start[0] = [0.0, 0.0, 0.0]
+        bc_end = _zero_bc(s, D)
+        bc_end[0] = [20.0, 0.0, 0.0]
+        q_int = np.array(
+            [[4.0, 1.0, 0.5], [8.0, -1.0, 0.0], [12.0, 1.5, -0.5], [16.0, -0.5, 0.5]]
+        )
+        T = np.array([1.5, 1.5, 1.5, 1.5, 1.5])
+        wps = np.vstack([np.array([[0.0, 0.0, 0.0]]), q_int, np.array([[20.0, 0.0, 0.0]])])
+        traj = Trajectory(wps, T, bc_start, bc_end, s=s)
+        gq, _ = traj.energy_grad()
+        gq_fd = self._fd_grad_q(wps, T, bc_start, bc_end, s)
+        self._compare_grad_fd(gq, gq_fd, "grad_q (M=5)")
+
+    def test_grad_T_three_segment(self) -> None:
+        s, D = 3, 3
+        bc_start = _zero_bc(s, D)
+        bc_start[0] = [0.0, 0.0, 0.0]
+        bc_end = _zero_bc(s, D)
+        bc_end[0] = [10.0, 0.0, 0.0]
+        q_int = np.array([[3.0, 1.0, 0.0], [7.0, -1.0, 0.0]])
+        T = np.array([1.0, 1.0, 1.0])
+        wps = np.vstack([np.array([[0.0, 0.0, 0.0]]), q_int, np.array([[10.0, 0.0, 0.0]])])
+        traj = Trajectory(wps, T, bc_start, bc_end, s=s)
+        _, gT = traj.energy_grad()
+        gT_fd = self._fd_grad_T(wps, T, bc_start, bc_end, s)
+        self._compare_grad_fd(gT, gT_fd, "grad_T (M=3)")
+
+    def test_grad_T_one_segment(self) -> None:
+        # single-segment gradient w.r.t. T should still be sane
+        s, D = 3, 3
+        bc_start = _zero_bc(s, D)
+        bc_start[0] = [0.0, 0.0, 0.0]
+        bc_end = _zero_bc(s, D)
+        bc_end[0] = [1.0, 0.0, 0.0]
+        T = np.array([1.0])
+        wps = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        traj = Trajectory(wps, T, bc_start, bc_end, s=s)
+        _, gT = traj.energy_grad()
+        gT_fd = self._fd_grad_T(wps, T, bc_start, bc_end, s)
+        self._compare_grad_fd(gT, gT_fd, "grad_T (M=1)")
+
+    def test_zero_interior_for_single_segment(self) -> None:
+        # M=1 has no interior waypoints; gradient should be empty
+        s = 3
+        D = 3
+        bc_start = _zero_bc(s, D)
+        bc_start[0] = [0.0, 0.0, 0.0]
+        bc_end = _zero_bc(s, D)
+        bc_end[0] = [5.0, 0.0, 0.0]
+        traj = Trajectory(
+            np.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]]),
+            np.array([1.0]),
+            bc_start, bc_end, s=s,
+        )
+        gq, gT = traj.energy_grad()
+        assert gq.shape == (0, D)
+        assert gT.shape == (1,)
+
+    def test_gradient_descent_reduces_energy(self) -> None:
+        # Energy is quadratic in q with high curvature (poly basis matrix Q
+        # at unit duration has eigenvalues ~ 10^4); use a step well inside the
+        # linear regime relative to the gradient magnitude.
+        s = 3
+        D = 3
+        bc_start = _zero_bc(s, D)
+        bc_start[0] = [0.0, 0.0, 0.0]
+        bc_end = _zero_bc(s, D)
+        bc_end[0] = [10.0, 0.0, 0.0]
+        q_int = np.array([[3.0, 1.0, 0.0], [7.0, -1.0, 0.0]])
+        T = np.array([1.0, 1.0, 1.0])
+        traj = Trajectory(
+            np.vstack([np.array([[0.0, 0.0, 0.0]]), q_int, np.array([[10.0, 0.0, 0.0]])]),
+            T, bc_start, bc_end, s=s,
+        )
+        E0 = traj.energy()
+        gq, _ = traj.energy_grad()
+        gnorm = float(np.linalg.norm(gq))
+        # scale step inversely with gradient magnitude — places us in the
+        # linear regime where E(q - s g) ≈ E(q) - s ||g||²
+        step = 1e-3 / max(gnorm, 1e-9)
+        q_new = q_int - step * gq
+        traj2 = Trajectory(
+            np.vstack([np.array([[0.0, 0.0, 0.0]]), q_new, np.array([[10.0, 0.0, 0.0]])]),
+            T, bc_start, bc_end, s=s,
+        )
+        E1 = traj2.energy()
+        assert E1 < E0, f"energy went up: {E0} -> {E1} (gnorm={gnorm:.2e}, step={step:.2e})"
+
+
 class TestEnergyMonotonicity:
     """Longer durations should reduce the integral of squared (s+1)-th derivative."""
 
