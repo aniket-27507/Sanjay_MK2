@@ -103,7 +103,8 @@ class BatteryModel:
         thrust_fraction: 0.0 (motors off) to 1.0 (full throttle).
         """
         current = self.current_draw(thrust_fraction)
-        drain_mah = (current * dt) / 3600.0
+        # current (A) · dt (s) / 3600 → Ah; · 1000 → mAh
+        drain_mah = (current * dt) * 1000.0 / 3600.0
 
         effective_cap = self._effective_capacity(ambient_temp_c)
         capacity_ratio = self.config.capacity_mah / effective_cap

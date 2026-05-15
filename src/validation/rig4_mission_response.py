@@ -70,6 +70,11 @@ class Rig4Config:
     coverage_widen_factor: float = 1.5
     coverage_bucket_deg: float = 5.0
 
+    # CBBA threat-bid inputs (per drone, indexed by drone_id)
+    drone_battery_pct: Tuple[float, ...] = ()       # default: all 100%
+    drone_sensor_capability: Tuple[float, ...] = ()  # default: all 1.0
+    drone_load: Tuple[int, ...] = ()                  # default: all 0
+
 
 # ---------------------------------------------------------------------------
 # Geometry
@@ -179,22 +184,86 @@ def _inspector_position(
 
 
 # ---------------------------------------------------------------------------
-# Bid: same distance-weighted score as CBBA
+# Bid: same threat-task formula as src.swarm.cbba.cbba_engine._score_threat_task
 # ---------------------------------------------------------------------------
 
 
-def _select_inspector(
-    positions: Sequence[np.ndarray], threat: np.ndarray
-) -> int:
-    """Closest drone wins.
+@dataclass
+class BidWeights:
+    """Mirrors `CBBAConfig.threat_*` defaults — spec §6.3."""
 
-    The CBBA threat bid in `src.swarm.cbba.cbba_engine` mixes distance,
-    battery, sensor heading, and load. With identical drones on a circular
-    patrol the dominant term is distance — use it here so the rig isolates
-    the decision-latency metric.
-    """
-    d = [float(np.linalg.norm(p - threat)) for p in positions]
-    return int(np.argmin(d))
+    distance: float = 0.35
+    battery: float = 0.25
+    sensor: float = 0.20
+    load: float = 0.10
+    alignment: float = 0.10
+    max_task_range: float = 1500.0
+    battery_floor_pct: float = 20.0
+
+
+@dataclass
+class BidderState:
+    """Inputs to the CBBA-style threat bid for one drone."""
+
+    position: np.ndarray
+    velocity: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    battery_pct: float = 100.0
+    sensor_capability: float = 1.0
+    load: int = 0
+
+
+def _alignment_score(state: BidderState, threat: np.ndarray) -> float:
+    """How well the drone's heading matches the threat direction. Mirrors
+    `CBBAEngine._compute_alignment`."""
+    speed = float(np.linalg.norm(state.velocity))
+    if speed < 0.5:
+        return 0.5  # stationary → neutral
+    direction = threat - state.position
+    dnorm = float(np.linalg.norm(direction))
+    if dnorm < 1e-6:
+        return 1.0
+    cos_angle = float(np.dot(state.velocity, direction)) / (speed * dnorm)
+    return max(0.0, min((cos_angle + 1.0) / 2.0, 1.0))
+
+
+def score_threat_bid(
+    state: BidderState,
+    threat: np.ndarray,
+    weights: Optional[BidWeights] = None,
+) -> float:
+    """One drone's bid for inspecting `threat`. Returns -1.0 if the drone
+    is below the battery floor (spec §6.3)."""
+    if weights is None:
+        weights = BidWeights()
+    if state.battery_pct < weights.battery_floor_pct:
+        return -1.0
+
+    dist = float(np.linalg.norm(threat - state.position))
+    dist_score = max(0.0, 1.0 - dist / weights.max_task_range)
+    batt_score = max(0.0, min(state.battery_pct / 100.0, 1.0))
+    sensor_score = max(0.0, min(state.sensor_capability, 1.0))
+    load_score = max(0.0, 1.0 - state.load * 0.25)
+    align_score = _alignment_score(state, threat)
+    return (
+        weights.distance * dist_score
+        + weights.battery * batt_score
+        + weights.sensor * sensor_score
+        + weights.load * load_score
+        + weights.alignment * align_score
+    )
+
+
+def _select_inspector(
+    bidders: Sequence[BidderState],
+    threat: np.ndarray,
+    weights: Optional[BidWeights] = None,
+) -> int:
+    """Pick the drone with the highest CBBA threat-bid score. Returns -1
+    if no drone clears the battery floor."""
+    scores = [score_threat_bid(b, threat, weights) for b in bidders]
+    if not scores or max(scores) <= -1.0 + 1e-9:
+        return -1
+    return int(np.argmax(scores))
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +339,46 @@ def run_one_trial(
             patrol_positions = [
                 _patrol_position(i, n, t, config) for i in range(n)
             ]
+            # numerical-derivative velocity from the previous tick
+            patrol_velocities = [
+                (
+                    patrol_positions[i]
+                    - _patrol_position(i, n, max(0.0, t - config.dt), config)
+                ) / max(config.dt, 1e-6)
+                for i in range(n)
+            ]
+            batteries = config.drone_battery_pct or tuple([100.0] * n)
+            sensors = config.drone_sensor_capability or tuple([1.0] * n)
+            loads = config.drone_load or tuple([0] * n)
+            bidders = [
+                BidderState(
+                    position=patrol_positions[i],
+                    velocity=patrol_velocities[i],
+                    battery_pct=float(batteries[i]),
+                    sensor_capability=float(sensors[i]),
+                    load=int(loads[i]),
+                )
+                for i in range(n)
+            ]
             t0 = time.perf_counter()
-            inspector_id = _select_inspector(patrol_positions, threat)
+            inspector_id = _select_inspector(bidders, threat)
+            t_detect_to_replan_ms = (time.perf_counter() - t0) * 1000.0
+            if inspector_id < 0:
+                # no drone clears the battery floor — record the failure
+                result_partial: Dict[str, float] = {
+                    "seed": seed,
+                    "n_drones": n,
+                    "threat_time_s": config.threat_time_s,
+                    "inspector_id": float("nan"),
+                    "t_detect_to_replan_ms": t_detect_to_replan_ms,
+                    "inspector_arrival_s": float("nan"),
+                    "t_coverage_gap_s": float("nan"),
+                    "coverage_pct_during": float("nan"),
+                    "t_regroup_s": float("nan"),
+                    "success": False,
+                    "error": "no_eligible_inspector",
+                }
+                return result_partial
             plan = _inspector_plan(
                 inspector_id,
                 patrol_positions[inspector_id],
@@ -280,7 +387,6 @@ def run_one_trial(
                 config,
                 n,
             )
-            t_detect_to_replan_ms = (time.perf_counter() - t0) * 1000.0
 
         # compute current positions
         positions: List[np.ndarray] = []

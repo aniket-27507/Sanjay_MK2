@@ -485,6 +485,103 @@ def run_one_trial(
     return result
 
 
+def run_stress_matrix(
+    drones_list: Sequence[int],
+    scenario: str,
+    latencies_ms: Sequence[float],
+    losses_pct: Sequence[float],
+    runs_per_combo: int,
+    config: Optional[Rig2Config] = None,
+    base_seed: int = 2500,
+    verbose: bool = True,
+) -> MetricsCollector:
+    """Cartesian sweep over (n_drones, latency_ms, loss_pct).
+
+    Adds two label keys to each row, `comms_latency_ms` and `comms_loss_pct`,
+    so the summary breaks results down by communications stress as well as
+    fleet size.
+    """
+    base_cfg = config if config is not None else Rig2Config()
+    mc = MetricsCollector()
+    combo_idx = 0
+    for n in drones_list:
+        for lat in latencies_ms:
+            for loss in losses_pct:
+                cfg = Rig2Config(
+                    **{
+                        **base_cfg.__dict__,
+                        "comms_latency_ms_mean": float(lat),
+                        "comms_loss_pct": float(loss),
+                    }
+                )
+                if verbose:
+                    print(
+                        f"\n--- n={n}, latency={lat:.0f}ms, loss={loss:.0f}% ---"
+                    )
+                for run_idx in range(runs_per_combo):
+                    seed = base_seed + combo_idx * 10_000 + run_idx
+                    row = run_one_trial(seed, n, scenario, cfg)
+                    mc.start_run(
+                        n_drones=n,
+                        comms_latency_ms=float(lat),
+                        comms_loss_pct=float(loss),
+                        scenario=scenario,
+                        seed=seed,
+                    )
+                    for k, v in row.items():
+                        if k in (
+                            "n_drones", "scenario", "seed",
+                        ):
+                            continue
+                        mc.record(k, v)
+                    mc.finish_run()
+                    if verbose:
+                        ok = row.get("success", False)
+                        dmin = row.get("d_min_inter_m", float("nan"))
+                        tpa = row.get("t_replan_per_agent_mean_ms", float("nan"))
+                        cong = row.get("network_congestion_pct", 0.0)
+                        print(
+                            f"  run {run_idx + 1}/{runs_per_combo}: "
+                            f"success={ok}  d_min={dmin:5.2f}m  "
+                            f"t/agent={tpa:6.1f}ms  congestion={cong:5.1f}%",
+                            flush=True,
+                        )
+                combo_idx += 1
+    return mc
+
+
+def assert_scaling_is_flat(
+    mc: MetricsCollector,
+    *,
+    small_n: int,
+    large_n: int,
+    factor: float = 2.0,
+) -> Tuple[bool, float, float]:
+    """Verify per-agent replan time stays within `factor` × from `small_n`
+    drones to `large_n` (the spec's O(k) scaling claim).
+
+    Pulls medians from `mc.runs`. Returns (passed, t_small, t_large).
+    """
+    rows = mc.to_records()
+
+    def median_per_agent(n: int) -> float:
+        vals = [
+            float(r["t_replan_per_agent_mean_ms"])
+            for r in rows
+            if int(r.get("n_drones", -1)) == n
+            and isinstance(r.get("t_replan_per_agent_mean_ms"), (int, float))
+        ]
+        if not vals:
+            return float("nan")
+        return float(np.median(vals))
+
+    t_small = median_per_agent(small_n)
+    t_large = median_per_agent(large_n)
+    if not (np.isfinite(t_small) and np.isfinite(t_large) and t_small > 0):
+        return False, t_small, t_large
+    return bool(t_large <= factor * t_small), t_small, t_large
+
+
 def run_benchmark(
     drones_list: Sequence[int],
     scenario: str,
@@ -581,6 +678,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--comms-loss-pct", type=float, default=0.0)
     parser.add_argument("--maxiter", type=int, default=25)
     parser.add_argument("--v-max", type=float, default=4.0)
+    parser.add_argument(
+        "--stress",
+        action="store_true",
+        help="Sweep the full latency × loss × N matrix (spec §5.3).",
+    )
+    parser.add_argument(
+        "--latencies",
+        type=str,
+        default="50,100,200",
+        help="Stress-mode: comma-separated latency_ms_mean values",
+    )
+    parser.add_argument(
+        "--losses",
+        type=str,
+        default="0,10,30",
+        help="Stress-mode: comma-separated packet_loss_pct values",
+    )
+    parser.add_argument(
+        "--scaling-check",
+        action="store_true",
+        help="In stress mode, assert per-agent replan time stays within 2× "
+        "from min(drones) to max(drones) and exit non-zero on failure.",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -602,6 +722,54 @@ def main(argv: Optional[List[str]] = None) -> int:
         replan_period_s=args.replan_period,
         sim_duration_s=args.sim_duration,
     )
+
+    if args.stress:
+        latencies = [float(x) for x in args.latencies.split(",")]
+        losses = [float(x) for x in args.losses.split(",")]
+        print(
+            f"Rig 2 STRESS — scenario={args.scenario}, drones={drones_list}, "
+            f"latencies={latencies}ms, losses={losses}%, {args.runs} runs/combo, "
+            f"replan={args.replan_period}s, sim={args.sim_duration}s"
+        )
+        mc = run_stress_matrix(
+            drones_list=drones_list,
+            scenario=args.scenario,
+            latencies_ms=latencies,
+            losses_pct=losses,
+            runs_per_combo=args.runs,
+            config=config,
+            verbose=not args.quiet,
+        )
+        mc.export_json(
+            args.output,
+            label_keys=["n_drones", "comms_latency_ms", "comms_loss_pct"],
+        )
+        print(f"\nResults written to {args.output}")
+        summary = summarise(
+            mc.runs,
+            label_keys=["n_drones", "comms_latency_ms", "comms_loss_pct"],
+        )
+        print("\n=== Summary ===")
+        print(_format_summary(summary))
+
+        if args.scaling_check:
+            ok, t_small, t_large = assert_scaling_is_flat(
+                mc,
+                small_n=min(drones_list),
+                large_n=max(drones_list),
+                factor=2.0,
+            )
+            print(
+                f"\nScaling check: t_replan/agent at N={min(drones_list)} = "
+                f"{t_small:.1f} ms, at N={max(drones_list)} = "
+                f"{t_large:.1f} ms"
+            )
+            if ok:
+                print("  PASS (within 2× target)")
+            else:
+                print("  FAIL (exceeded 2× target)")
+                return 1
+        return 0
 
     print(
         f"Rig 2 — scenario={args.scenario}, drones={drones_list}, "

@@ -17,9 +17,11 @@ import pytest
 
 from src.validation.rig2_swarm_avoidance import (
     Rig2Config,
+    assert_scaling_is_flat,
     endpoints_for_scenario,
     run_benchmark,
     run_one_trial,
+    run_stress_matrix,
 )
 
 
@@ -123,3 +125,56 @@ class TestBenchmark:
                 payload = json.load(f)
             assert "runs" in payload and "summary" in payload
             assert any("n_drones=3" in k for k in payload["summary"])
+
+
+class TestStressMatrix:
+    def test_sweep_records_latency_and_loss(self, fast_config: Rig2Config) -> None:
+        mc = run_stress_matrix(
+            drones_list=[3],
+            scenario="patrol",
+            latencies_ms=[50.0, 200.0],
+            losses_pct=[0.0, 30.0],
+            runs_per_combo=1,
+            config=fast_config,
+            verbose=False,
+        )
+        rows = mc.to_records()
+        # 1 drone-count × 2 latencies × 2 losses × 1 run = 4 rows
+        assert len(rows) == 4
+        latencies = sorted({r["comms_latency_ms"] for r in rows})
+        losses = sorted({r["comms_loss_pct"] for r in rows})
+        assert latencies == [50.0, 200.0]
+        assert losses == [0.0, 30.0]
+
+    def test_packet_loss_actually_drops(self, fast_config: Rig2Config) -> None:
+        # at 100% loss every packet is dropped → packets_delivered == 0
+        cfg = Rig2Config(
+            **{**fast_config.__dict__, "comms_loss_pct": 100.0}
+        )
+        result = run_one_trial(
+            seed=21, n_drones=3, scenario="patrol", config=cfg
+        )
+        assert result["packets_dropped"] >= 1
+        assert result["packets_delivered"] == 0
+
+    def test_scaling_flatness_within_2x(self, fast_config: Rig2Config) -> None:
+        # tiny replan budget (maxiter=4, sim_duration=2s → one tick) so we
+        # measure overhead, not optimiser convergence. Per-agent time should
+        # stay nearly flat: 3 → 6 drones is at most 2×.
+        cfg = Rig2Config(
+            **{**fast_config.__dict__, "gcopter_maxiter": 4, "sim_duration_s": 2.0}
+        )
+        mc = run_benchmark(
+            drones_list=[3, 6],
+            scenario="patrol",
+            runs_per_size=2,
+            config=cfg,
+            verbose=False,
+        )
+        ok, t_small, t_large = assert_scaling_is_flat(
+            mc, small_n=3, large_n=6, factor=2.0
+        )
+        assert ok, (
+            f"per-agent replan time grew more than 2× between N=3 and N=6: "
+            f"{t_small:.2f} ms → {t_large:.2f} ms"
+        )

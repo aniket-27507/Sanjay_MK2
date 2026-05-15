@@ -240,6 +240,9 @@ def run_one_trial(
     seed: int,
     scenario: str,
     config: Optional[Rig6Config] = None,
+    wind_cfg_override: Optional[WindConfig] = None,
+    depth_cfg_override: Optional[DepthNoiseConfig] = None,
+    label_override: Optional[str] = None,
 ) -> Dict[str, float]:
     if config is None:
         config = Rig6Config()
@@ -249,7 +252,15 @@ def run_one_trial(
     goal = np.asarray(config.goal, dtype=np.float64)
     traj, poly = _make_trajectory(start, goal, config)
 
-    wind_cfg, depth_cfg, label = scenario_to_models(scenario, config, rng)
+    if wind_cfg_override is not None or depth_cfg_override is not None:
+        # Sweep mode — caller has full control. Fall back to scenario for
+        # anything not overridden, then apply patches.
+        base_wind, base_depth, base_label = scenario_to_models(scenario, config, rng)
+        wind_cfg = wind_cfg_override if wind_cfg_override is not None else base_wind
+        depth_cfg = depth_cfg_override if depth_cfg_override is not None else base_depth
+        label = label_override if label_override is not None else base_label
+    else:
+        wind_cfg, depth_cfg, label = scenario_to_models(scenario, config, rng)
     wind = WindModel(wind_cfg)
 
     pos = start.copy()
@@ -324,6 +335,137 @@ def run_one_trial(
         "success": (not corridor_breached) and (not sensor_failed),
     }
     return result
+
+
+def _failure_rate(rows: Sequence[Dict[str, float]], key: str) -> float:
+    """Fraction of rows where boolean `key` is True. NaN if no rows."""
+    if not rows:
+        return float("nan")
+    fails = sum(1 for r in rows if bool(r.get(key, False)))
+    return fails / len(rows)
+
+
+def sweep_wind(
+    wind_speeds_ms: Sequence[float],
+    runs_per_step: int,
+    config: Optional[Rig6Config] = None,
+    base_seed: int = 6500,
+    failure_rate_threshold: float = 0.5,
+    verbose: bool = True,
+) -> Tuple[float, MetricsCollector]:
+    """Sweep wind base_speed_ms — return (safe_wind_limit_ms, collector).
+
+    `safe_wind_limit_ms` is the largest wind speed at which the corridor
+    breach failure rate stays below `failure_rate_threshold` (default 50%).
+    Returns NaN if even the lowest tested speed already breaks the
+    pipeline.
+    """
+    if config is None:
+        config = Rig6Config()
+    mc = MetricsCollector()
+    safe_limit = float("nan")
+    for ws in wind_speeds_ms:
+        # build a wind config tuned for the swept speed; keep depth at OAK-D
+        # defaults so we isolate the wind variable
+        wind_cfg = WindConfig(
+            base_speed_ms=float(ws),
+            gust_max_ms=max(1.0, 1.5 * float(ws)),
+            gust_probability_per_sec=0.15,
+            drone_mass_kg=config.drone_mass_kg,
+            seed=0,  # placeholder; per-run seed below
+        )
+        depth_cfg = DepthNoiseConfig(max_range_m=10.0, noise_coeff=0.005, dropout_pct=2.0)
+        per_step_rows: List[Dict[str, float]] = []
+        for run_idx in range(runs_per_step):
+            seed = base_seed + int(ws * 1000) + run_idx
+            wind_cfg.seed = seed
+            row = run_one_trial(
+                seed,
+                "calm",
+                config,
+                wind_cfg_override=wind_cfg,
+                depth_cfg_override=depth_cfg,
+                label_override=f"wind_{ws:.0f}",
+            )
+            row["wind_speed_ms"] = float(ws)
+            per_step_rows.append(row)
+            mc.start_run(wind_speed_ms=float(ws), seed=seed)
+            for k, v in row.items():
+                if k in ("seed",):
+                    continue
+                mc.record(k, v)
+            mc.finish_run()
+        fr = _failure_rate(per_step_rows, "corridor_breached")
+        if verbose:
+            print(
+                f"  wind={ws:5.1f} m/s  breach_rate={fr*100:5.1f}%  "
+                f"track_med={np.median([r['tracking_error_mean_m'] for r in per_step_rows]):5.3f}m"
+            )
+        if fr < failure_rate_threshold:
+            safe_limit = float(ws)
+        # we don't early-exit — the full curve is useful in the JSON
+    return safe_limit, mc
+
+
+def sweep_depth(
+    depth_ranges_m: Sequence[float],
+    runs_per_step: int,
+    config: Optional[Rig6Config] = None,
+    base_seed: int = 6600,
+    failure_rate_threshold: float = 0.5,
+    verbose: bool = True,
+) -> Tuple[float, MetricsCollector]:
+    """Sweep depth max_range_m — return (depth_range_threshold_m, mc).
+
+    `depth_range_threshold_m` is the smallest range at which the sensor
+    failure rate stays below `failure_rate_threshold`. Below that range
+    the camera no longer reliably reaches the goal-distance silhouette.
+    NaN if even the largest tested range still fails (shouldn't happen
+    on the spec's 1..10 m sweep).
+    """
+    if config is None:
+        config = Rig6Config()
+    mc = MetricsCollector()
+    threshold = float("nan")
+    sorted_ranges = sorted(depth_ranges_m)  # increasing
+    for r_m in sorted_ranges:
+        wind_cfg = WindConfig(
+            base_speed_ms=1.0, gust_max_ms=2.0,
+            drone_mass_kg=config.drone_mass_kg, seed=0,
+        )
+        depth_cfg = DepthNoiseConfig(
+            max_range_m=float(r_m), noise_coeff=0.005, dropout_pct=2.0,
+        )
+        per_step_rows: List[Dict[str, float]] = []
+        for run_idx in range(runs_per_step):
+            seed = base_seed + int(r_m * 1000) + run_idx
+            wind_cfg.seed = seed
+            row = run_one_trial(
+                seed,
+                "calm",
+                config,
+                wind_cfg_override=wind_cfg,
+                depth_cfg_override=depth_cfg,
+                label_override=f"depth_{r_m:.0f}",
+            )
+            row["depth_range_m"] = float(r_m)
+            per_step_rows.append(row)
+            mc.start_run(depth_range_m=float(r_m), seed=seed)
+            for k, v in row.items():
+                if k in ("seed",):
+                    continue
+                mc.record(k, v)
+            mc.finish_run()
+        fr = _failure_rate(per_step_rows, "sensor_failed")
+        if verbose:
+            print(
+                f"  depth={r_m:5.1f} m  sensor_fail_rate={fr*100:5.1f}%  "
+                f"vf_med={np.median([r['depth_valid_fraction_mean'] for r in per_step_rows]):5.3f}"
+            )
+        if fr < failure_rate_threshold and np.isnan(threshold):
+            # first range where sensor stays healthy = threshold
+            threshold = float(r_m)
+    return threshold, mc
 
 
 def run_benchmark(
@@ -404,20 +546,95 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--maxiter", type=int, default=12)
     parser.add_argument("--dt", type=float, default=0.1)
     parser.add_argument("--output", type=str, default="rig6_results.json")
+    parser.add_argument(
+        "--sweep",
+        type=str,
+        default="",
+        choices=["", "wind", "depth", "both"],
+        help="Run a parameter sweep instead of the fixed-scenario benchmark.",
+    )
+    parser.add_argument(
+        "--wind-range",
+        type=str,
+        default="0,15,1",
+        help="Sweep wind base_speed_ms: lo,hi,step (default 0,15,1).",
+    )
+    parser.add_argument(
+        "--depth-range",
+        type=str,
+        default="1,10,1",
+        help="Sweep depth max_range_m: lo,hi,step (default 1,10,1).",
+    )
+    parser.add_argument(
+        "--failure-threshold",
+        type=float,
+        default=0.5,
+        help="Failure-rate threshold for the sweep verdicts (default 0.5).",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
-
-    scenarios = [s.strip() for s in args.scenarios.split(",") if s.strip()]
-    for s in scenarios:
-        if s not in SCENARIOS:
-            print(f"unknown scenario {s!r}; choose from {SCENARIOS}", file=sys.stderr)
-            return 2
 
     config = Rig6Config(
         v_max=args.v_max,
         gcopter_maxiter=args.maxiter,
         dt=args.dt,
     )
+
+    if args.sweep:
+        results: Dict[str, float] = {}
+        all_runs: List[Dict[str, float]] = []
+        if args.sweep in ("wind", "both"):
+            lo, hi, step = (float(x) for x in args.wind_range.split(","))
+            speeds = list(np.arange(lo, hi + step / 2.0, step))
+            print(
+                f"Rig 6 SWEEP wind — speeds={speeds} m/s, "
+                f"{args.runs} runs/step, threshold={args.failure_threshold:.0%}"
+            )
+            safe_wind, mc_wind = sweep_wind(
+                speeds,
+                runs_per_step=args.runs,
+                config=config,
+                failure_rate_threshold=args.failure_threshold,
+                verbose=not args.quiet,
+            )
+            results["safe_wind_limit_ms"] = safe_wind
+            all_runs.extend(mc_wind.runs)
+            print(f"  → safe_wind_limit_ms = {safe_wind}")
+
+        if args.sweep in ("depth", "both"):
+            lo, hi, step = (float(x) for x in args.depth_range.split(","))
+            ranges = list(np.arange(lo, hi + step / 2.0, step))
+            print(
+                f"Rig 6 SWEEP depth — ranges={ranges} m, "
+                f"{args.runs} runs/step, threshold={args.failure_threshold:.0%}"
+            )
+            threshold, mc_depth = sweep_depth(
+                ranges,
+                runs_per_step=args.runs,
+                config=config,
+                failure_rate_threshold=args.failure_threshold,
+                verbose=not args.quiet,
+            )
+            results["depth_range_threshold_m"] = threshold
+            all_runs.extend(mc_depth.runs)
+            print(f"  → depth_range_threshold_m = {threshold}")
+
+        # write combined sweep JSON
+        with open(args.output, "w") as f:
+            json.dump(
+                {"summary": results, "runs": all_runs},
+                f,
+                indent=2,
+                default=str,
+            )
+        print(f"\nResults written to {args.output}")
+        return 0
+
+    scenarios = [s.strip() for s in args.scenarios.split(",") if s.strip()]
+    for s in scenarios:
+        if s not in SCENARIOS:
+            print(f"unknown scenario {s!r}; choose from {SCENARIOS}", file=sys.stderr)
+            return 2
 
     print(
         f"Rig 6 — scenarios={scenarios}, {args.runs} runs each, "

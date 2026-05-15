@@ -90,57 +90,23 @@ class TestSingleTrial:
         assert result["drones_alive_at_end"] == cfg.n_active - 1
 
     def test_battery_relay_promotes_standby(self) -> None:
-        # Force RTL by monkey-patching one active drone's `should_rtl` once
-        # the sim starts. The mechanism under test is "if any active drone
-        # hits RTL, the next standby gets promoted into its sector and
-        # `relay_handoff_time_s` is recorded".
+        # 50 mAh capacity → RTL in ~11 s at hover (12.75 A draw). Sim 25 s
+        # so at least one active drone hits RTL and the lone standby gets
+        # promoted, recording `relay_handoff_time_s`.
         cfg = Rig5Config(
             n_active=3,
             n_standby=1,
-            sim_duration_s=4.0,
+            sim_duration_s=25.0,
             dt=0.5,
+            capacity_mah=50.0,
             patrol_speed=3.0,
             perimeter_radius=15.0,
         )
-        from src.validation import rig5_endurance as rig5
-
-        original_build = rig5._build_drones
-
-        def patched_build(seed, config):
-            drones = original_build(seed, config)
-            # force drone 0 to RTL immediately
-            class _AlwaysRtlBattery:
-                def __init__(self, real):
-                    self._real = real
-                    self.config = real.config
-
-                @property
-                def should_rtl(self):
-                    return True
-
-                def tick(self, *args, **kwargs):
-                    return self._real.tick(*args, **kwargs)
-
-                def current_draw(self, *args, **kwargs):
-                    return self._real.current_draw(*args, **kwargs)
-
-                def voltage(self, *args, **kwargs):
-                    return self._real.voltage(*args, **kwargs)
-
-                @property
-                def soc_pct(self):
-                    return self._real.soc_pct
-
-            drones[0].battery = _AlwaysRtlBattery(drones[0].battery)
-            return drones
-
-        rig5._build_drones = patched_build
-        try:
-            result = run_one_trial(seed=4, scenario="battery_relay", config=cfg)
-        finally:
-            rig5._build_drones = original_build
-
+        result = run_one_trial(seed=4, scenario="battery_relay", config=cfg)
         assert not np.isnan(result["relay_handoff_time_s"])
+        # the handoff should fire roughly when the first drone goes RTL —
+        # comfortably inside the sim window
+        assert 5.0 <= result["relay_handoff_time_s"] <= 20.0
 
     def test_graceful_degrade_lowers_thrust_ratio(self, fast_config: Rig5Config) -> None:
         # degrade scenario starts motors at 80% efficiency

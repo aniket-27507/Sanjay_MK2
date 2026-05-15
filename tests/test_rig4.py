@@ -13,12 +13,15 @@ import numpy as np
 import pytest
 
 from src.validation.rig4_mission_response import (
+    BidWeights,
+    BidderState,
     Rig4Config,
     _coverage_pct,
     _patrol_position,
     _select_inspector,
     run_benchmark,
     run_one_trial,
+    score_threat_bid,
 )
 
 
@@ -39,14 +42,53 @@ def fast_config() -> Rig4Config:
 
 
 class TestBid:
-    def test_closest_drone_wins(self) -> None:
-        positions = [
-            np.array([10.0, 0.0, 0.0]),
-            np.array([0.0, 10.0, 0.0]),
-            np.array([2.0, 0.0, 0.0]),   # closest to origin
+    def test_closest_drone_wins_when_all_else_equal(self) -> None:
+        bidders = [
+            BidderState(position=np.array([10.0, 0.0, 0.0])),
+            BidderState(position=np.array([0.0, 10.0, 0.0])),
+            BidderState(position=np.array([2.0, 0.0, 0.0])),   # closest
         ]
         threat = np.array([0.0, 0.0, 0.0])
-        assert _select_inspector(positions, threat) == 2
+        assert _select_inspector(bidders, threat) == 2
+
+    def test_low_battery_drone_excluded_even_if_closest(self) -> None:
+        bidders = [
+            BidderState(position=np.array([2.0, 0.0, 0.0]), battery_pct=15.0),
+            BidderState(position=np.array([10.0, 0.0, 0.0]), battery_pct=80.0),
+        ]
+        threat = np.array([0.0, 0.0, 0.0])
+        # closest drone is below 20% floor → second drone must win
+        assert _select_inspector(bidders, threat) == 1
+        # and the low-battery drone reports a negative score
+        assert score_threat_bid(bidders[0], threat) == -1.0
+
+    def test_high_load_drone_loses_to_idle(self) -> None:
+        # same position, same battery, same sensor — the loaded drone bids lower
+        idle = BidderState(position=np.array([5.0, 0.0, 0.0]), load=0)
+        busy = BidderState(position=np.array([5.0, 0.0, 0.0]), load=2)
+        threat = np.array([0.0, 0.0, 0.0])
+        assert score_threat_bid(idle, threat) > score_threat_bid(busy, threat)
+
+    def test_alignment_increases_score(self) -> None:
+        threat = np.array([0.0, 0.0, 0.0])
+        forward = BidderState(
+            position=np.array([5.0, 0.0, 0.0]),
+            velocity=np.array([-2.0, 0.0, 0.0]),  # flying toward threat
+        )
+        stationary = BidderState(
+            position=np.array([5.0, 0.0, 0.0]),
+            velocity=np.zeros(3),
+        )
+        assert score_threat_bid(forward, threat) > score_threat_bid(stationary, threat)
+
+    def test_no_eligible_returns_neg_one(self) -> None:
+        # all below battery floor
+        bidders = [
+            BidderState(position=np.array([1.0, 0.0, 0.0]), battery_pct=10.0),
+            BidderState(position=np.array([2.0, 0.0, 0.0]), battery_pct=5.0),
+        ]
+        threat = np.array([0.0, 0.0, 0.0])
+        assert _select_inspector(bidders, threat) == -1
 
 
 class TestCoverage:
@@ -107,6 +149,36 @@ class TestSingleTrial:
         # plan never triggered → fields NaN
         assert np.isnan(result["t_detect_to_replan_ms"])
         assert np.isnan(result["inspector_arrival_s"])
+
+    def test_low_battery_drone_is_skipped_by_pipeline(self, fast_config: Rig4Config) -> None:
+        # The drone that would otherwise be closest (drone 0) has only 15%
+        # battery. The pipeline must pick a different inspector.
+        cfg = Rig4Config(
+            **{
+                **fast_config.__dict__,
+                "threat_position": (
+                    float(_patrol_position(0, fast_config.n_drones, fast_config.threat_time_s, fast_config)[0]),
+                    float(_patrol_position(0, fast_config.n_drones, fast_config.threat_time_s, fast_config)[1]),
+                    fast_config.altitude,
+                ),
+                "drone_battery_pct": (15.0, 100.0, 100.0),
+            }
+        )
+        result = run_one_trial(seed=13, config=cfg)
+        assert int(result["inspector_id"]) != 0
+        # ineligible drone is excluded, but some other drone still wins
+        assert int(result["inspector_id"]) in (1, 2)
+
+    def test_all_low_battery_returns_error(self, fast_config: Rig4Config) -> None:
+        cfg = Rig4Config(
+            **{
+                **fast_config.__dict__,
+                "drone_battery_pct": (10.0, 5.0, 8.0),
+            }
+        )
+        result = run_one_trial(seed=13, config=cfg)
+        assert result["success"] is False
+        assert result.get("error") == "no_eligible_inspector"
 
 
 class TestBenchmark:

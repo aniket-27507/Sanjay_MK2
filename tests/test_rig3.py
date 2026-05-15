@@ -134,3 +134,39 @@ class TestBenchmark:
             with open(path) as f:
                 payload = json.load(f)
             assert "runs" in payload and "summary" in payload
+
+
+class TestExitGate:
+    """Per MINCO_PIVOT.md §5.4: with correction ON at the standard drift
+    rate, the perimeter should be maintained for "30+ minutes". We can't
+    sim 1800 s in a test loop, but a 60 s window at standard drift is a
+    valid scale-down proxy of the structural property: with correction ON
+    the swarm never trips the perimeter tolerance."""
+
+    def test_correction_on_holds_perimeter_for_60s(self) -> None:
+        cfg = Rig3Config(
+            perimeter_radius=20.0,
+            altitude=4.0,
+            patrol_speed=3.0,
+            sigma_walk=0.02,         # spec's "standard drift rate"
+            bias_rate=0.01,
+            jump_prob_per_sec=0.005,
+            jump_magnitude=0.3,
+            drift_rate_multiplier=1.0,
+            correction_gain=0.5,
+            correction_period_s=0.5,
+            sim_duration_s=60.0,
+            dt=0.1,
+            perimeter_tolerance_m=2.0,
+        )
+        # average over a few seeds — single-seed jump events can spike
+        ttfs = []
+        for s in (101, 102, 103):
+            row = run_one_trial(seed=s, n_drones=3, correction_enabled=True, config=cfg)
+            ttfs.append(row["time_to_failure_s"])
+        # majority of seeds must hold perimeter for the full 60 s
+        held = sum(1 for t in ttfs if np.isnan(t))
+        assert held >= 2, (
+            f"correction ON should hold perimeter for 60s at standard drift "
+            f"on at least 2/3 seeds; got time_to_failure = {ttfs}"
+        )

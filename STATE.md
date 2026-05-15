@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-05-16 (**MINCO pivot Phases 0–4 validation rigs landed** — Rigs 1–6 CLI + tests in `src/validation/`; gcopter optimizer extended with optional swarm-neighbour penalty; 162 tests passing across the planning + validation surface)
+**Last updated:** 2026-05-16 (**MINCO pivot Phases 0–4 validation rigs hardened** — Rigs 1–6 with full comms-stress matrix, CBBA threat bid, wind/depth sweeps, and Phase-1 exit gate; battery_model drain bug fixed; 208 tests pass, 1 opt-in exit gate skipped)
 
 ## How to use this file (Claude / Codex / GPT)
 
@@ -21,7 +21,7 @@
 | **In scope** | `src/single_drone/planning/` (`voxel_map`, `sfc_gen`, `corridor_generator`, `minco`, `gcopter`, `flatness`), `src/validation/` (Rigs 1–6 + supporting infra `obstacle_gen`, `metrics`, `broadcast_channel`, `vio_drift_model`, `motor_model`, `depth_noise_model`, `plots`), `src/swarm/` (`trajectory_broadcast`, `swarm_penalty`), `docs/MINCO_PIVOT.md` (authoritative spec), `CLAUDE.md` (pivot finalized in §1, §2, §5, §10). |
 | **Out of scope** | Migrating active runtime paths off APF/Boids (Phase 5); GPL'd EGO-Planner code (we only port MIT-licensed MINCO core); real OAK-D Lite hardware integration (requires `depthai` SDK, deferred). |
 | **Exit criteria** | (1) All six rig CLIs (`rig1_corridor_benchmark`, `rig2_swarm_avoidance`, `rig3_vio_perimeter`, `rig4_mission_response`, `rig5_endurance`, `rig6_disturbance`) runnable via `python -m src.validation.rigN_…` and producing JSON metrics. (2) `gcopter_optimize` accepts an optional `swarm_neighbours` kwarg so the same L-BFGS loop drives both single-drone and swarm-coupled optimisation. (3) Test suite green: **162 tests passing** across Phase 0 planning core, Phase 0.5 analytical gradients, and Phases 1–4 rigs. |
-| **Handoff notes** | **2026-05-16:** Rigs 2–6 landed in one pass. Rig 2 uses the new `swarm_neighbours` hook through `gcopter_optimize`; Rig 3 builds on the existing `vio_drift_model` with an inter-agent residual filter; Rig 4 isolates the CBBA-style assignment latency with a distance-only bid; Rig 5 reuses `BatteryModel` + `MotorWear` and exercises battery-relay / drone-down / graceful-degradation / cascading-failure scenarios; Rig 6 stacks `WindModel` + `depth_noise_model` over a PD-tracked MINCO trajectory. **Known caveat:** `src/simulation/physics/battery_model.py` has a 1000× drain bug (Ah/mAh confusion in `tick()`) — surfaced while testing Rig 5 relay; the rig faithfully consumes the existing model, fix belongs in a separate physics-cleanup task. |
+| **Handoff notes** | **2026-05-16 (rigidity pass):** Six rigs hardened against the spec. Rig 2 grew a `--stress` matrix (latency 50/100/200ms × loss 0/10/30% × N=3–50) and a scaling-flatness check (`assert_scaling_is_flat`) that verifies per-agent replan time stays within 2× as N grows. Rig 4 now uses the full CBBA threat bid (distance + battery + sensor + load + alignment + 20% battery floor) ported from `src.swarm.cbba.cbba_engine._score_threat_task`. Rig 6 has `--sweep wind/depth/both` modes that compute `safe_wind_limit_ms` and `depth_range_threshold_m` via failure-rate thresholds. Rig 1 has an opt-in `PHASE1_EXIT=1` watchdog test that asserts <50 ms median at density 0.30 — currently fails at ~567 ms, marking the gap to C++ GCOPTER parity. Rig 3 has a `TestExitGate` that verifies correction-ON holds perimeter for 60 s on a majority of seeds (proxy for the 30-min real target). The `battery_model.tick()` 1000× drain bug is **fixed** (one-line Ah→mAh correction); Rig 5's relay test no longer needs a monkey-patch — a 50 mAh pack now RTLs at ~11 s as analysis predicts. |
 
 ---
 
@@ -91,7 +91,7 @@ Verified against the canonical minimum-snap polynomial; 72 unit tests across the
 - `src/validation/rig5_endurance.py` — 30-min endurance with battery+motor drain, scenarios normal/relay/drone_down/graceful_degrade/cascading_failure
 - `src/validation/rig6_disturbance.py` — wind (calm/breezy/windy) + fog/rain/sensor_fail over a PD-tracked MINCO trajectory; corridor breach + sensor-failure flags
 
-**Test count:** 162 tests passing across Phase 0 planning core + Phase 0.5 analytical gradients + Phases 1–4 rigs (Rig 1: 5, Rig 2: 8, Rig 3: 8, Rig 4: 8, Rig 5: 10, Rig 6: 9).
+**Test count:** **208 tests passing, 1 opt-in exit gate skipped** across Phase 0 planning core + Phase 0.5 analytical gradients + Phases 1–4 rigs (Rig 1: 5 + 1 opt-in, Rig 2: 11 inc. stress matrix + scaling-flatness, Rig 3: 9 inc. 60s perimeter gate, Rig 4: 14 inc. full CBBA threat bid, Rig 5: 10 inc. real-drain relay, Rig 6: 11 inc. wind/depth sweep mode).
 
 ### Legacy stack (being replaced — see `docs/MINCO_PIVOT.md` §4.1)
 
@@ -129,7 +129,7 @@ The repo still contains the simulation-grade police autonomy backbone built befo
 
 - **Phase 5 — integration refactor** (`avoidance_manager` to orchestrate MINCO pipeline, `scenario_executor` to consume MINCO trajectories, `flight_controller` trajectory-tracking mode, legacy modules → `src/_legacy/`)
 - **Real OAK-D Lite hardware path** — `depth_camera.py` driver + DepthAI SDK; deferred until simulation pipeline is fully wired
-- **`battery_model.py` drain math** — `tick()` divides `current * dt` by 3600 (yields Ah, not mAh) then subtracts from a mAh-denominated remaining capacity, so drain is 1000× too slow. Surfaced by Rig 5 relay testing; fix is a one-line `* 1000` but lives outside MINCO pivot scope.
+- ~~**`battery_model.py` drain math** — `tick()` divides `current * dt` by 3600 (yields Ah, not mAh) then subtracts from a mAh-denominated remaining capacity, so drain is 1000× too slow.~~ **Fixed 2026-05-16.**
 
 ### Pre-existing gaps
 

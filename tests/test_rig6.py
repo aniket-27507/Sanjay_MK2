@@ -18,6 +18,8 @@ from src.validation.rig6_disturbance import (
     run_benchmark,
     run_one_trial,
     scenario_to_models,
+    sweep_depth,
+    sweep_wind,
 )
 
 
@@ -143,3 +145,38 @@ class TestBenchmark:
                 payload = json.load(f)
             assert "runs" in payload and "summary" in payload
             assert any("scenario=calm" in k for k in payload["summary"])
+
+
+class TestSweep:
+    def test_wind_sweep_returns_a_safe_limit(self, fast_config: Rig6Config) -> None:
+        # at low wind we should always be safe; very narrow sweep keeps it fast
+        safe_limit, mc = sweep_wind(
+            wind_speeds_ms=[0.0, 1.0, 2.0],
+            runs_per_step=1,
+            config=fast_config,
+            failure_rate_threshold=0.5,
+            verbose=False,
+        )
+        # at least one of the low-wind speeds must qualify as safe
+        assert np.isfinite(safe_limit)
+        # every step recorded
+        assert len(mc.runs) == 3
+        # all rows carry the wind_speed label
+        speeds = sorted({r["wind_speed_ms"] for r in mc.runs})
+        assert speeds == [0.0, 1.0, 2.0]
+
+    def test_depth_sweep_finds_a_threshold(self, fast_config: Rig6Config) -> None:
+        # 10 m depth must succeed; 0.1 m forces failure
+        threshold, mc = sweep_depth(
+            depth_ranges_m=[0.1, 10.0],
+            runs_per_step=1,
+            config=fast_config,
+            failure_rate_threshold=0.5,
+            verbose=False,
+        )
+        # first reliable range is 10.0 m (0.1 m fails the sensor immediately)
+        assert threshold == 10.0
+        assert len(mc.runs) == 2
+        # both ranges recorded
+        ranges = sorted({r["depth_range_m"] for r in mc.runs})
+        assert ranges == [0.1, 10.0]
