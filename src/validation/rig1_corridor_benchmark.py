@@ -308,6 +308,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--v-max", type=float, default=4.0, help="Velocity limit (m/s)"
     )
+    parser.add_argument(
+        "--plot",
+        type=str,
+        default="",
+        help="If set, write a PNG headline chart at this path next to the JSON.",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -343,6 +349,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     summary = summarise(mc.runs, label_keys=["density"])
     print("\n=== Summary ===")
     print(_format_summary(summary))
+
+    if args.plot:
+        from src.validation.plots import emit_plot
+        emit_plot("rig1", mc.runs, args.plot)
+        print(f"Plot written to {args.plot}")
     return 0
 
 

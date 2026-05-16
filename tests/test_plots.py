@@ -59,3 +59,36 @@ class TestPlots:
             P.plot_rig6,
             [{"scenario": "windy", "wind_speed_m_s": 5.0, "trajectory_tracking_error_m": 1.2}],
         )
+
+
+class TestEmitPlot:
+    """Verify `emit_plot` adapts each rig's native record schema."""
+
+    def test_rig2_native_records_work(self) -> None:
+        # rig2 emits t_replan_mean_ms; emit_plot must rename it
+        native = [
+            {"n_drones": 3, "t_replan_mean_ms": 5.0, "d_min_inter_m": 2.1},
+            {"n_drones": 6, "t_replan_mean_ms": 8.0, "d_min_inter_m": 1.7},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rig2.png")
+            P.emit_plot("rig2", native, path)
+            assert os.path.exists(path) and os.path.getsize(path) > 0
+
+    def test_rig6_native_records_work(self) -> None:
+        # rig6 emits wind_speed_max_observed_ms + tracking_error_mean_m
+        native = [
+            {
+                "scenario": "windy",
+                "wind_speed_max_observed_ms": 5.0,
+                "tracking_error_mean_m": 1.2,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rig6.png")
+            P.emit_plot("rig6", native, path)
+            assert os.path.exists(path) and os.path.getsize(path) > 0
+
+    def test_unknown_rig_id_raises(self) -> None:
+        with pytest.raises(ValueError):
+            P.emit_plot("rig7", [], "/tmp/nope.png")

@@ -12,6 +12,10 @@ Functions:
     plot_rig4(runs, out_png)  detect→inspect latency + coverage gap
     plot_rig5(runs, out_png)  coverage-pct timeline + battery handoff
     plot_rig6(runs, out_png)  tracking error vs wind tier
+
+    emit_plot(rig_id, runs, out_png)
+        dispatcher with field-name adapters so each rig CLI can pass its
+        own records verbatim. See `_adapt_records()`.
 """
 
 from __future__ import annotations
@@ -173,3 +177,64 @@ def plot_rig6(runs: Sequence[dict], out_png: str) -> None:
     fig.tight_layout()
     fig.savefig(out_png, dpi=120)
     plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Adapter + dispatcher
+# ---------------------------------------------------------------------------
+
+
+_FIELD_RENAMES = {
+    "rig2": {
+        # rig2 emits t_replan_mean_ms; the plot reads t_replan_swarm_ms
+        "t_replan_mean_ms": "t_replan_swarm_ms",
+    },
+    "rig3": {
+        # rig3 emits aggregates per run; the plot reads (mission_time_s,
+        # perimeter_deviation_m) pairs. We fan out: mission_time = sim
+        # duration; perimeter_deviation = perimeter_deviation_max_m.
+        "sim_duration_s": "mission_time_s",
+        "perimeter_deviation_max_m": "perimeter_deviation_m",
+    },
+    "rig6": {
+        "wind_speed_max_observed_ms": "wind_speed_m_s",
+        "tracking_error_mean_m": "trajectory_tracking_error_m",
+    },
+}
+
+
+def _adapt_records(rig_id: str, runs: Sequence[dict]) -> List[dict]:
+    """Apply field renames so each rig's native records work with the
+    matching `plot_rigN` function."""
+    renames = _FIELD_RENAMES.get(rig_id, {})
+    adapted: List[dict] = []
+    for r in runs:
+        new = dict(r)
+        for old, new_name in renames.items():
+            if old in new and new_name not in new:
+                new[new_name] = new[old]
+        adapted.append(new)
+    return adapted
+
+
+_PLOT_FNS = {
+    "rig1": plot_rig1,
+    "rig2": plot_rig2,
+    "rig3": plot_rig3,
+    "rig4": plot_rig4,
+    "rig5": plot_rig5,
+    "rig6": plot_rig6,
+}
+
+
+def emit_plot(rig_id: str, runs: Sequence[dict], out_png: str) -> None:
+    """Adapt `runs` for `rig_id` and call the matching `plot_rigN`.
+
+    The CLI hook in each rig points here.
+    """
+    if rig_id not in _PLOT_FNS:
+        raise ValueError(
+            f"unknown rig_id {rig_id!r}; expected one of {sorted(_PLOT_FNS)}"
+        )
+    adapted = _adapt_records(rig_id, runs)
+    _PLOT_FNS[rig_id](adapted, out_png)

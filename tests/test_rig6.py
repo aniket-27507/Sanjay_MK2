@@ -85,11 +85,19 @@ class TestSingleTrial:
         # failure threshold
         assert result["sensor_failed"] is False
 
-    def test_sensor_fail_trips_flag(self, fast_config: Rig6Config) -> None:
+    def test_sensor_fail_trips_flag_and_rtl(self, fast_config: Rig6Config) -> None:
         result = run_one_trial(seed=7, scenario="sensor_fail", config=fast_config)
         assert result["sensor_failed"] is True
-        # sensor_fail is a failure scenario by construction
-        assert result["success"] is False
+        # GPS-only RTL must have fired after persistent sensor death
+        assert result["rtl_triggered"] is True
+        assert np.isfinite(result["rtl_trigger_time_s"])
+
+    def test_calm_run_does_not_trigger_rtl(self, fast_config: Rig6Config) -> None:
+        result = run_one_trial(seed=7, scenario="calm", config=fast_config)
+        assert result["rtl_triggered"] is False
+        assert np.isnan(result["rtl_trigger_time_s"]) or np.isnan(
+            float(result["rtl_trigger_time_s"])
+        )
 
     def test_windy_exceeds_calm_disturbance(self, fast_config: Rig6Config) -> None:
         # average over a small seed set — single-seed noise can flip the

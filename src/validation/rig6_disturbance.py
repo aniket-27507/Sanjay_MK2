@@ -97,6 +97,10 @@ class Rig6Config:
     sensor_valid_threshold: float = 0.3   # below this → failed
     sensor_failure_max_range_m: float = 0.05  # treated as "camera dead"
 
+    # GPS-only RTL behaviour on persistent sensor failure
+    sensor_fail_persistence_ticks: int = 3   # how many bad ticks before RTL
+    rtl_speed_ms: float = 2.0                 # conservative cruise back to start
+
 
 # ---------------------------------------------------------------------------
 # Scenario presets
@@ -275,16 +279,42 @@ def run_one_trial(
     sensor_failed = False
     corridor_breached = False
 
+    # GPS-only RTL state machine — when sensor stays bad for N consecutive
+    # ticks, switch to a straight-line return to `start` at conservative
+    # `rtl_speed_ms`. The MINCO trajectory is abandoned for the rest of
+    # the run.
+    bad_streak = 0
+    rtl_triggered = False
+    rtl_trigger_t: float = float("nan")
+    rtl_completed = False
+
     for step in range(n_steps):
         t = min(step * config.dt, traj.total_time)
-        desired_pos = traj.evaluate(t, 0)
-        desired_vel = traj.evaluate(t, 1)
 
-        # PD tracker + wind acceleration
-        accel = (
-            config.k_p * (desired_pos - pos)
-            + config.k_d * (desired_vel - vel)
-        )
+        if not rtl_triggered:
+            # PD tracker on the MINCO trajectory + wind acceleration
+            desired_pos = traj.evaluate(t, 0)
+            desired_vel = traj.evaluate(t, 1)
+            accel = (
+                config.k_p * (desired_pos - pos)
+                + config.k_d * (desired_vel - vel)
+            )
+        else:
+            # GPS-only RTL: head straight for `start` at `rtl_speed_ms`
+            direction = start - pos
+            dist = float(np.linalg.norm(direction))
+            if dist < 0.3:
+                rtl_completed = True
+                desired_pos = start
+                desired_vel = np.zeros(3)
+            else:
+                desired_pos = pos + direction / max(dist, 1e-6) * 0.5
+                desired_vel = direction / max(dist, 1e-6) * config.rtl_speed_ms
+            accel = (
+                config.k_p * (desired_pos - pos)
+                + config.k_d * (desired_vel - vel)
+            )
+
         v3_pos = Vector3(x=float(pos[0]), y=float(pos[1]), z=float(pos[2]))
         v3_vel = Vector3(x=float(vel[0]), y=float(vel[1]), z=float(vel[2]))
         w_acc_v3 = wind.compute_acceleration(v3_pos, v3_vel, config.dt)
@@ -295,13 +325,16 @@ def run_one_trial(
         vel = vel + accel * config.dt
         pos = pos + vel * config.dt
 
-        # metrics
-        track_errs.append(float(np.linalg.norm(pos - desired_pos)))
-        clr = _signed_corridor_clearance(pos, poly)
-        clearances.append(clr)
-        if clr < 0.0:
-            corridor_breached = True
-        wind_speeds.append(float(np.linalg.norm(w_acc) * config.drone_mass_kg))  # ≈ wind force / m
+        # metrics — only count corridor clearance against the original
+        # plan; once we're in RTL, corridor breach is expected and not a
+        # failure of the disturbance pipeline.
+        if not rtl_triggered:
+            track_errs.append(float(np.linalg.norm(pos - desired_pos)))
+            clr = _signed_corridor_clearance(pos, poly)
+            clearances.append(clr)
+            if clr < 0.0:
+                corridor_breached = True
+        wind_speeds.append(float(np.linalg.norm(w_acc) * config.drone_mass_kg))
 
         # depth sensor
         true_depth = _ground_truth_depth_field(
@@ -312,6 +345,15 @@ def run_one_trial(
         depth_valid_fracs.append(vf)
         if vf < config.sensor_valid_threshold:
             sensor_failed = True
+            bad_streak += 1
+            if (
+                not rtl_triggered
+                and bad_streak >= config.sensor_fail_persistence_ticks
+            ):
+                rtl_triggered = True
+                rtl_trigger_t = float(t)
+        else:
+            bad_streak = 0
 
     track_arr = np.asarray(track_errs)
     clr_arr = np.asarray(clearances)
@@ -328,11 +370,23 @@ def run_one_trial(
         "depth_valid_fraction_mean": float(vf_arr.mean()) if vf_arr.size else 0.0,
         "depth_valid_fraction_min": float(vf_arr.min()) if vf_arr.size else 0.0,
         "sensor_failed": bool(sensor_failed),
+        "rtl_triggered": bool(rtl_triggered),
+        "rtl_trigger_time_s": rtl_trigger_t,
+        "rtl_completed": bool(rtl_completed),
         "wind_speed_max_observed_ms": (
             float(max(wind_speeds)) if wind_speeds else 0.0
         ),
         "trajectory_time_s": float(traj.total_time),
-        "success": (not corridor_breached) and (not sensor_failed),
+        # success: clean run is no breach and no sensor failure; a sensor
+        # failure that triggers a *completed* RTL is treated as a safe
+        # graceful degradation, not a pipeline failure.
+        "success": (
+            (not corridor_breached) and
+            (
+                (not sensor_failed)
+                or (rtl_triggered and rtl_completed)
+            )
+        ),
     }
     return result
 
@@ -571,6 +625,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=0.5,
         help="Failure-rate threshold for the sweep verdicts (default 0.5).",
     )
+    parser.add_argument(
+        "--plot",
+        type=str,
+        default="",
+        help="If set, write a PNG headline chart at this path.",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -628,6 +688,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 default=str,
             )
         print(f"\nResults written to {args.output}")
+
+        if args.plot:
+            from src.validation.plots import emit_plot
+            emit_plot("rig6", all_runs, args.plot)
+            print(f"Plot written to {args.plot}")
         return 0
 
     scenarios = [s.strip() for s in args.scenarios.split(",") if s.strip()]
@@ -654,6 +719,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     summary = summarise(mc.runs, label_keys=["scenario"])
     print("\n=== Summary ===")
     print(_format_summary(summary))
+
+    if args.plot:
+        from src.validation.plots import emit_plot
+        emit_plot("rig6", mc.runs, args.plot)
+        print(f"Plot written to {args.plot}")
     return 0
 
 

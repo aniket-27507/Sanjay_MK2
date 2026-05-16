@@ -701,6 +701,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="In stress mode, assert per-agent replan time stays within 2× "
         "from min(drones) to max(drones) and exit non-zero on failure.",
     )
+    parser.add_argument(
+        "--plot",
+        type=str,
+        default="",
+        help="If set, write a PNG headline chart at this path.",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -769,6 +775,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             else:
                 print("  FAIL (exceeded 2× target)")
                 return 1
+
+        if args.plot:
+            from src.validation.plots import emit_plot
+            emit_plot("rig2", mc.runs, args.plot)
+            print(f"Plot written to {args.plot}")
         return 0
 
     print(
@@ -792,6 +803,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     summary = summarise(mc.runs, label_keys=["n_drones", "scenario"])
     print("\n=== Summary ===")
     print(_format_summary(summary))
+
+    if args.plot:
+        from src.validation.plots import emit_plot
+        emit_plot("rig2", mc.runs, args.plot)
+        print(f"Plot written to {args.plot}")
     return 0
 
 

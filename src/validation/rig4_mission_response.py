@@ -512,6 +512,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--inspect-dwell", type=float, default=10.0)
     parser.add_argument("--inspect-speed", type=float, default=5.0)
     parser.add_argument("--output", type=str, default="rig4_results.json")
+    parser.add_argument(
+        "--plot",
+        type=str,
+        default="",
+        help="If set, write a PNG headline chart at this path.",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -550,6 +556,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     summary = summarise(mc.runs, label_keys=["threat_x", "threat_y", "threat_z"])
     print("\n=== Summary ===")
     print(_format_summary(summary))
+
+    if args.plot:
+        from src.validation.plots import emit_plot
+        emit_plot("rig4", mc.runs, args.plot)
+        print(f"Plot written to {args.plot}")
     return 0
 
 

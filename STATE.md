@@ -1,6 +1,6 @@
 # Project State
 
-**Last updated:** 2026-05-16 (**MINCO pivot Phases 0–4 validation rigs hardened** — Rigs 1–6 with full comms-stress matrix, CBBA threat bid, wind/depth sweeps, and Phase-1 exit gate; battery_model drain bug fixed; 208 tests pass, 1 opt-in exit gate skipped)
+**Last updated:** 2026-05-16 (**MINCO pivot Phases 0–4 validation rigs hardened to spec** — Rigs 1–6 with full comms-stress matrix, CBBA threat bid, wind/depth sweeps, GPS-only RTL on sensor failure, plot hooks on every rig, and Phase-1 exit gate; battery_model drain bug fixed; **212 tests pass, 1 opt-in exit gate skipped**)
 
 ## How to use this file (Claude / Codex / GPT)
 
@@ -91,7 +91,9 @@ Verified against the canonical minimum-snap polynomial; 72 unit tests across the
 - `src/validation/rig5_endurance.py` — 30-min endurance with battery+motor drain, scenarios normal/relay/drone_down/graceful_degrade/cascading_failure
 - `src/validation/rig6_disturbance.py` — wind (calm/breezy/windy) + fog/rain/sensor_fail over a PD-tracked MINCO trajectory; corridor breach + sensor-failure flags
 
-**Test count:** **208 tests passing, 1 opt-in exit gate skipped** across Phase 0 planning core + Phase 0.5 analytical gradients + Phases 1–4 rigs (Rig 1: 5 + 1 opt-in, Rig 2: 11 inc. stress matrix + scaling-flatness, Rig 3: 9 inc. 60s perimeter gate, Rig 4: 14 inc. full CBBA threat bid, Rig 5: 10 inc. real-drain relay, Rig 6: 11 inc. wind/depth sweep mode).
+**Test count:** **212 tests passing, 1 opt-in exit gate skipped** across Phase 0 planning core + Phase 0.5 analytical gradients + Phases 1–4 rigs (Rig 1: 5 + 1 opt-in, Rig 2: 11 inc. stress matrix + scaling-flatness, Rig 3: 9 inc. 60s perimeter gate, Rig 4: 14 inc. full CBBA threat bid, Rig 5: 10 inc. real-drain relay, Rig 6: 12 inc. wind/depth sweep + GPS-only RTL, plots: 9 inc. emit_plot dispatcher).
+
+**Plots:** Every rig CLI has a `--plot <path>` flag that emits a headline PNG via `src.validation.plots.emit_plot()`. A field-name adapter in `_FIELD_RENAMES` keeps `plots.py` stable while accepting each rig's native record schema.
 
 ### Legacy stack (being replaced — see `docs/MINCO_PIVOT.md` §4.1)
 

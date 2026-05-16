@@ -276,6 +276,7 @@ def run_one_trial(
 
     n_steps = int(np.ceil(config.sim_duration_s / config.dt))
     coverage_timeline: List[float] = []
+    coverage_timeline_with_t: List[Tuple[float, float]] = []
     coverage_gap_total = 0.0
     handoff_time = float("nan")
     redistribution_time = float("nan")
@@ -338,6 +339,7 @@ def run_one_trial(
                 active_for_coverage.append((d.sector_id, d.last_position))
         cov_pct = _coverage_pct(active_for_coverage, n_sectors, config)
         coverage_timeline.append(cov_pct)
+        coverage_timeline_with_t.append((float(t), float(cov_pct)))
         if cov_pct < 100.0 - 1e-6:
             coverage_gap_total += config.dt
 
@@ -366,6 +368,7 @@ def run_one_trial(
         "n_standby": config.n_standby,
         "mission_duration_s": config.sim_duration_s,
         "coverage_pct_timeline_mean": coverage_mean,
+        "coverage_pct_timeline": coverage_timeline_with_t,
         "coverage_loss_at_end_pct": 100.0 - coverage_end,
         "coverage_gap_max_s": coverage_gap_total,
         "battery_consumed_wh": energy_total,
@@ -457,6 +460,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Comma-separated seconds; drone_i fails at failures[i]",
     )
     parser.add_argument("--output", type=str, default="rig5_results.json")
+    parser.add_argument(
+        "--plot",
+        type=str,
+        default="",
+        help="If set, write a PNG headline chart at this path.",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -496,6 +505,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     summary = summarise(mc.runs, label_keys=["scenario"])
     print("\n=== Summary ===")
     print(_format_summary(summary))
+
+    if args.plot:
+        from src.validation.plots import emit_plot
+        emit_plot("rig5", mc.runs, args.plot)
+        print(f"Plot written to {args.plot}")
     return 0
 
 
