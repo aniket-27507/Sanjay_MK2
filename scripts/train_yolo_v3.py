@@ -26,6 +26,8 @@ v3 changes vs v2:
     3. Longer training (150 epochs, cosine LR) with `patience=30`.
     4. Higher mixup (0.15, was 0.10) — encourages cross-class invariance.
     5. Aggressive small-target augmentation: `copy_paste=0.3`, `erasing=0.5`.
+    6. Mid-epoch checkpoint callback (`--save-every-batches N`, default 200)
+       protects against Colab disconnects during the slow first epoch.
 
 Usage:
     # Train from scratch with the rebuilt dataset:
@@ -91,6 +93,13 @@ def parse_args():
     p.add_argument("--device", default="0",
                    help="CUDA device id (or 'cpu')")
     p.add_argument("--workers", type=int, default=8)
+    p.add_argument(
+        "--save-every-batches", type=int, default=200,
+        help="Save last.pt every N training batches in addition to end-of-epoch. "
+             "Protects against Colab disconnects mid-epoch 1 (where the default "
+             "end-of-epoch save means losing everything on disconnect). Default "
+             "200 = ~30s of progress at risk on a T4. Set 0 to disable.",
+    )
     return p.parse_args()
 
 
@@ -103,6 +112,41 @@ def main():
     starting_weights = args.resume if args.resume else args.model
     print(f"Loading starting weights: {starting_weights}")
     model = YOLO(starting_weights)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Mid-epoch checkpoint callback — disconnect protection.
+    #
+    # Ultralytics natively saves last.pt only at end of each epoch. On
+    # Colab a disconnect during epoch 1 (often 10-15 min on a T4) wipes
+    # all progress because last.pt was never written.
+    #
+    # This callback writes last.pt every N batches via trainer.save_model().
+    # On resume, Ultralytics treats the checkpoint as "end of the current
+    # epoch" and starts the next one — we skip the remainder of the
+    # interrupted epoch but keep all gradient updates done so far.
+    # ──────────────────────────────────────────────────────────────────
+    if args.save_every_batches > 0:
+        save_n = args.save_every_batches
+
+        def _mid_epoch_save(trainer):
+            step = getattr(trainer, "global_step", None)
+            if step is None or step <= 0:
+                return
+            if step % save_n != 0:
+                return
+            try:
+                trainer.save_model()
+                print(
+                    f"[mid-epoch save] step={step} epoch={trainer.epoch} "
+                    f"-> {trainer.save_dir}/weights/last.pt",
+                    flush=True,
+                )
+            except Exception as e:
+                # Saving must NEVER crash training — log and continue.
+                print(f"[mid-epoch save] WARNING save failed: {e}", flush=True)
+
+        model.add_callback("on_train_batch_end", _mid_epoch_save)
+        print(f"Mid-epoch save callback registered: every {save_n} batches.")
 
     train_kwargs = dict(
         data=args.data,
