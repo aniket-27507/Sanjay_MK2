@@ -149,9 +149,19 @@ def plot_rig5(runs: Sequence[dict], out_png: str) -> None:
     ax1.set_ylabel("coverage (%)")
     ax1.set_title("Rig 5 — coverage timeline")
 
-    handoff = [r.get("relay_handoff_time_s") for r in runs if r.get("relay_handoff_time_s") is not None]
+    handoff = [
+        float(r.get("relay_handoff_time_s"))
+        for r in runs
+        if r.get("relay_handoff_time_s") is not None
+        and np.isfinite(float(r.get("relay_handoff_time_s")))
+    ]
     if handoff:
         ax2.hist(handoff, bins=15, color="#2ca02c")
+    else:
+        ax2.text(
+            0.5, 0.5, "no relay events", transform=ax2.transAxes,
+            ha="center", va="center", color="gray",
+        )
     ax2.set_xlabel("relay handoff (s)")
     ax2.set_ylabel("runs")
     ax2.set_title("Rig 5 — battery-relay handoff")

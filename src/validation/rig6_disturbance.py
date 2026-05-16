@@ -232,12 +232,26 @@ def _signed_corridor_clearance(p: np.ndarray, poly: Polytope) -> float:
 def _ground_truth_depth_field(
     pos: np.ndarray, goal: np.ndarray, n_pixels: int, rng: np.random.Generator
 ) -> np.ndarray:
-    """Synthesise a true depth array — distance to the goal forward face,
-    with mild per-pixel variation. Enough structure for the noise model
-    to produce a realistic valid-fraction.
+    """Synthesise a true depth array for the OAK-D Lite stereo camera.
+
+    Real-world outdoor depth scenes are dominated by **near-field
+    structure** (ground, walls, foliage at 0.5-8 m). Using "distance to
+    goal" would put every pixel at 30+ m, beyond *every* configured
+    scenario's max_range (10 m calm, 3 m fog, 0.05 m sensor_fail), so all
+    scenarios would falsely show vf≈0.
+
+    Mix a near-field band (most pixels, what the camera reliably sees)
+    with a far-field tail (a few pixels looking down the corridor toward
+    the goal). The reliable range against each scenario's max_range is
+    what makes calm pass and fog/sensor_fail fail.
     """
-    base = float(np.linalg.norm(goal - pos))
-    return np.clip(rng.normal(base, base * 0.05, size=n_pixels), 0.1, 30.0)
+    near = rng.uniform(0.5, 8.0, size=int(n_pixels * 0.8))
+    far_base = float(np.linalg.norm(goal - pos))
+    far = np.clip(
+        rng.normal(far_base, max(far_base * 0.05, 0.1), size=n_pixels - near.size),
+        0.5, 30.0,
+    )
+    return np.concatenate([near, far])
 
 
 def run_one_trial(
@@ -563,12 +577,28 @@ def run_benchmark(
 # ---------------------------------------------------------------------------
 
 
-def _format_summary(summary: Dict[str, dict]) -> str:
+def _format_summary(summary: Dict[str, dict], runs: Sequence[Dict] = ()) -> str:
+    """Render the summary. `runs` is the raw record list — needed because
+    `summarise()` filters bool fields out of its numeric aggregates, so
+    sensor_failed / rtl_triggered have to be tallied separately.
+    """
+    # group raw runs by the same group key summarise used (scenario label)
+    bool_tally: Dict[str, Dict[str, int]] = {}
+    for r in runs:
+        scen = r.get("scenario", "?")
+        group_key = f"scenario={scen}"
+        d = bool_tally.setdefault(group_key, {"n": 0, "sensor_failed": 0, "rtl": 0})
+        d["n"] += 1
+        if bool(r.get("sensor_failed")):
+            d["sensor_failed"] += 1
+        if bool(r.get("rtl_triggered")):
+            d["rtl"] += 1
+
     rows = []
     rows.append(
         f"{'group':28s}  {'runs':>5s}  {'succ%':>7s}  "
         f"{'track med':>10s}  {'clr_min min':>12s}  "
-        f"{'vf med':>8s}  {'sensor_fail%':>13s}"
+        f"{'vf med':>8s}  {'sensor_fail%':>13s}  {'rtl%':>6s}"
     )
     rows.append("-" * len(rows[0]))
     for group, agg in summary.items():
@@ -577,13 +607,12 @@ def _format_summary(summary: Dict[str, dict]) -> str:
         te = agg.get("tracking_error_mean_m", {}).get("median", float("nan"))
         clr = agg.get("corridor_clearance_min_m", {}).get("min", float("nan"))
         vf = agg.get("depth_valid_fraction_mean", {}).get("median", float("nan"))
-        # sensor_failed is a bool — its mean over runs = failure rate
-        sf_mean = 0.0
-        if "sensor_failed" in agg:
-            sf_mean = agg["sensor_failed"].get("mean", 0.0) * 100.0
+        tally = bool_tally.get(group, {"n": n, "sensor_failed": 0, "rtl": 0})
+        sf_pct = 100.0 * tally["sensor_failed"] / max(tally["n"], 1)
+        rtl_pct = 100.0 * tally["rtl"] / max(tally["n"], 1)
         rows.append(
             f"{group:28s}  {n:5d}  {sr:6.1f}%  "
-            f"{te:10.3f}  {clr:+12.3f}  {vf:8.3f}  {sf_mean:13.1f}"
+            f"{te:10.3f}  {clr:+12.3f}  {vf:8.3f}  {sf_pct:13.1f}  {rtl_pct:5.1f}"
         )
     return "\n".join(rows)
 
@@ -718,7 +747,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     summary = summarise(mc.runs, label_keys=["scenario"])
     print("\n=== Summary ===")
-    print(_format_summary(summary))
+    print(_format_summary(summary, mc.runs))
 
     if args.plot:
         from src.validation.plots import emit_plot
