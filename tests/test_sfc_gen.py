@@ -15,7 +15,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.single_drone.planning.sfc_gen import plan_path_rrt
+from src.single_drone.planning.sfc_gen import (
+    plan_path_rrt,
+    plan_path_rrt_connect,
+)
 from src.single_drone.planning.voxel_map import VoxelMap
 
 
@@ -196,3 +199,84 @@ class TestWallScenario:
         # the path should cross x = 10 m (the wall plane) — i.e. some point has x > 10
         xs = [p[0] for p in path]
         assert max(xs) > 10.0 and min(xs) < 10.0
+
+
+class TestRRTConnect:
+    """Tests for `plan_path_rrt_connect`.
+
+    The bidirectional planner has the same correctness contract as
+    `plan_path_rrt` — every waypoint in free space, every segment
+    collision-free, endpoints preserved.
+    """
+
+    def test_open_field_path(self) -> None:
+        m = _empty_map()
+        rng = np.random.default_rng(7)
+        start = np.array([2.0, 2.0, 2.0])
+        goal = np.array([18.0, 18.0, 2.0])
+        path = plan_path_rrt_connect(start, goal, m, timeout=2.0, rng=rng)
+        assert path, "RRT-Connect should find a path in open field"
+        assert np.allclose(path[0], start)
+        assert np.allclose(path[-1], goal)
+        # every interior waypoint in free space
+        for p in path:
+            assert m.query(p) == 0
+
+    def test_finds_window_through_wall(self) -> None:
+        m = _wall_map()
+        rng = np.random.default_rng(2024)
+        start = np.array([3.0, 7.0, 2.0])
+        goal = np.array([17.0, 7.0, 2.0])
+        path = plan_path_rrt_connect(start, goal, m, timeout=5.0, rng=rng)
+        assert path, "RRT-Connect should find the wall window"
+        xs = [p[0] for p in path]
+        assert max(xs) > 10.0 and min(xs) < 10.0
+
+    def test_blocked_start_returns_empty(self) -> None:
+        m = _empty_map()
+        m.set_occupied_voxel((4, 4, 4))   # blocks the start voxel
+        rng = np.random.default_rng(1)
+        start = np.array([2.0, 2.0, 2.0])
+        goal = np.array([10.0, 10.0, 2.0])
+        path = plan_path_rrt_connect(start, goal, m, timeout=1.0, rng=rng)
+        assert path == []
+
+    def test_typically_faster_than_single_tree_on_clutter(self) -> None:
+        # Build a moderately cluttered field — 30% obstacle voxels.
+        rng_obs = np.random.default_rng(13)
+        m = _empty_map(size=(30, 30, 6), voxel_size=0.5)
+        # carve start/goal cylinders so endpoints stay free
+        n_obstacles = int(0.30 * 30 * 30 * 6)
+        for _ in range(n_obstacles):
+            i, j, k = (
+                int(rng_obs.integers(0, 30)),
+                int(rng_obs.integers(0, 30)),
+                int(rng_obs.integers(0, 6)),
+            )
+            # keep a corridor at j around 15
+            if 13 <= j <= 16 and 2 <= k <= 4:
+                continue
+            m.set_occupied_voxel((i, j, k))
+        start = np.array([1.5, 7.5, 1.5])
+        goal = np.array([13.5, 7.5, 1.5])
+
+        import time as _time
+        rng_a = np.random.default_rng(11)
+        t0 = _time.perf_counter()
+        path_a = plan_path_rrt_connect(start, goal, m, timeout=3.0, rng=rng_a)
+        t_connect = _time.perf_counter() - t0
+
+        rng_b = np.random.default_rng(11)
+        t0 = _time.perf_counter()
+        path_b = plan_path_rrt(start, goal, m, timeout=3.0, rng=rng_b)
+        t_single = _time.perf_counter() - t0
+
+        # RRT-Connect should find a path within the budget
+        assert path_a, (
+            "RRT-Connect failed to find a path inside 3 s on a 30%-density "
+            "30×30×6 map with a clear corridor"
+        )
+        # The single-tree RRT may or may not find a path — that's the
+        # whole point. If both succeed, Connect should be no slower.
+        if path_b:
+            assert t_connect <= t_single * 1.5

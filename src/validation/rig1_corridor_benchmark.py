@@ -62,11 +62,16 @@ from src.single_drone.planning import (
     evaluate_trajectory_dynamics,
     gcopter_optimize,
     plan_path_rrt,
+    plan_path_rrt_connect,
     rotate_vector_by_quat,
     shortcut_path,
 )
 from src.validation.metrics import MetricsCollector, summarise
-from src.validation.obstacle_gen import clear_around, random_obstacle_field
+from src.validation.obstacle_gen import (
+    clear_around,
+    measured_density,
+    random_obstacle_field,
+)
 
 
 @dataclass
@@ -79,12 +84,80 @@ class Rig1Config:
     gravity: float = 9.81
     drag_coeffs: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     rrt_timeout_s: float = 5.0
+    rrt_step_size: Optional[float] = None    # None → planner default
+    rrt_planner: str = "rrt_connect"          # "rrt" | "rrt_connect"
     gcopter_maxiter: int = 80
     gcopter_n_quad: int = 12
     start: Tuple[float, float, float] = (2.0, 10.0, 2.0)
     goal: Tuple[float, float, float] = (18.0, 10.0, 2.0)
     clear_radius: float = 1.5
     leak_tolerance_m: float = 0.30  # max acceptable corridor leak for success
+
+    # The MINCO_PIVOT.md §5.2 density table refers to the obstacle fraction
+    # of the *dilated* voxel map (the planner's view), not raw obstacle
+    # placement. With drone_radius_voxels=1 a single placed obstacle
+    # becomes a 3×3×3 occupied block, so raw density 0.30 produces ~99 %
+    # post-dilation occupancy and no path exists. `density_is_post_dilation`
+    # toggles a bisection that picks the raw obstacle fraction to hit the
+    # requested *dilated* density. Set to False to use raw density directly
+    # (for legacy comparisons).
+    density_is_post_dilation: bool = True
+    density_bisect_tol: float = 0.02
+    density_bisect_max_iter: int = 8
+
+
+def _build_voxel_map_for_target_density(
+    rng: np.random.Generator,
+    target_density: float,
+    config: Rig1Config,
+    start: np.ndarray,
+    goal: np.ndarray,
+) -> Tuple[object, float]:
+    """Return a dilated VoxelMap whose post-dilation occupancy matches
+    `target_density` (within `config.density_bisect_tol`).
+
+    Bisects on the raw obstacle fraction passed to `random_obstacle_field`.
+    Each candidate map is built with the same rng state (cloned) so the
+    bisection itself is reproducible.
+    """
+    clear_zones = [
+        clear_around(start, config.clear_radius),
+        clear_around(goal, config.clear_radius),
+    ]
+    # Each random_obstacle_field call consumes rng. To make bisection
+    # behave like "we tried different raw densities on the same problem",
+    # snapshot the seed and rebuild a fresh rng each iteration.
+    snapshot_seed = int(rng.integers(1 << 31))
+
+    def _build(raw: float):
+        local_rng = np.random.default_rng(snapshot_seed)
+        m = random_obstacle_field(
+            local_rng,
+            size=config.map_size,
+            voxel_size=config.voxel_size,
+            density=raw,
+            clear_zones=clear_zones,
+        )
+        m.dilate(config.drone_radius_voxels)
+        return m, measured_density(m)
+
+    if not config.density_is_post_dilation or config.drone_radius_voxels <= 0:
+        m, achieved = _build(target_density)
+        return m, achieved
+
+    lo, hi = 0.0, min(1.0, target_density)
+    best_map, best_achieved = _build(hi)
+    for _ in range(config.density_bisect_max_iter):
+        if abs(best_achieved - target_density) <= config.density_bisect_tol:
+            break
+        if best_achieved > target_density:
+            hi = (lo + hi) / 2.0
+            best_map, best_achieved = _build(hi)
+        else:
+            lo = hi
+            hi = min(1.0, hi * 1.5 + 0.01)
+            best_map, best_achieved = _build(hi)
+    return best_map, best_achieved
 
 
 def run_one_trial(
@@ -103,17 +176,10 @@ def run_one_trial(
 
     # ---- 1. obstacle field
     t0 = time.perf_counter()
-    voxel_map = random_obstacle_field(
-        rng,
-        size=config.map_size,
-        voxel_size=config.voxel_size,
-        density=density,
-        clear_zones=[
-            clear_around(start, config.clear_radius),
-            clear_around(goal, config.clear_radius),
-        ],
+    voxel_map, achieved_density = _build_voxel_map_for_target_density(
+        rng, density, config, start, goal
     )
-    voxel_map.dilate(config.drone_radius_voxels)
+    result["achieved_dilated_density"] = achieved_density
     result["t_setup_ms"] = (time.perf_counter() - t0) * 1000.0
 
     if voxel_map.query(start) == 1 or voxel_map.query(goal) == 1:
@@ -122,9 +188,28 @@ def run_one_trial(
 
     # ---- 2. RRT
     t0 = time.perf_counter()
-    route = plan_path_rrt(
-        start, goal, voxel_map, timeout=config.rrt_timeout_s, rng=rng
-    )
+    if config.rrt_planner == "rrt_connect":
+        route = plan_path_rrt_connect(
+            start,
+            goal,
+            voxel_map,
+            timeout=config.rrt_timeout_s,
+            step_size=config.rrt_step_size,
+            rng=rng,
+        )
+    elif config.rrt_planner == "rrt":
+        route = plan_path_rrt(
+            start,
+            goal,
+            voxel_map,
+            timeout=config.rrt_timeout_s,
+            step_size=config.rrt_step_size,
+            rng=rng,
+        )
+    else:
+        raise ValueError(
+            f"unknown rrt_planner {config.rrt_planner!r}; choose 'rrt' or 'rrt_connect'"
+        )
     result["t_rrt_ms"] = (time.perf_counter() - t0) * 1000.0
     if not route:
         result["error"] = "rrt_failed"
@@ -309,6 +394,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--v-max", type=float, default=4.0, help="Velocity limit (m/s)"
     )
     parser.add_argument(
+        "--planner",
+        type=str,
+        default="rrt_connect",
+        choices=["rrt", "rrt_connect"],
+        help="Path planner (default: rrt_connect — much faster on clutter).",
+    )
+    parser.add_argument(
+        "--rrt-step-size",
+        type=float,
+        default=None,
+        help="RRT extension length in metres (default: planner-specific).",
+    )
+    parser.add_argument(
+        "--rrt-timeout",
+        type=float,
+        default=5.0,
+        help="RRT wall-clock budget (s).",
+    )
+    parser.add_argument(
         "--plot",
         type=str,
         default="",
@@ -328,6 +432,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         voxel_size=args.voxel_size,
         gcopter_maxiter=args.maxiter,
         v_max=args.v_max,
+        rrt_planner=args.planner,
+        rrt_step_size=args.rrt_step_size,
+        rrt_timeout_s=args.rrt_timeout,
     )
 
     print(

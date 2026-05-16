@@ -39,7 +39,11 @@ from src.single_drone.planning.minco import (
     Q_matrix,
     Trajectory,
 )
-from src.single_drone.planning.sfc_gen import plan_path_rrt, shortcut_path
+from src.single_drone.planning.sfc_gen import (
+    plan_path_rrt,
+    plan_path_rrt_connect,
+    shortcut_path,
+)
 from src.single_drone.planning.voxel_map import VoxelMap
 
 __all__ = [
@@ -56,6 +60,7 @@ __all__ = [
     "inflate_segment_polytope",
     "is_dynamically_feasible",
     "plan_path_rrt",
+    "plan_path_rrt_connect",
     "polytope_contains",
     "rotate_vector_by_quat",
     "rotation_matrix_to_quat",
