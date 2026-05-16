@@ -251,6 +251,7 @@ def run_one_trial(
     seed: int,
     scenario: str,
     config: Optional[Rig5Config] = None,
+    keep_record: bool = False,
 ) -> Dict[str, float]:
     if scenario not in SCENARIOS:
         raise ValueError(f"unknown scenario {scenario!r}")
@@ -273,6 +274,7 @@ def run_one_trial(
 
     drones = _build_drones(seed, config)
     n_sectors = config.n_active
+    n_total = len(drones)
 
     n_steps = int(np.ceil(config.sim_duration_s / config.dt))
     coverage_timeline: List[float] = []
@@ -282,6 +284,14 @@ def run_one_trial(
     redistribution_time = float("nan")
     first_failure_time = float("nan")
     failed_events: List[float] = []
+
+    viz_pos: Optional[List[List[List[float]]]] = None
+    viz_status: Optional[List[List[str]]] = None
+    viz_batt: Optional[List[List[float]]] = None
+    if keep_record:
+        viz_pos = [[] for _ in range(n_total)]
+        viz_status = [[] for _ in range(n_total)]
+        viz_batt = [[] for _ in range(n_total)]
 
     for step in range(n_steps):
         t = step * config.dt
@@ -353,6 +363,28 @@ def run_one_trial(
         ):
             redistribution_time = t - first_failure_time
 
+        # viz capture
+        if viz_pos is not None:
+            for i, d in enumerate(drones):
+                # For STANDBY drones, park them just outside the perimeter
+                # near sector 0. For FAILED ones, leave the last known
+                # position. For RETURNING, drift toward origin so the
+                # animation reads "going home".
+                if d.status == ACTIVE and d.sector_id >= 0:
+                    p = _sector_position(d.sector_id, n_sectors, t, config)
+                elif d.status == RETURNING:
+                    p = d.last_position * 0.95  # slow drift inward
+                elif d.status == STANDBY:
+                    p = np.array(
+                        [config.perimeter_radius * 1.2, 0.0, config.altitude]
+                    )
+                else:  # FAILED
+                    p = d.last_position
+                d.last_position = p if d.status != FAILED else d.last_position
+                viz_pos[i].append([float(p[0]), float(p[1]), float(p[2])])
+                viz_status[i].append(d.status)
+                viz_batt[i].append(float(d.battery.soc_pct))
+
     # aggregate metrics
     coverage_mean = float(np.mean(coverage_timeline)) if coverage_timeline else 0.0
     coverage_end = coverage_timeline[-1] if coverage_timeline else 0.0
@@ -378,6 +410,21 @@ def run_one_trial(
         "drones_alive_at_end": n_alive,
         "success": coverage_mean >= 60.0,   # weak but useful sanity gate
     }
+    if viz_pos is not None:
+        result["viz_record"] = {
+            "scenario": scenario,
+            "n_active": config.n_active,
+            "n_standby": config.n_standby,
+            "perimeter_radius": float(config.perimeter_radius),
+            "altitude": float(config.altitude),
+            "sample_dt_s": float(config.dt),
+            "positions_per_drone": viz_pos,
+            "status_per_drone": viz_status,
+            "battery_per_drone": viz_batt,
+            "coverage_timeline": coverage_timeline_with_t,
+            "coverage_pct_timeline_mean": coverage_mean,
+            "coverage_gap_max_s": coverage_gap_total,
+        }
     return result
 
 
@@ -466,6 +513,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="",
         help="If set, write a PNG headline chart at this path.",
     )
+    parser.add_argument(
+        "--viz",
+        type=str,
+        default="",
+        help="If set, run one extra detailed trial of --viz-scenario and "
+        "write an interactive Plotly HTML there.",
+    )
+    parser.add_argument(
+        "--viz-scenario", type=str, default="drone_down",
+        help="Scenario for the viz trial (default: drone_down).",
+    )
+    parser.add_argument("--viz-seed", type=int, default=5151)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -510,6 +569,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         from src.validation.plots import emit_plot
         emit_plot("rig5", mc.runs, args.plot)
         print(f"Plot written to {args.plot}")
+
+    if args.viz:
+        from src.validation.visualize import emit_viz
+        row = run_one_trial(
+            args.viz_seed, args.viz_scenario, config, keep_record=True,
+        )
+        record = row.get("viz_record")
+        if record is None:
+            print("Viz trial produced no record", file=sys.stderr)
+        else:
+            emit_viz("rig5", record, args.viz)
+            print(f"Viz written to {args.viz}")
     return 0
 
 

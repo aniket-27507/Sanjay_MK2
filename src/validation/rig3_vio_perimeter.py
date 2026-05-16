@@ -209,12 +209,27 @@ def run_one_trial(
     n_drones: int,
     correction_enabled: bool,
     config: Optional[Rig3Config] = None,
+    keep_record: bool = False,
 ) -> Dict[str, float]:
     if config is None:
         config = Rig3Config()
     if n_drones < 1:
         raise ValueError("n_drones must be >= 1")
     rng = np.random.default_rng(seed)
+    viz: Optional[Dict] = None
+    truth_track: Optional[List[List[List[float]]]] = None
+    est_track: Optional[List[List[List[float]]]] = None
+    if keep_record:
+        viz = {
+            "n_drones": n_drones,
+            "correction": "on" if correction_enabled else "off",
+            "perimeter_radius": float(config.perimeter_radius),
+            "altitude": float(config.altitude),
+            "perimeter_tolerance_m": float(config.perimeter_tolerance_m),
+            "sample_dt_s": float(config.dt),
+        }
+        truth_track = [[] for _ in range(n_drones)]
+        est_track = [[] for _ in range(n_drones)]
 
     drift_cfg = _drone_drift_config(config)
     drones: List[DroneState] = []
@@ -292,6 +307,12 @@ def run_one_trial(
             if tick_min < min_inter_drone:
                 min_inter_drone = tick_min
 
+        # viz: keep XY-only tracks (top-down view)
+        if truth_track is not None and est_track is not None:
+            for i, d in enumerate(drones):
+                truth_track[i].append([float(d.truth[0]), float(d.truth[1])])
+                est_track[i].append([float(d.estimated[0]), float(d.estimated[1])])
+
     # ---- aggregate per-trial metrics
     drift_max = max((d.drift_max for d in drones), default=0.0)
     drift_mean = float(
@@ -325,6 +346,12 @@ def run_one_trial(
         "drift_rate_multiplier": config.drift_rate_multiplier,
         "success": bool(np.isnan(failure_time)),
     }
+    if viz is not None and truth_track is not None and est_track is not None:
+        viz["truth_per_drone"] = truth_track
+        viz["estimated_per_drone"] = est_track
+        viz["drift_magnitude_max_m"] = drift_max
+        viz["perimeter_deviation_max_m"] = perim_max
+        result["viz_record"] = viz
     return result
 
 
@@ -419,6 +446,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="",
         help="If set, write a PNG headline chart at this path.",
     )
+    parser.add_argument(
+        "--viz",
+        type=str,
+        default="",
+        help="If set, run one extra detailed trial (correction ON, "
+        "drones=--viz-drones) and write an interactive Plotly HTML there.",
+    )
+    parser.add_argument("--viz-drones", type=int, default=3)
+    parser.add_argument("--viz-seed", type=int, default=4242)
+    parser.add_argument(
+        "--viz-correction", type=str, default="on", choices=["on", "off"],
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -457,6 +496,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         from src.validation.plots import emit_plot
         emit_plot("rig3", mc.runs, args.plot)
         print(f"Plot written to {args.plot}")
+
+    if args.viz:
+        from src.validation.visualize import emit_viz
+        row = run_one_trial(
+            args.viz_seed, args.viz_drones,
+            correction_enabled=(args.viz_correction == "on"),
+            config=config, keep_record=True,
+        )
+        record = row.get("viz_record")
+        if record is None:
+            print("Viz trial produced no record", file=sys.stderr)
+        else:
+            emit_viz("rig3", record, args.viz)
+            print(f"Viz written to {args.viz}")
     return 0
 
 

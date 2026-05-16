@@ -411,6 +411,7 @@ def run_one_trial(
     n_drones: int,
     scenario: str,
     config: Optional[Rig2Config] = None,
+    keep_record: bool = False,
 ) -> Dict[str, float]:
     if config is None:
         config = Rig2Config()
@@ -422,6 +423,15 @@ def run_one_trial(
         "scenario": scenario,
         "success": False,
     }
+    viz: Optional[Dict] = (
+        {
+            "n_drones": n_drones,
+            "scenario": scenario,
+            "sample_dt_s": float(config.sample_dt_s),
+            "near_miss_radius_m": float(config.near_miss_radius),
+        }
+        if keep_record else None
+    )
 
     # ---- 1. endpoints
     try:
@@ -429,6 +439,10 @@ def run_one_trial(
     except ValueError as e:
         result["error"] = f"scenario:{e}"
         return result
+    if viz is not None:
+        viz["endpoints"] = [
+            {"start": s.tolist(), "goal": g.tolist()} for s, g in endpoints
+        ]
 
     # ---- 2. channel + per-drone setup
     channel = BroadcastChannel(
@@ -521,6 +535,15 @@ def run_one_trial(
         }
     )
     result["success"] = result["collisions"] == 0
+
+    if viz is not None:
+        # `positions` is shape (N, M, 3) — sampled at sample_dt over the
+        # union-trajectory horizon. Convert to JSON-able lists.
+        viz["positions_per_drone"] = positions.tolist()
+        viz["d_min_inter_m"] = result.get("d_min_inter_m", float("nan"))
+        viz["collisions"] = int(result.get("collisions", 0))
+        result["viz_record"] = viz
+
     return result
 
 
@@ -746,6 +769,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="",
         help="If set, write a PNG headline chart at this path.",
     )
+    parser.add_argument(
+        "--viz",
+        type=str,
+        default="",
+        help="If set, run one extra detailed trial at --viz-drones and write "
+        "an interactive Plotly HTML there.",
+    )
+    parser.add_argument("--viz-drones", type=int, default=3,
+                        help="Drone count for the viz trial (default: 3).")
+    parser.add_argument("--viz-seed", type=int, default=2024,
+                        help="Seed for the viz trial (default: 2024).")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -847,6 +881,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         from src.validation.plots import emit_plot
         emit_plot("rig2", mc.runs, args.plot)
         print(f"Plot written to {args.plot}")
+
+    if args.viz:
+        from src.validation.visualize import emit_viz
+        row = run_one_trial(
+            args.viz_seed, args.viz_drones, args.scenario, config,
+            keep_record=True,
+        )
+        record = row.get("viz_record")
+        if record is None:
+            print(
+                f"Viz trial failed (error={row.get('error', '?')})",
+                file=sys.stderr,
+            )
+        else:
+            emit_viz("rig2", record, args.viz)
+            print(f"Viz written to {args.viz}")
     return 0
 
 

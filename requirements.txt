@@ -11,6 +11,7 @@ numpy
 scipy
 PyYAML
 matplotlib
+plotly  # interactive HTML visualizations for the validation rigs
 transforms3d
 
 # Flight control and MAVLink (optional for Isaac Sim)

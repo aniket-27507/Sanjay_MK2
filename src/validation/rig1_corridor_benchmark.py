@@ -164,12 +164,22 @@ def run_one_trial(
     seed: int,
     density: float,
     config: Optional[Rig1Config] = None,
+    keep_record: bool = False,
 ) -> Dict[str, float]:
-    """Execute one full RRT → FIRI → MINCO → flatness pass and return metrics."""
+    """Execute one full RRT → FIRI → MINCO → flatness pass and return metrics.
+
+    When `keep_record=True`, `result["viz_record"]` carries the data the
+    Plotly visualiser needs (obstacles, RRT route, polytope AABBs,
+    trajectory samples).
+    """
     if config is None:
         config = Rig1Config()
     rng = np.random.default_rng(seed)
     result: Dict[str, float] = {"seed": seed, "density": density, "success": False}
+    viz: Optional[Dict] = (
+        {"density": density, "seed": seed, "start": None, "goal": None}
+        if keep_record else None
+    )
 
     start = np.asarray(config.start, dtype=np.float64)
     goal = np.asarray(config.goal, dtype=np.float64)
@@ -181,6 +191,24 @@ def run_one_trial(
     )
     result["achieved_dilated_density"] = achieved_density
     result["t_setup_ms"] = (time.perf_counter() - t0) * 1000.0
+
+    if viz is not None:
+        viz["start"] = start.tolist()
+        viz["goal"] = goal.tolist()
+        viz["achieved_dilated_density"] = float(achieved_density)
+        # surface voxels for the obstacle scatter
+        surf = voxel_map.get_surface_points()
+        if surf is not None and len(surf) > 0:
+            arr = np.asarray(surf, dtype=np.float64)
+            # cap point cloud size so HTML stays light
+            if arr.shape[0] > 4000:
+                idx = np.random.default_rng(seed).choice(
+                    arr.shape[0], size=4000, replace=False
+                )
+                arr = arr[idx]
+            viz["obstacle_points"] = arr.tolist()
+        else:
+            viz["obstacle_points"] = []
 
     if voxel_map.query(start) == 1 or voxel_map.query(goal) == 1:
         result["error"] = "endpoint_blocked_after_dilation"
@@ -214,8 +242,14 @@ def run_one_trial(
     if not route:
         result["error"] = "rrt_failed"
         result["t_total_ms"] = result["t_rrt_ms"]
+        if viz is not None:
+            result["viz_record"] = viz
         return result
+    if viz is not None:
+        viz["rrt_route"] = [list(map(float, p)) for p in route]
     route = shortcut_path(route, voxel_map)
+    if viz is not None:
+        viz["shortcut_route"] = [list(map(float, p)) for p in route]
     result["n_waypoints"] = len(route)
 
     # ---- 3. FIRI corridors
@@ -223,6 +257,23 @@ def run_one_trial(
     t0 = time.perf_counter()
     polytopes = convex_cover(route, surface, voxel_map.world_bounds)
     result["t_firi_ms"] = (time.perf_counter() - t0) * 1000.0
+
+    if viz is not None:
+        # AABB of each polytope: from the half-space inequalities A x <= b
+        # the smallest enclosing axis-aligned box. We extract by solving
+        # min/max on each axis subject to A x <= b. Fast approximation:
+        # use the convex_cover seed segment plus a uniform margin of
+        # ~half the diagonal of the bounding box of the polytope's vertices.
+        # We just bound by the segment endpoints + a 2m halo here for
+        # visualization purposes.
+        boxes = []
+        for k, poly in enumerate(polytopes):
+            seg_lo = np.asarray(route[k], dtype=np.float64)
+            seg_hi = np.asarray(route[k + 1], dtype=np.float64)
+            lo = np.minimum(seg_lo, seg_hi) - 1.5
+            hi = np.maximum(seg_lo, seg_hi) + 1.5
+            boxes.append({"min": lo.tolist(), "max": hi.tolist()})
+        viz["polytope_boxes"] = boxes
 
     # ---- 4. MINCO + L-BFGS
     durations = [
@@ -301,6 +352,25 @@ def run_one_trial(
     result["t_total_ms"] = (
         result["t_rrt_ms"] + result["t_firi_ms"] + result["t_minco_ms"]
     )
+
+    if viz is not None:
+        n_viz_samples = 120
+        ts_viz = np.linspace(0.0, traj.total_time, n_viz_samples)
+        samples = []
+        for t in ts_viz:
+            p = traj.evaluate(t, 0)
+            v = traj.evaluate(t, 1)
+            samples.append(
+                {
+                    "t": float(t),
+                    "p": [float(p[0]), float(p[1]), float(p[2])],
+                    "v": float(np.linalg.norm(v)),
+                }
+            )
+        viz["trajectory_samples"] = samples
+        viz["success"] = bool(result["success"])
+        result["viz_record"] = viz
+
     return result
 
 
@@ -418,6 +488,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="",
         help="If set, write a PNG headline chart at this path next to the JSON.",
     )
+    parser.add_argument(
+        "--viz",
+        type=str,
+        default="",
+        help="If set, run one extra detailed trial and write an interactive "
+        "Plotly HTML at this path. Uses --viz-density (default 0.30) and "
+        "--viz-seed (default 12345).",
+    )
+    parser.add_argument(
+        "--viz-density", type=float, default=0.30,
+        help="Density to use for the viz trial (default: 0.30).",
+    )
+    parser.add_argument(
+        "--viz-seed", type=int, default=12345,
+        help="Seed to use for the viz trial (default: 12345).",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -461,6 +547,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         from src.validation.plots import emit_plot
         emit_plot("rig1", mc.runs, args.plot)
         print(f"Plot written to {args.plot}")
+
+    if args.viz:
+        from src.validation.visualize import emit_viz
+        row = run_one_trial(
+            args.viz_seed, args.viz_density, config, keep_record=True,
+        )
+        record = row.get("viz_record")
+        if record is None:
+            print(
+                f"Viz trial failed (no record produced; error="
+                f"{row.get('error', '?')})",
+                file=sys.stderr,
+            )
+        else:
+            emit_viz("rig1", record, args.viz)
+            print(f"Viz written to {args.viz}")
     return 0
 
 

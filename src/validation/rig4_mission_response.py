@@ -313,6 +313,7 @@ def _coverage_pct(
 def run_one_trial(
     seed: int,
     config: Optional[Rig4Config] = None,
+    keep_record: bool = False,
 ) -> Dict[str, float]:
     if config is None:
         config = Rig4Config()
@@ -320,6 +321,18 @@ def run_one_trial(
     n = config.n_drones
     if n < 2:
         raise ValueError("n_drones must be >= 2")
+    viz: Optional[Dict] = None
+    pos_tracks: Optional[List[List[List[float]]]] = None
+    if keep_record:
+        viz = {
+            "n_drones": n,
+            "perimeter_radius": float(config.perimeter_radius),
+            "altitude": float(config.altitude),
+            "threat_position": list(config.threat_position),
+            "threat_time_s": float(config.threat_time_s),
+            "sample_dt_s": float(config.dt),
+        }
+        pos_tracks = [[] for _ in range(n)]
 
     threat = np.asarray(config.threat_position, dtype=np.float64)
     n_steps = int(np.ceil(config.sim_duration_s / config.dt))
@@ -404,6 +417,10 @@ def run_one_trial(
             if cov_pct < 100.0 - 1e-6:
                 t_coverage_gap_s += config.dt
 
+        if pos_tracks is not None:
+            for i, p in enumerate(positions):
+                pos_tracks[i].append([float(p[0]), float(p[1]), float(p[2])])
+
     inspector_arrival_s = (
         plan.t_arrival - plan.t_break if plan is not None else float("nan")
     )
@@ -428,6 +445,14 @@ def run_one_trial(
             plan is not None and t_regroup_s <= config.sim_duration_s - config.threat_time_s
         ),
     }
+    if viz is not None and pos_tracks is not None:
+        viz["positions_per_drone"] = pos_tracks
+        viz["inspector_id"] = (
+            int(plan.drone_id) if plan is not None else -1
+        )
+        viz["t_detect_to_replan_ms"] = result["t_detect_to_replan_ms"]
+        viz["coverage_pct_during"] = result["coverage_pct_during"]
+        result["viz_record"] = viz
     return result
 
 
@@ -518,6 +543,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="",
         help="If set, write a PNG headline chart at this path.",
     )
+    parser.add_argument(
+        "--viz",
+        type=str,
+        default="",
+        help="If set, run one detailed trial at --viz-threat and write "
+        "an interactive Plotly HTML there.",
+    )
+    parser.add_argument(
+        "--viz-threat", type=str, default="0,0,5",
+        help="Threat position x,y,z for the viz trial (default 0,0,5).",
+    )
+    parser.add_argument("--viz-seed", type=int, default=4242)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -561,6 +598,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         from src.validation.plots import emit_plot
         emit_plot("rig4", mc.runs, args.plot)
         print(f"Plot written to {args.plot}")
+
+    if args.viz:
+        from src.validation.visualize import emit_viz
+        viz_threat = tuple(float(x) for x in args.viz_threat.split(","))
+        viz_cfg = Rig4Config(**{**config.__dict__, "threat_position": viz_threat})
+        row = run_one_trial(args.viz_seed, viz_cfg, keep_record=True)
+        record = row.get("viz_record")
+        if record is None:
+            print("Viz trial produced no record", file=sys.stderr)
+        else:
+            emit_viz("rig4", record, args.viz)
+            print(f"Viz written to {args.viz}")
     return 0
 
 

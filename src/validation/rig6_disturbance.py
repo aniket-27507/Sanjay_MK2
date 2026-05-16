@@ -261,6 +261,7 @@ def run_one_trial(
     wind_cfg_override: Optional[WindConfig] = None,
     depth_cfg_override: Optional[DepthNoiseConfig] = None,
     label_override: Optional[str] = None,
+    keep_record: bool = False,
 ) -> Dict[str, float]:
     if config is None:
         config = Rig6Config()
@@ -289,6 +290,7 @@ def run_one_trial(
     clearances: List[float] = []
     depth_valid_fracs: List[float] = []
     wind_speeds: List[float] = []
+    viz_samples: Optional[List[Dict]] = [] if keep_record else None
 
     sensor_failed = False
     corridor_breached = False
@@ -338,6 +340,18 @@ def run_one_trial(
         # integrate
         vel = vel + accel * config.dt
         pos = pos + vel * config.dt
+
+        if viz_samples is not None:
+            viz_samples.append({
+                "t": float(t),
+                "p": [float(pos[0]), float(pos[1]), float(pos[2])],
+                "desired_p": [
+                    float(desired_pos[0]),
+                    float(desired_pos[1]),
+                    float(desired_pos[2]),
+                ],
+                "wind": [float(w_acc[0]), float(w_acc[1]), float(w_acc[2])],
+            })
 
         # metrics — only count corridor clearance against the original
         # plan; once we're in RTL, corridor breach is expected and not a
@@ -402,6 +416,25 @@ def run_one_trial(
             )
         ),
     }
+
+    if viz_samples is not None:
+        he = np.asarray(config.corridor_half_extent, dtype=np.float64)
+        result["viz_record"] = {
+            "scenario": label,
+            "sample_dt_s": float(config.dt),
+            "start": start.tolist(),
+            "goal": goal.tolist(),
+            "corridor_min": (np.minimum(start, goal) - he).tolist(),
+            "corridor_max": (np.maximum(start, goal) + he).tolist(),
+            "trajectory_samples": viz_samples,
+            "rtl_trigger_time_s": (
+                float(rtl_trigger_t)
+                if np.isfinite(rtl_trigger_t)
+                else None
+            ),
+            "tracking_error_max_m": result["tracking_error_max_m"],
+            "depth_valid_fraction_mean": result["depth_valid_fraction_mean"],
+        }
     return result
 
 
@@ -660,6 +693,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="",
         help="If set, write a PNG headline chart at this path.",
     )
+    parser.add_argument(
+        "--viz",
+        type=str,
+        default="",
+        help="If set, run one extra detailed trial of --viz-scenario and "
+        "write an interactive Plotly HTML there.",
+    )
+    parser.add_argument(
+        "--viz-scenario", type=str, default="windy",
+        help="Scenario for the viz trial (default: windy).",
+    )
+    parser.add_argument("--viz-seed", type=int, default=6262)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
 
@@ -753,6 +798,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         from src.validation.plots import emit_plot
         emit_plot("rig6", mc.runs, args.plot)
         print(f"Plot written to {args.plot}")
+
+    if args.viz:
+        from src.validation.visualize import emit_viz
+        row = run_one_trial(
+            args.viz_seed, args.viz_scenario, config, keep_record=True,
+        )
+        record = row.get("viz_record")
+        if record is None:
+            print("Viz trial produced no record", file=sys.stderr)
+        else:
+            emit_viz("rig6", record, args.viz)
+            print(f"Viz written to {args.viz}")
     return 0
 
 
