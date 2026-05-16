@@ -206,9 +206,19 @@ def _initial_trajectory(
     start: np.ndarray,
     goal: np.ndarray,
     config: Rig2Config,
+    drone_id: int = 0,
+    n_drones: int = 1,
 ) -> Tuple[Trajectory, List[Polytope]]:
     """Straight-line MINCO with `minco_segments` segments, one corridor
-    per segment (each segment gets its own fat box around its sub-leg)."""
+    per segment (each segment gets its own fat box around its sub-leg).
+
+    Symmetric multi-drone scenarios (e.g. N-drone patrol with antipodal
+    goals) put the L-BFGS optimiser in a saddle point: by symmetry the
+    swarm-penalty gradient cancels at the centre, and the drones never
+    learn to break the meeting. We offset each drone's interior
+    waypoints by a small deterministic vector keyed by `drone_id` —
+    enough to seed a non-zero gradient without violating the corridor.
+    """
     M = max(1, int(config.minco_segments))
     s = 3
     D = 3
@@ -216,6 +226,33 @@ def _initial_trajectory(
     waypoints = np.stack(
         [start + f * (goal - start) for f in fracs], axis=0
     )
+
+    # Symmetry breaker: rotate the offset direction with drone_id around
+    # the leg's perpendicular plane so no two drones nudge the same way.
+    if n_drones > 1 and M > 1:
+        leg = goal - start
+        leg_norm = float(np.linalg.norm(leg))
+        if leg_norm > 1e-9:
+            leg_hat = leg / leg_norm
+            world_up = np.array([0.0, 0.0, 1.0])
+            perp1 = np.cross(leg_hat, world_up)
+            p1n = float(np.linalg.norm(perp1))
+            if p1n > 1e-6:
+                perp1 = perp1 / p1n
+            else:
+                perp1 = np.array([1.0, 0.0, 0.0])
+            perp2 = np.cross(leg_hat, perp1)
+            theta = 2.0 * np.pi * drone_id / n_drones
+            offset_dir = np.cos(theta) * perp1 + np.sin(theta) * perp2
+            # cap at half the smaller corridor face so we never start out
+            # of corridor
+            hx, hy, hz = config.corridor_half_extent
+            max_offset = 0.5 * min(hx, hy, hz)
+            offset = offset_dir * max_offset
+            # only the interior waypoints get the offset; endpoints stay fixed
+            for k in range(1, M):
+                waypoints[k] = waypoints[k] + offset
+
     leg_length = float(np.linalg.norm(goal - start))
     seg_length = leg_length / M
     seg_time = max(0.5, seg_length / config.v_max)
@@ -407,7 +444,9 @@ def run_one_trial(
 
     drones: List[Drone] = []
     for idx, (start, goal) in enumerate(endpoints):
-        traj0, polys = _initial_trajectory(start, goal, config)
+        traj0, polys = _initial_trajectory(
+            start, goal, config, drone_id=idx, n_drones=n_drones
+        )
         broadcaster = SwarmBroadcaster(idx, channel)
         drone = Drone(
             drone_id=idx,
