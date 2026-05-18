@@ -351,6 +351,9 @@ def run_one_trial(
         viz["estimated_per_drone"] = est_track
         viz["drift_magnitude_max_m"] = drift_max
         viz["perimeter_deviation_max_m"] = perim_max
+        viz["success"] = bool(result["success"])
+        viz["time_to_failure_s"] = float(result["time_to_failure_s"])
+        viz["sector_coverage_pct"] = float(result["sector_coverage_pct"])
         result["viz_record"] = viz
     return result
 

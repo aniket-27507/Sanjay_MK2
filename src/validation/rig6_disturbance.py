@@ -433,7 +433,14 @@ def run_one_trial(
                 else None
             ),
             "tracking_error_max_m": result["tracking_error_max_m"],
+            "corridor_clearance_min_m": result["corridor_clearance_min_m"],
+            "corridor_breached": bool(result["corridor_breached"]),
             "depth_valid_fraction_mean": result["depth_valid_fraction_mean"],
+            "depth_valid_fraction_min": result["depth_valid_fraction_min"],
+            "sensor_failed": bool(result["sensor_failed"]),
+            "rtl_triggered": bool(result["rtl_triggered"]),
+            "wind_speed_max_observed_ms": result["wind_speed_max_observed_ms"],
+            "success": bool(result["success"]),
         }
     return result
 
