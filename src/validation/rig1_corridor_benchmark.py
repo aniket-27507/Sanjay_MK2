@@ -37,10 +37,14 @@ CLI
 
 Notes
 -----
-- Each MINCO run uses scipy L-BFGS-B with finite-difference gradients (Phase 0
-  baseline). That dominates the wall clock — typically ~20 s per run on a Mac
-  with M=7 segments. The Phase 1 exit criterion of t_total < 50 ms at 0.30
-  density needs analytical gradients (queued for a follow-on phase).
+- The MINCO solver uses scipy L-BFGS-B with analytical gradients
+  (energy + corridor + velocity assembled in `gcopter._cost_and_grad`;
+  swarm penalty in `src.swarm.swarm_penalty`). The finite-difference path
+  the original Phase 0 plan described is no longer in use; the FD oracle
+  in `tests/test_minco_gradients_e2e.py` only verifies correctness.
+  Wall-clock per trial at density 0.30, `gcopter_maxiter=30`, voxel-grid
+  20³ is ~50-250 ms — dominated by the L-BFGS line search, not the
+  per-evaluation cost.
 - "Potato test" Docker invocation in `docs/MINCO_PIVOT.md` §5.2 should be
   scriptable by re-running this module under an ARM/CPU-pinned container.
 """

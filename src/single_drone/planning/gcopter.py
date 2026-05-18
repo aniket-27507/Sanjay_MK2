@@ -16,9 +16,14 @@ The corridor and velocity terms are evaluated by uniform numerical quadrature
 within each segment (n_quad samples per segment). The quadratic relu² makes
 the penalty smooth at the boundary, which is what L-BFGS needs.
 
-Gradient is supplied by scipy.optimize.minimize's L-BFGS-B back-end via
-finite differences — fast enough for Phase 0 unit tests on M ≤ 10, s = 3
-problems. The rigs will switch to analytical gradients later if needed.
+The gradient is computed ANALYTICALLY (not finite-difference). It uses
+implicit-function differentiation of the MINCO KKT system inside
+`Trajectory.{dc_dq_interior, dc_dT_segment, energy_grad}`, plus chain-rule
+assembly here in `_cost_and_grad` for the corridor/velocity terms and in
+`src.swarm.swarm_penalty.compute_swarm_cost_and_grad` for the optional
+ellipsoidal inter-agent term. L-BFGS-B consumes it via `jac=True`. Finite-
+difference verification of the assembled gradient lives in
+`tests/test_minco_gradients_e2e.py`.
 
 For Phase 0 we only model:
     - time

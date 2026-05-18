@@ -49,6 +49,48 @@ import numpy as np
 from scipy.linalg import lu_factor, lu_solve
 
 
+# ---------------------------------------------------------------------------
+# Module-level constant: precomputed factorial-ratio table.
+#
+# Inside the hot path (`_monomial_basis`, `evaluate`) we need
+#   coef[d, i] = i! / (i-d)!     for i >= d, else 0
+# i.e. the constant that multiplies tau^(i-d) when forming the d-th derivative
+# of monomial t^i. There are only (deg+2)*(deg+1) unique values for each s, so
+# we precompute them once instead of re-invoking math.factorial in tight loops.
+# Profiling showed math.factorial accounting for ~1.5M calls per Rig 2 trial
+# before this cache was introduced.
+# ---------------------------------------------------------------------------
+_DERIV_COEFS: dict[int, np.ndarray] = {}
+for _s in range(1, 5):  # s ∈ {1, 2, 3, 4} covers min-acc through min-crackle
+    _deg = 2 * _s + 1
+    _arr = np.zeros((_deg + 2, _deg + 1), dtype=np.float64)
+    for _d in range(_deg + 2):
+        for _i in range(_d, _deg + 1):
+            _arr[_d, _i] = math.factorial(_i) / math.factorial(_i - _d)
+    _DERIV_COEFS[_s] = _arr
+
+
+def _factorial_ratio_row(s: int, deriv_order: int) -> np.ndarray:
+    """Return the (2s+2,) row of factorial ratios for the d-th derivative.
+
+    Each entry is `i! / (i-d)!` for i ≥ d, else 0. Used by `_monomial_basis`
+    and `evaluate` to avoid recomputing factorials inside hot loops.
+    """
+    if s not in _DERIV_COEFS:
+        # Cold path for unusual s — compute on the fly without caching to keep
+        # the module init fast. This only happens for s ≥ 5 (degree ≥ 11).
+        deg = 2 * s + 1
+        arr = np.zeros(deg + 1, dtype=np.float64)
+        if deriv_order <= deg:
+            for i in range(deriv_order, deg + 1):
+                arr[i] = math.factorial(i) / math.factorial(i - deriv_order)
+        return arr
+    table = _DERIV_COEFS[s]
+    if deriv_order >= table.shape[0]:
+        return np.zeros(table.shape[1], dtype=np.float64)
+    return table[deriv_order]
+
+
 def M_matrix(s: int, T: float, deriv_max: int) -> np.ndarray:
     """Map polynomial coefficients [c_0, ..., c_{2s+1}] to derivatives at time T.
 
@@ -368,14 +410,22 @@ class Trajectory:
         return self._dc_dT_cache
 
     def _monomial_basis(self, tau: float, deriv_order: int) -> np.ndarray:
-        """Returns (2s+2,) vector b such that c_seg^T @ b = p^(deriv)(tau)."""
+        """Returns (2s+2,) vector b such that c_seg^T @ b = p^(deriv)(tau).
+
+        Optimised: uses the module-level factorial-ratio cache and a vectorised
+        power expansion instead of a Python loop with math.factorial inside.
+        """
         deg = 2 * self.s + 1
-        b = np.zeros(deg + 1, dtype=np.float64)
         if deriv_order > deg:
-            return b
-        for i in range(deriv_order, deg + 1):
-            fac = math.factorial(i) // math.factorial(i - deriv_order)
-            b[i] = fac * (tau ** (i - deriv_order))
+            return np.zeros(deg + 1, dtype=np.float64)
+        b = np.zeros(deg + 1, dtype=np.float64)
+        coefs = _factorial_ratio_row(self.s, deriv_order)
+        # We need tau^(i - deriv_order) for i in [deriv_order, deg].
+        # That's tau^0, tau^1, ..., tau^(deg - deriv_order).
+        n_pows = deg - deriv_order + 1
+        # `np.arange + power` is faster than a list comprehension for n_pows≈8.
+        powers = np.power(tau, np.arange(n_pows, dtype=np.float64))
+        b[deriv_order:] = coefs[deriv_order:] * powers
         return b
 
     def evaluate_segment_with_grad(
@@ -453,12 +503,16 @@ class Trajectory:
         if derivative_order > deg:
             return np.zeros(self.D)
 
+        # Vectorised: build the monomial-derivative basis once, contract with
+        # coefficients. Avoids 1.5M+ math.factorial calls per Rig 2 trial.
+        coefs = _factorial_ratio_row(self.s, derivative_order)
+        n_pows = deg - derivative_order + 1
+        powers = np.power(tau, np.arange(n_pows, dtype=np.float64))
+        # b[derivative_order:] = coefs[derivative_order:] * powers, then c @ b
         c = self.coeffs[k]  # (deg+1, D)
-        result = np.zeros(self.D, dtype=np.float64)
-        for i in range(derivative_order, deg + 1):
-            fac = math.factorial(i) // math.factorial(i - derivative_order)
-            result += fac * (tau ** (i - derivative_order)) * c[i]
-        return result
+        # Result = sum_i b[i] · c[i, :], restricted to i ≥ derivative_order
+        weighted = coefs[derivative_order:] * powers  # (n_pows,)
+        return weighted @ c[derivative_order:]
 
     # ------------------------------------------------------------------
     # Energy (control-effort integral) + analytical gradient
