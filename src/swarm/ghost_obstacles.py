@@ -273,8 +273,20 @@ class GhostManagerConfig:
         the swarm-penalty downwash convention).
     """
 
-    initial_weight: float = 1.0e3
+    # `initial_weight=10.0` was selected by the Rig 2 tuning sweep over
+    # {10, 30, 100, 300, 1000, 3000}: at 10 the CBF intervention count
+    # drops to 0 in patrol/head_on (MINCO smoothly avoids conflicts
+    # instead of needing post-MINCO clipping) while MGR triggers stay
+    # bounded. Above ~100 the ghost penalty becomes strong enough to
+    # deflect MINCO INTO new pairwise near-misses that CBF then has to
+    # clip — i.e. ghosts start creating the conflicts they're meant to
+    # avoid. Below ~10 the penalty is too weak to register.
+    initial_weight: float = 10.0
     decay_per_tick: float = 0.6
+    # Threshold matches the validated tuning sweep point (initial=10,
+    # threshold=10). Effective half-life is short (~1-2 ticks): a
+    # freshly-seeded ghost survives one replan, a ghost that gets
+    # merge-topped-up by a repeat conflict survives a second.
     weight_threshold: float = 10.0
     max_active: int = 16
     merge_distance_m: float = 0.5

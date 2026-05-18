@@ -817,21 +817,24 @@ class TestMGRGhostBridge:
         drone._install_post_mgr_trajectory(2.0, cfg)
         assert drone.n_ghosts_carried_across_mgr == 0
 
-    def test_metric_fires_in_converge_dense(self) -> None:
+    def test_metric_fires_in_patrol(self) -> None:
         """End-to-end: with the CBF probe lifted ahead of the MGR check,
-        the bridge now actually fires even in MGR-dominated scenarios
-        like converge_dense — ghosts seed every tick (including during
-        orbit), so any drone with surviving ghosts at MGR exit time
-        bumps `ghosts_carried_across_mgr`. This was the architectural
-        gap that motivated lifting the probe."""
+        the bridge actually fires in patrol — ghosts seed every tick
+        (including during orbit) and survive to MGR exit, bumping
+        `ghosts_carried_across_mgr`. This is the architectural gap
+        that motivated lifting the probe. (converge_dense is a poor
+        test target post-weight-tuning: its symmetric geometry plants
+        and prunes ghosts in lockstep across all drones, so the
+        manager is usually empty at exit time. Patrol's asymmetric
+        goal swaps give ghosts a chance to persist.)"""
         cfg = self._cfg()
         out = run_one_trial(
-            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+            seed=11, n_drones=6, scenario="patrol", config=cfg
         )
         assert out["mgr_exits"] >= 1
         assert out["ghost_seeded"] >= 1
         assert out["ghosts_carried_across_mgr"] >= 1, (
-            "bridge failed to fire in converge_dense: lift-the-probe "
+            "bridge failed to fire in patrol: lift-the-probe "
             "regression"
         )
 
@@ -851,7 +854,17 @@ class TestMGRGhostBridge:
             BroadcastChannel, ChannelConfig,
         )
 
-        cfg = self._cfg(roundabout_force_exit_s=1.0)
+        # Tuned weight=10 / threshold=10 (the validated production
+        # defaults) prunes a fresh ghost after one decay (10 × 0.6 = 6
+        # < 10). For this synthetic test we want to verify the BRIDGE
+        # mechanism, not the prune mechanism, so we pin weight high
+        # enough for ghosts to survive the full orbit (1 s = 2 ticks
+        # at replan_period 0.5).
+        cfg = self._cfg(
+            roundabout_force_exit_s=1.0,
+            ghost_initial_weight=1.0e3,
+            ghost_weight_threshold=10.0,
+        )
         traj, polys = _initial_trajectory(
             start=np.array([8., 0., 5.]),
             goal=np.array([0., 0., 5.]),

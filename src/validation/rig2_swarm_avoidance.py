@@ -167,21 +167,32 @@ class Rig2Config:
     ghost_probe_n_samples: int = 16
     ghost_clearance_horizontal_m: float = 2.0
     ghost_clearance_vertical_m: float = 1.0
-    ghost_initial_weight: float = 1.0e3
+    # `ghost_initial_weight=10.0` was tuned by Rig 2 sweep over
+    # {10, 30, 100, 300, 1000, 3000}: at 10 the CBF intervention count
+    # drops to 0 in patrol/head_on (MINCO routes around conflicts
+    # smoothly without needing the safety filter to clip), while above
+    # ~100 the ghost penalty deflects MINCO INTO new near-misses that
+    # CBF has to clip — ghosts create the conflicts they're meant to
+    # avoid. See `docs/MINCO_PIVOT.md` / commit history for the sweep.
+    ghost_initial_weight: float = 10.0
     ghost_decay_per_tick: float = 0.6
+    # Threshold kept equal to initial_weight per the validated sweep
+    # point: ghosts survive ~1 replan tick (the merge-topup path
+    # extends this to ~2 ticks when the same conflict re-fires), which
+    # matches the "deflect this replan, then forget" model of a CBF
+    # intervention rather than a long-lived memory.
     ghost_weight_threshold: float = 10.0
     ghost_max_active: int = 16
     ghost_merge_distance_m: float = 0.5
     ghost_penalty_n_quad: int = 12
     # Avenue 4 ↔ Avenue 5 bridge: when True (default), ghost obstacles
     # accumulated before/during an MGR cycle survive across the orbit so
-    # the post-exit MINCO solve inherits the conflict map instead of
-    # starting cold. The pre-exit ghost weights are bulk-decayed at MGR
-    # exit by `ghost_decay_per_tick ** (orbit_duration_s / replan_period_s)`
-    # — equivalent to the per-tick decay that would have run had the
-    # replan loop been active throughout the orbit. Set False to keep
-    # PR #13 behaviour (ghosts technically persist in memory but the
-    # spirit is "cold restart"; this flag makes the choice explicit).
+    # the post-exit MINCO solve inherits the conflict map. With the CBF
+    # probe lifted ahead of the MGR check (see `reoptimise`), the probe
+    # runs every tick including during orbit, so per-tick decay already
+    # ages ghosts naturally; the bridge here just records the survivors
+    # and honours the explicit-clear opt-out (set False to clear the
+    # ghost manager at every MGR exit — restores "cold restart" intent).
     ghost_persist_across_mgr: bool = True
 
     # Avenue 5: roundabout (MGR) deadlock breaker.
