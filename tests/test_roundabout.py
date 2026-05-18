@@ -19,6 +19,7 @@ from src.swarm.roundabout import (
     RoundaboutConfig,
     RoundaboutManager,
     RoundaboutState,
+    _force_exit_jitter,
 )
 
 
@@ -511,3 +512,284 @@ class TestDecentralisedAgreement:
             np.testing.assert_allclose(c, centers[0], atol=1e-12)
         for i in positions:
             assert outs[i].state.member_ids == (0, 1, 2)
+
+
+# ---------------------------------------------------------------------------
+# Gap 4 part 4: post-exit policy (staggered timeout, tighter sector,
+# re-entry cooldown).
+# ---------------------------------------------------------------------------
+
+class TestForceExitJitter:
+    """Per-drone deterministic jitter on `force_exit_s`."""
+
+    def test_zero_jitter_returns_zero(self) -> None:
+        assert _force_exit_jitter(0, 0.0) == 0.0
+        assert _force_exit_jitter(99, 0.0) == 0.0
+
+    def test_jitter_is_bounded(self) -> None:
+        for drone_id in range(64):
+            j = _force_exit_jitter(drone_id, 1.5)
+            assert -1.5 <= j < 1.5
+
+    def test_jitter_is_deterministic(self) -> None:
+        # Same drone_id, same input → same output.
+        for did in (0, 1, 7, 100):
+            assert _force_exit_jitter(did, 2.0) == _force_exit_jitter(did, 2.0)
+
+    def test_jitter_spreads_consecutive_ids(self) -> None:
+        # Six sequential drone_ids should span a meaningful chunk of the
+        # ±jitter range — sufficient that not every drone times out on the
+        # same tick. Spread should exceed 50% of the full range.
+        offsets = [_force_exit_jitter(i, 1.0) for i in range(6)]
+        spread = max(offsets) - min(offsets)
+        assert spread > 1.0  # half of ±1.0 = 2.0 full range
+
+    def test_jitter_applied_to_effective_force_exit_s(self) -> None:
+        """Manager.effective_force_exit_s reflects the per-drone jitter."""
+        cfg = RoundaboutConfig(force_exit_s=8.0, force_exit_jitter_s=1.0)
+        mgr_a = RoundaboutManager(drone_id=0, config=cfg)
+        mgr_b = RoundaboutManager(drone_id=1, config=cfg)
+        # Different drone_ids → different effective timeouts.
+        assert mgr_a.effective_force_exit_s() != mgr_b.effective_force_exit_s()
+        # Both bounded within ±jitter of base.
+        for mgr in (mgr_a, mgr_b):
+            t = mgr.effective_force_exit_s()
+            assert 7.0 <= t <= 9.0
+
+
+class TestTighterSectorFree:
+    """The sector-free check now also rejects exit when the post-exit straight
+    line crosses a neighbour, or when the goal area is contested."""
+
+    def _enter(self, mgr: RoundaboutManager, own_pos, goal, neighbours):
+        return mgr.update(
+            t_now=0.0,
+            own_position=np.asarray(own_pos, dtype=np.float64),
+            own_velocity=np.zeros(3),
+            own_goal=np.asarray(goal, dtype=np.float64),
+            own_predicted=np.tile(
+                np.asarray(own_pos, dtype=np.float64)[None, :], (4, 1)
+            ),
+            neighbours=neighbours,
+        )
+
+    def test_neighbour_on_exit_line_blocks_exit(self) -> None:
+        """Neighbour sits within clearance_band of own→goal line → stay orbiting."""
+        cfg = RoundaboutConfig(
+            r_safe_m=2.0,
+            barrier_band_m=0.5,
+            force_exit_s=999.0,           # no timeout
+            escape_path_clearance_m=2.0,
+            escape_goal_exclusion_m=0.0,  # disable goal-zone check
+        )
+        mgr = RoundaboutManager(drone_id=0, config=cfg)
+        # Enter with a close neighbour.
+        out0 = self._enter(
+            mgr, (0.0, 0.0, 0.0), (10.0, 0.0, 0.0),
+            [_obs(1, (3.0, 0.0, 0.0))],
+        )
+        assert out0.active
+        # Place a stationary blocker on the exit line at (5, 0.5).
+        # Trigger neighbour moves far away so the immediate arc/conflict
+        # tests don't keep the orbit open by themselves.
+        out_blocked = mgr.update(
+            t_now=0.1,
+            own_position=np.zeros(3),
+            own_velocity=np.zeros(3),
+            own_goal=np.array([10.0, 0.0, 0.0]),
+            own_predicted=np.tile(np.zeros((1, 3)), (4, 1)),
+            neighbours=[
+                _obs(1, (50.0, 50.0, 0.0)),     # far — was the original trigger
+                _obs(2, (5.0, 0.5, 0.0)),       # blocker on exit line
+            ],
+        )
+        assert out_blocked.active
+        assert not out_blocked.exited_this_tick
+
+    def test_neighbour_camped_at_goal_blocks_exit(self) -> None:
+        """Goal-area exclusion zone holds the orbit when another drone is at goal."""
+        cfg = RoundaboutConfig(
+            r_safe_m=2.0,
+            barrier_band_m=0.5,
+            force_exit_s=999.0,
+            escape_path_clearance_m=0.0,    # disable path-clearance check
+            escape_goal_exclusion_m=4.0,    # goal-area exclusion
+        )
+        mgr = RoundaboutManager(drone_id=0, config=cfg)
+        out0 = self._enter(
+            mgr, (0.0, 0.0, 0.0), (10.0, 0.0, 0.0),
+            [_obs(1, (3.0, 0.0, 0.0))],
+        )
+        assert out0.active
+        out = mgr.update(
+            t_now=0.1,
+            own_position=np.zeros(3),
+            own_velocity=np.zeros(3),
+            own_goal=np.array([10.0, 0.0, 0.0]),
+            own_predicted=np.zeros((4, 3)),
+            neighbours=[
+                _obs(1, (50.0, 50.0, 0.0)),    # original trigger far
+                _obs(3, (10.5, 0.0, 0.0)),     # camped near goal
+            ],
+        )
+        assert out.active
+        assert not out.exited_this_tick
+
+    def test_predicted_neighbour_on_exit_line_blocks_exit(self) -> None:
+        """A neighbour whose predicted positions cross the exit line also blocks."""
+        cfg = RoundaboutConfig(
+            r_safe_m=2.0,
+            barrier_band_m=0.5,
+            force_exit_s=999.0,
+            escape_path_clearance_m=2.0,
+            escape_goal_exclusion_m=0.0,
+        )
+        mgr = RoundaboutManager(drone_id=0, config=cfg)
+        out0 = self._enter(
+            mgr, (0.0, 0.0, 0.0), (10.0, 0.0, 0.0),
+            [_obs(1, (3.0, 0.0, 0.0))],
+        )
+        assert out0.active
+        # A neighbour currently off the exit line but predicted to cross it.
+        nbr_predicted = np.array(
+            [[10.0, 6.0, 0.0],
+             [8.0,  4.0, 0.0],
+             [6.0,  2.0, 0.0],
+             [5.0,  0.5, 0.0]],  # last sample on exit line
+        )
+        out = mgr.update(
+            t_now=0.1,
+            own_position=np.zeros(3),
+            own_velocity=np.zeros(3),
+            own_goal=np.array([10.0, 0.0, 0.0]),
+            own_predicted=np.zeros((4, 3)),
+            neighbours=[
+                _obs(1, (50.0, 50.0, 0.0)),
+                _obs(2, (10.0, 6.0, 0.0), predicted=nbr_predicted),
+            ],
+        )
+        assert out.active
+        assert not out.exited_this_tick
+
+    def test_clear_path_exits_normally(self) -> None:
+        """Sanity: with nothing on the path the drone still exits via sector_free."""
+        cfg = RoundaboutConfig(
+            r_safe_m=2.0,
+            barrier_band_m=0.5,
+            force_exit_s=999.0,
+            escape_path_clearance_m=2.0,
+            escape_goal_exclusion_m=4.0,
+        )
+        mgr = RoundaboutManager(drone_id=0, config=cfg)
+        out0 = self._enter(
+            mgr, (0.0, 0.0, 0.0), (10.0, 0.0, 0.0),
+            [_obs(1, (3.0, 0.0, 0.0))],
+        )
+        assert out0.active
+        # All other drones moved far away.
+        out = mgr.update(
+            t_now=0.1,
+            own_position=np.zeros(3),
+            own_velocity=np.zeros(3),
+            own_goal=np.array([10.0, 0.0, 0.0]),
+            own_predicted=np.zeros((4, 3)),
+            neighbours=[_obs(1, (50.0, 50.0, 0.0))],
+        )
+        assert out.exited_this_tick
+        assert out.exit_reason == "sector_free"
+
+
+class TestReentryCooldown:
+    """A drone that just exited should refuse to re-trigger on the very next
+    tick while the cooldown is active, then re-enter once the window passes."""
+
+    def test_cooldown_blocks_immediate_reentry(self) -> None:
+        cfg = RoundaboutConfig(
+            r_safe_m=2.0,
+            barrier_band_m=0.5,
+            force_exit_s=999.0,
+            escape_path_clearance_m=0.0,
+            escape_goal_exclusion_m=0.0,
+            reentry_cooldown_s=1.0,
+        )
+        mgr = RoundaboutManager(drone_id=0, config=cfg)
+        # Enter on a close neighbour.
+        out0 = mgr.update(
+            t_now=0.0,
+            own_position=np.zeros(3),
+            own_velocity=np.zeros(3),
+            own_goal=np.array([10.0, 0.0, 0.0]),
+            own_predicted=np.zeros((4, 3)),
+            neighbours=[_obs(1, (3.0, 0.0, 0.0))],
+        )
+        assert out0.active and out0.triggered_this_tick
+        # Neighbour moves far → exit via sector_free.
+        out_exit = mgr.update(
+            t_now=0.1,
+            own_position=np.zeros(3),
+            own_velocity=np.zeros(3),
+            own_goal=np.array([10.0, 0.0, 0.0]),
+            own_predicted=np.zeros((4, 3)),
+            neighbours=[_obs(1, (50.0, 0.0, 0.0))],
+        )
+        assert out_exit.exited_this_tick
+        # Conflict re-appears within cooldown window → manager refuses to
+        # re-trigger.
+        out_block = mgr.update(
+            t_now=0.5,
+            own_position=np.zeros(3),
+            own_velocity=np.zeros(3),
+            own_goal=np.array([10.0, 0.0, 0.0]),
+            own_predicted=np.zeros((4, 3)),
+            neighbours=[_obs(1, (3.0, 0.0, 0.0))],
+        )
+        assert not out_block.active
+        assert out_block.conflict_count == 1  # conflict detected but suppressed
+        # Past the cooldown → re-trigger.
+        out_reentry = mgr.update(
+            t_now=2.0,
+            own_position=np.zeros(3),
+            own_velocity=np.zeros(3),
+            own_goal=np.array([10.0, 0.0, 0.0]),
+            own_predicted=np.zeros((4, 3)),
+            neighbours=[_obs(1, (3.0, 0.0, 0.0))],
+        )
+        assert out_reentry.active
+        assert out_reentry.triggered_this_tick
+
+    def test_zero_cooldown_allows_immediate_reentry(self) -> None:
+        """Default config (cooldown=0) preserves prior behaviour."""
+        cfg = RoundaboutConfig(
+            r_safe_m=2.0,
+            barrier_band_m=0.5,
+            force_exit_s=999.0,
+            escape_path_clearance_m=0.0,
+            escape_goal_exclusion_m=0.0,
+            reentry_cooldown_s=0.0,
+        )
+        mgr = RoundaboutManager(drone_id=0, config=cfg)
+        mgr.update(
+            t_now=0.0,
+            own_position=np.zeros(3),
+            own_velocity=np.zeros(3),
+            own_goal=np.array([10.0, 0.0, 0.0]),
+            own_predicted=np.zeros((4, 3)),
+            neighbours=[_obs(1, (3.0, 0.0, 0.0))],
+        )
+        mgr.update(  # exit via sector_free
+            t_now=0.1,
+            own_position=np.zeros(3),
+            own_velocity=np.zeros(3),
+            own_goal=np.array([10.0, 0.0, 0.0]),
+            own_predicted=np.zeros((4, 3)),
+            neighbours=[_obs(1, (50.0, 0.0, 0.0))],
+        )
+        out = mgr.update(  # immediate re-trigger
+            t_now=0.15,
+            own_position=np.zeros(3),
+            own_velocity=np.zeros(3),
+            own_goal=np.array([10.0, 0.0, 0.0]),
+            own_predicted=np.zeros((4, 3)),
+            neighbours=[_obs(1, (3.0, 0.0, 0.0))],
+        )
+        assert out.active and out.triggered_this_tick

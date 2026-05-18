@@ -147,9 +147,10 @@ class Rig2Config:
 
     # Avenue 5: roundabout (MGR) deadlock breaker.
     # When enabled, each drone owns a RoundaboutManager that fires on
-    # symmetric N>=3 conflict geometries that A4 cannot resolve. First-cut
-    # behaviour: once triggered, the drone follows the orbit until the
-    # simulation ends — exit handling is deferred to a follow-up PR.
+    # symmetric N>=3 conflict geometries that A4 cannot resolve. Drones
+    # orbit the conflict centroid until either the goal sector clears or
+    # a per-drone-jittered timeout fires; on exit they fall back to
+    # MINCO, and may re-enter MGR if a new conflict appears post-exit.
     enable_roundabout: bool = False
     roundabout_r_safe_m: float = 2.0
     roundabout_k_d: float = 1.5
@@ -165,6 +166,21 @@ class Rig2Config:
     # its current orbit pose. Sanjay-specific (the MGR paper assumes a
     # static environment where exits only depend on sector clearance).
     roundabout_force_exit_s: float = 8.0
+    # Per-drone deterministic jitter (+/- seconds) on `force_exit_s`. With
+    # 0 (default) the manager preserves PR #8 behaviour. Set > 0 to
+    # stagger exits across the swarm in symmetric deadlocks where every
+    # drone would otherwise time out on the same tick.
+    roundabout_force_exit_jitter_s: float = 0.0
+    # Clearance band around the post-exit straight-line path and exclusion
+    # zone around the goal. Plug into the tightened sector-free check so a
+    # drone won't exit while another orbiting peer's path is parallel or
+    # while the goal is already occupied.
+    roundabout_escape_path_clearance_m: float = 2.0
+    roundabout_escape_goal_exclusion_m: float = 3.0
+    # Re-entry cooldown after MGR exit. While > 0 the manager refuses to
+    # re-trigger for this many seconds, giving the post-MGR MINCO solve
+    # at least one optimisation pass before another orbit is installed.
+    roundabout_reentry_cooldown_s: float = 0.0
 
     # comms channel
     comms_latency_ms_mean: float = 50.0
@@ -353,6 +369,28 @@ def _initial_trajectory(
 
 
 @dataclass
+class _CompletedCycle:
+    """Snapshot of a finished MGR cycle, kept so `position_at` / `velocity_at`
+    can serve queries inside its time window after a later cycle replaces
+    the current orbit.
+
+    Time spans are:
+      orbit          : [orbit.t_entered, t_exit)
+      post_trajectory: [t_exit, post_t_end)
+
+    `post_t_end` becomes finite when a subsequent cycle is entered; if the
+    drone never re-enters MGR, `post_t_end` stays at the current
+    trajectory's tail and is read directly from `Drone.trajectory`.
+    """
+
+    orbit: "_RoundaboutOrbit"
+    t_exit: float
+    post_trajectory: "Trajectory"
+    post_t0: float
+    post_t_end: float
+
+
+@dataclass
 class _RoundaboutOrbit:
     """Parametric circular orbit used during Avenue 5 activation.
 
@@ -433,8 +471,13 @@ class Drone:
     _mgr_exit_time: Optional[float] = None     # rig-global t when MGR exited
     _pre_mgr_trajectory: Optional[Trajectory] = None  # frozen pre-MGR path
     _trajectory_t0: float = 0.0                # rig-global t at trajectory's t=0
+    # Fully-completed prior orbit cycles (orbit + post-MGR trajectory window).
+    # Populated when the drone re-enters MGR after an earlier exit so that
+    # `position_at` / `velocity_at` can keep serving historical timepoints.
+    _completed_cycles: List[_CompletedCycle] = field(default_factory=list)
     n_mgr_triggers: int = 0
     n_mgr_exits: int = 0
+    n_mgr_reentries: int = 0
 
     def _mgr_evaluate(
         self,
@@ -457,6 +500,10 @@ class Drone:
                     v_max_ms=config.v_max,
                     v_max_tangential_ms=config.roundabout_v_max_tangential_ms,
                     force_exit_s=config.roundabout_force_exit_s,
+                    force_exit_jitter_s=config.roundabout_force_exit_jitter_s,
+                    escape_path_clearance_m=config.roundabout_escape_path_clearance_m,
+                    escape_goal_exclusion_m=config.roundabout_escape_goal_exclusion_m,
+                    reentry_cooldown_s=config.roundabout_reentry_cooldown_s,
                 ),
             )
 
@@ -511,6 +558,10 @@ class Drone:
         Also freezes the pre-MGR MINCO trajectory so `position_at(t)` for
         rig times before entry continues to give the original path (not
         the orbit extrapolated backward).
+
+        On re-entry the original pre-MGR trajectory is preserved: every
+        cycle past the first lives in `_completed_cycles`, and
+        `_pre_mgr_trajectory` is only set on first entry.
         """
         state = mgr_update.state  # type: ignore[attr-defined]
         own_pos = self.position_at(t_now)
@@ -519,9 +570,8 @@ class Drone:
         angular_velocity = float(
             config.roundabout_v_max_tangential_ms / max(state.radius_m, 1e-3)
         )
-        # Snapshot the trajectory the drone was following so pre-MGR
-        # samples remain consistent.
-        self._pre_mgr_trajectory = self.trajectory
+        if self._pre_mgr_trajectory is None:
+            self._pre_mgr_trajectory = self.trajectory
         self._mgr_orbit = _RoundaboutOrbit(
             center_xy=state.center_xy.copy(),
             center_z=float(state.center_z),
@@ -532,6 +582,9 @@ class Drone:
             own_z_at_entry=float(own_pos[2]),
             z_settle_s=float(config.roundabout_z_settle_s),
         )
+        # Re-entry: clear the "exited" sentinel so the active-orbit branch
+        # in reoptimise can tick the manager for this fresh cycle.
+        self._mgr_exit_time = None
 
     def _install_post_mgr_trajectory(
         self,
@@ -570,17 +623,26 @@ class Drone:
     def position_at(self, t: float) -> np.ndarray:
         """Sample drone position at rig-global time `t`.
 
-        The drone moves through up to three segments per MGR cycle:
-          1. Pre-MGR: own original MINCO trajectory, evaluated at t.
-          2. Orbit: the parametric circle, t in [t_entered, t_exit].
-          3. Post-MGR: a fresh MINCO trajectory from the orbit-exit
-             pose to the original goal, anchored at t_exit (so
-             `trajectory.evaluate(t - t_exit, 0)` returns the post-exit
-             position).
+        A drone moves through up to three segments per MGR cycle:
+          1. Pre-MGR: own original MINCO trajectory.
+          2. Orbit: a parametric circle for t in [t_entered, t_exit].
+          3. Post-MGR: a fresh MINCO trajectory anchored at t_exit.
+
+        On MGR re-entry the previous (orbit, post-MGR) cycle is pushed
+        onto `_completed_cycles`; this method searches that list first so
+        historical timepoints continue to resolve correctly.
 
         Out-of-range queries clamp to the segment's endpoints.
         """
         t_f = float(t)
+        for cyc in self._completed_cycles:
+            if cyc.orbit.t_entered <= t_f < cyc.t_exit:
+                return cyc.orbit.position_at(t_f)
+            if cyc.t_exit <= t_f < cyc.post_t_end:
+                tc = self._clamp_traj_time(cyc.post_trajectory, t_f - cyc.t_exit)
+                return np.asarray(
+                    cyc.post_trajectory.evaluate(tc, 0), dtype=np.float64
+                )
         if self._mgr_orbit is not None:
             t_entered = self._mgr_orbit.t_entered
             t_exit = (
@@ -595,14 +657,30 @@ class Drone:
                 T = float(traj.total_time)
                 tc = min(max(0.0, t_f), T)
                 return np.asarray(traj.evaluate(tc, 0), dtype=np.float64)
-        # Current trajectory (never been in MGR, or post-MGR cycle).
+        # Current trajectory (never been in MGR, or active post-MGR cycle).
         t_local = t_f - self._trajectory_t0
         T = float(self.trajectory.total_time)
         tc = min(max(0.0, t_local), T)
         return np.asarray(self.trajectory.evaluate(tc, 0), dtype=np.float64)
 
+    @staticmethod
+    def _clamp_traj_time(traj: Trajectory, t_local: float) -> float:
+        T = float(traj.total_time)
+        return min(max(0.0, float(t_local)), T)
+
     def velocity_at(self, t: float) -> np.ndarray:
         t_f = float(t)
+        for cyc in self._completed_cycles:
+            if cyc.orbit.t_entered <= t_f < cyc.t_exit:
+                return cyc.orbit.velocity_at(t_f)
+            if cyc.t_exit <= t_f < cyc.post_t_end:
+                t_local = t_f - cyc.t_exit
+                T = float(cyc.post_trajectory.total_time)
+                if not (0.0 <= t_local <= T):
+                    return np.zeros(3, dtype=np.float64)
+                return np.asarray(
+                    cyc.post_trajectory.evaluate(t_local, 1), dtype=np.float64
+                )
         if self._mgr_orbit is not None:
             t_entered = self._mgr_orbit.t_entered
             t_exit = (
@@ -651,16 +729,36 @@ class Drone:
             else:
                 return 0.0
 
-        # Avenue 5: pre-trigger check. If MGR fires this tick, save the
-        # current trajectory, install the orbit, skip MINCO.
+        # Avenue 5: pre-trigger check. Fires when the drone has never been
+        # in MGR (`_mgr_orbit is None`) AND when the drone has previously
+        # exited MGR (`_mgr_exit_time is not None`). The latter handles
+        # the "exit into still-busy area" failure mode: a drone that
+        # exited can re-enter on the next replan tick if the conflict set
+        # re-appears.
         if (
             config.enable_roundabout
-            and self._mgr_orbit is None
+            and (self._mgr_orbit is None or self._mgr_exit_time is not None)
         ):
             mgr_update = self._mgr_evaluate(t_now, snapshots, config)
             if mgr_update is not None and mgr_update.active:
+                is_reentry = self._mgr_orbit is not None
+                if is_reentry:
+                    # Push the just-finished cycle onto history so position_at
+                    # / velocity_at can keep serving its time window.
+                    assert self._mgr_exit_time is not None
+                    self._completed_cycles.append(
+                        _CompletedCycle(
+                            orbit=self._mgr_orbit,
+                            t_exit=float(self._mgr_exit_time),
+                            post_trajectory=self.trajectory,
+                            post_t0=float(self._trajectory_t0),
+                            post_t_end=float(t_now),
+                        )
+                    )
                 self._install_mgr_orbit(t_now, mgr_update, config)
                 self.n_mgr_triggers += 1
+                if is_reentry:
+                    self.n_mgr_reentries += 1
                 return 0.0
 
         sw_cfg = SwarmPenaltyConfig(
@@ -1052,6 +1150,7 @@ def run_one_trial(
 
     n_mgr_triggers_total = sum(int(dr.n_mgr_triggers) for dr in drones)
     n_mgr_exits_total = sum(int(dr.n_mgr_exits) for dr in drones)
+    n_mgr_reentries_total = sum(int(dr.n_mgr_reentries) for dr in drones)
     n_mgr_drones_active = sum(
         1
         for dr in drones
@@ -1070,6 +1169,7 @@ def run_one_trial(
             "packets_dropped": float(ch_stats["dropped"]),
             "mgr_triggers": int(n_mgr_triggers_total),
             "mgr_exits": int(n_mgr_exits_total),
+            "mgr_reentries": int(n_mgr_reentries_total),
             "mgr_drones_orbiting": int(n_mgr_drones_active),
             "mgr_enabled": bool(config.enable_roundabout),
             **dist_metrics,
