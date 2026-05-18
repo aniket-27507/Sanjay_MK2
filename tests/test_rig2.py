@@ -178,3 +178,254 @@ class TestStressMatrix:
             f"per-agent replan time grew more than 2× between N=3 and N=6: "
             f"{t_small:.2f} ms → {t_large:.2f} ms"
         )
+
+
+# ---------------------------------------------------------------------------
+# Avenue 5: roundabout integration (Gap 4 wiring)
+# ---------------------------------------------------------------------------
+
+class TestRoundaboutIntegration:
+    """Validate that MGR triggers and prevents collisions in `converge_dense`."""
+
+    def _kwargs(self):
+        return dict(
+            field_radius=8.0,
+            gcopter_maxiter=10,
+            sim_duration_s=4.0,
+            replan_period_s=1.0,
+            sample_dt_s=0.1,
+        )
+
+    def test_converge_dense_without_mgr_collides(self) -> None:
+        """Baseline: 6 drones converging on origin collide without Avenue 5."""
+        cfg = Rig2Config(enable_roundabout=False, **self._kwargs())
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        assert out["collisions"] > 0
+        assert out["success"] is False
+        assert out["mgr_triggers"] == 0
+        assert out["mgr_drones_orbiting"] == 0
+
+    def test_converge_dense_with_mgr_prevents_collisions(self) -> None:
+        """Avenue 5 on: same scenario, no collisions, drones orbit centroid."""
+        cfg = Rig2Config(enable_roundabout=True, **self._kwargs())
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        assert out["collisions"] == 0
+        assert out["success"] is True
+        assert out["mgr_triggers"] >= 1
+        assert out["mgr_drones_orbiting"] >= 1
+        # Minimum separation should be at the orbit radius scale (>=1 m), well
+        # outside the collision radius.
+        assert out["d_min_inter_m"] > 1.0
+
+    def test_converge_dense_requires_minimum_drones(self) -> None:
+        # endpoints_for_scenario raises; run_one_trial captures it into the
+        # result dict like the other "wrong fleet size for scenario" cases.
+        result = run_one_trial(
+            seed=0,
+            n_drones=3,
+            scenario="converge_dense",
+            config=Rig2Config(),
+        )
+        assert "error" in result and result["success"] is False
+
+    def test_mgr_disabled_by_default(self) -> None:
+        """Backward compat: existing scenarios run unchanged when MGR is off."""
+        cfg = Rig2Config(
+            gcopter_maxiter=4,
+            sim_duration_s=2.0,
+            replan_period_s=2.0,
+            sample_dt_s=0.2,
+        )
+        # Existing `patrol` regression with N=3 should not enter MGR.
+        out = run_one_trial(seed=17, n_drones=3, scenario="patrol", config=cfg)
+        assert out["mgr_enabled"] is False
+        assert out["mgr_triggers"] == 0
+        assert out["mgr_drones_orbiting"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Avenue 5 exit handling (Gap 4 part 3)
+# ---------------------------------------------------------------------------
+
+class TestRoundaboutExit:
+    """Validate that MGR exits trigger a fresh MINCO from the orbit-exit pose."""
+
+    def _cfg(self, **overrides):
+        kwargs = dict(
+            field_radius=8.0,
+            gcopter_maxiter=10,
+            sim_duration_s=12.0,
+            replan_period_s=0.5,
+            sample_dt_s=0.1,
+            enable_roundabout=True,
+            roundabout_force_exit_s=3.0,
+        )
+        kwargs.update(overrides)
+        return Rig2Config(**kwargs)
+
+    def test_force_exit_fires_in_long_sim(self) -> None:
+        """With force_exit < sim_duration, every drone that enters MGR exits."""
+        out = run_one_trial(
+            seed=11,
+            n_drones=6,
+            scenario="converge_dense",
+            config=self._cfg(),
+        )
+        assert out["mgr_triggers"] >= 1
+        assert out["mgr_exits"] >= 1
+        # No drone should be orbiting at end of sim because force_exit < sim.
+        assert out["mgr_drones_orbiting"] == 0
+
+    def test_post_mgr_trajectory_starts_at_orbit_exit_pose(self) -> None:
+        """After exit, the rebuilt trajectory's bc_start is the orbit exit pose."""
+        # Build a single Drone manually, install an orbit, then trigger exit.
+        from src.validation.rig2_swarm_avoidance import (
+            Drone, _RoundaboutOrbit, _initial_trajectory,
+        )
+        from src.swarm.trajectory_broadcast import SwarmBroadcaster
+        from src.validation.broadcast_channel import BroadcastChannel, ChannelConfig
+
+        cfg = self._cfg()
+        traj, polys = _initial_trajectory(
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            config=cfg,
+        )
+        channel = BroadcastChannel(config=ChannelConfig(latency_ms_mean=0.0), n_agents=1)
+        drone = Drone(
+            drone_id=0,
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            trajectory=traj,
+            polytopes=polys,
+            broadcaster=SwarmBroadcaster(drone_id=0, channel=channel),
+        )
+        # Manually install an orbit at t=1.0.
+        drone._pre_mgr_trajectory = drone.trajectory
+        drone._mgr_orbit = _RoundaboutOrbit(
+            center_xy=np.array([0., 0.]),
+            center_z=5.0,
+            radius=2.0,
+            t_entered=1.0,
+            initial_angle=0.0,
+            angular_velocity=0.5,
+            own_z_at_entry=5.0,
+            z_settle_s=1.0,
+        )
+        # Compute the expected exit position.
+        t_exit = 5.0
+        expected_exit = drone._mgr_orbit.position_at(t_exit)
+        # Invoke the install helper directly.
+        drone._install_post_mgr_trajectory(t_exit, cfg)
+        np.testing.assert_allclose(
+            drone.trajectory.bc_start[0], expected_exit, atol=1e-12
+        )
+        assert drone._trajectory_t0 == pytest.approx(t_exit)
+        assert drone._has_warm_start is False
+        assert drone._mgr_exit_time == pytest.approx(t_exit)
+        assert drone.n_mgr_exits == 1
+
+    def test_position_at_three_segments(self) -> None:
+        """position_at returns pre-MGR / orbit / post-MGR positions as t advances."""
+        from src.validation.rig2_swarm_avoidance import (
+            Drone, _RoundaboutOrbit, _initial_trajectory,
+        )
+        from src.swarm.trajectory_broadcast import SwarmBroadcaster
+        from src.validation.broadcast_channel import BroadcastChannel, ChannelConfig
+
+        cfg = self._cfg()
+        traj, polys = _initial_trajectory(
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            config=cfg,
+        )
+        channel = BroadcastChannel(config=ChannelConfig(latency_ms_mean=0.0), n_agents=1)
+        drone = Drone(
+            drone_id=0,
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            trajectory=traj,
+            polytopes=polys,
+            broadcaster=SwarmBroadcaster(drone_id=0, channel=channel),
+        )
+        t_enter = 1.0
+        t_exit = 3.0
+        drone._pre_mgr_trajectory = drone.trajectory
+        drone._mgr_orbit = _RoundaboutOrbit(
+            center_xy=np.array([0., 0.]),
+            center_z=5.0,
+            radius=2.0,
+            t_entered=t_enter,
+            initial_angle=0.0,
+            angular_velocity=1.0,
+            own_z_at_entry=5.0,
+            z_settle_s=0.5,
+        )
+        drone._install_post_mgr_trajectory(t_exit, cfg)
+
+        # Pre-MGR segment: should equal pre_mgr trajectory at t=0.5.
+        pre = drone.position_at(0.5)
+        expected_pre = np.asarray(
+            drone._pre_mgr_trajectory.evaluate(0.5, 0), dtype=np.float64
+        )
+        np.testing.assert_allclose(pre, expected_pre, atol=1e-12)
+
+        # Orbit segment: should equal orbit at t=2.0.
+        orbit = drone.position_at(2.0)
+        expected_orbit = drone._mgr_orbit.position_at(2.0)
+        np.testing.assert_allclose(orbit, expected_orbit, atol=1e-12)
+
+        # Post-MGR segment: should equal new trajectory at t_local = t - t_exit.
+        post = drone.position_at(t_exit + 0.5)
+        expected_post = np.asarray(
+            drone.trajectory.evaluate(0.5, 0), dtype=np.float64
+        )
+        np.testing.assert_allclose(post, expected_post, atol=1e-12)
+
+    def test_post_mgr_polytopes_match_new_trajectory(self) -> None:
+        """Corridor polytopes must be rebuilt for the new exit-to-goal leg."""
+        from src.validation.rig2_swarm_avoidance import (
+            Drone, _RoundaboutOrbit, _initial_trajectory,
+        )
+        from src.single_drone.planning.corridor_generator import polytope_contains
+        from src.swarm.trajectory_broadcast import SwarmBroadcaster
+        from src.validation.broadcast_channel import BroadcastChannel, ChannelConfig
+
+        cfg = self._cfg()
+        traj, polys = _initial_trajectory(
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            config=cfg,
+        )
+        channel = BroadcastChannel(config=ChannelConfig(latency_ms_mean=0.0), n_agents=1)
+        drone = Drone(
+            drone_id=0,
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            trajectory=traj,
+            polytopes=polys,
+            broadcaster=SwarmBroadcaster(drone_id=0, channel=channel),
+        )
+        drone._pre_mgr_trajectory = drone.trajectory
+        drone._mgr_orbit = _RoundaboutOrbit(
+            center_xy=np.array([0., 0.]),
+            center_z=5.0,
+            radius=2.0,
+            t_entered=1.0,
+            initial_angle=0.0,
+            angular_velocity=1.0,
+            own_z_at_entry=5.0,
+            z_settle_s=0.5,
+        )
+        drone._install_post_mgr_trajectory(3.0, cfg)
+        # Post-MGR start (bc_start[0]) and goal should both lie inside their
+        # respective polytope.
+        assert len(drone.polytopes) == cfg.minco_segments
+        first_poly = drone.polytopes[0]
+        last_poly = drone.polytopes[-1]
+        assert polytope_contains(first_poly, drone.trajectory.bc_start[0])
+        assert polytope_contains(last_poly, drone.goal)
