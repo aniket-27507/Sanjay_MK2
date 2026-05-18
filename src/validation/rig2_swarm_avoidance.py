@@ -173,6 +173,16 @@ class Rig2Config:
     ghost_max_active: int = 16
     ghost_merge_distance_m: float = 0.5
     ghost_penalty_n_quad: int = 12
+    # Avenue 4 ↔ Avenue 5 bridge: when True (default), ghost obstacles
+    # accumulated before/during an MGR cycle survive across the orbit so
+    # the post-exit MINCO solve inherits the conflict map instead of
+    # starting cold. The pre-exit ghost weights are bulk-decayed at MGR
+    # exit by `ghost_decay_per_tick ** (orbit_duration_s / replan_period_s)`
+    # — equivalent to the per-tick decay that would have run had the
+    # replan loop been active throughout the orbit. Set False to keep
+    # PR #13 behaviour (ghosts technically persist in memory but the
+    # spirit is "cold restart"; this flag makes the choice explicit).
+    ghost_persist_across_mgr: bool = True
 
     # Avenue 5: roundabout (MGR) deadlock breaker.
     # When enabled, each drone owns a RoundaboutManager that fires on
@@ -512,6 +522,12 @@ class Drone:
     _ghost_manager: Optional[GhostManager] = None
     # Cumulative count of CBF-flagged conflicts probed across all ticks.
     n_ghost_probe_hits: int = 0
+    # Avenue 4 ↔ Avenue 5 bridge: number of ghosts that survived into the
+    # post-MGR MINCO solve, summed across all MGR exits this drone went
+    # through. Diagnostic for the bridge's contribution to post-exit
+    # conflict awareness; should be > 0 whenever ghosts existed pre-MGR
+    # and `ghost_persist_across_mgr` is True.
+    n_ghosts_carried_across_mgr: int = 0
 
     def _mgr_evaluate(
         self,
@@ -653,6 +669,29 @@ class Drone:
         self._bayesian_filter = None
         self._mgr_exit_time = float(t_exit)
         self.n_mgr_exits += 1
+
+        # Avenue 4 ↔ Avenue 5 bridge: hand the pre-MGR ghost map over to
+        # the post-exit MINCO solve. Without this, every orbit cycle
+        # effectively wipes prior conflict awareness — the freshly-installed
+        # trajectory falls through to a CBF probe that has to re-discover
+        # the same conflicts from scratch each exit.
+        #
+        # We apply a single bulk decay equivalent to per-tick decay running
+        # for the orbit duration; long orbits naturally fade old ghosts to
+        # nothing (matching the "stale info" intuition), short orbits keep
+        # them near full strength.
+        if self._ghost_manager is not None and len(self._ghost_manager) > 0:
+            if config.ghost_persist_across_mgr:
+                orbit_duration_s = max(
+                    0.0, float(t_exit) - float(self._mgr_orbit.t_entered)
+                )
+                period = max(1e-6, float(config.replan_period_s))
+                n_ticks = orbit_duration_s / period
+                factor = float(config.ghost_decay_per_tick) ** n_ticks
+                self._ghost_manager.decay_by_factor(factor)
+                self.n_ghosts_carried_across_mgr += len(self._ghost_manager)
+            else:
+                self._ghost_manager.clear()
 
     def position_at(self, t: float) -> np.ndarray:
         """Sample drone position at rig-global time `t`.
@@ -1323,6 +1362,9 @@ def run_one_trial(
         for dr in drones
         if dr._ghost_manager is not None
     )
+    ghosts_carried_across_mgr_total = sum(
+        int(dr.n_ghosts_carried_across_mgr) for dr in drones
+    )
     result.update(
         {
             "t_replan_total_ms": sum_t_replan_ms,
@@ -1344,6 +1386,7 @@ def run_one_trial(
             "ghost_seeded": int(ghost_seeded_total),
             "ghost_merged": int(ghost_merged_total),
             "ghost_active_end": int(ghost_active_end),
+            "ghosts_carried_across_mgr": int(ghosts_carried_across_mgr_total),
             **dist_metrics,
             **cbf_metrics,
         }

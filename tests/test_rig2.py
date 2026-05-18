@@ -655,3 +655,243 @@ class TestGhostObstacleFeedback:
             f"d_min unchanged with ghosts on: "
             f"off={out_off['d_min_inter_m']:.4f}, on={out_on['d_min_inter_m']:.4f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Avenue 4 ↔ Avenue 5 bridge: ghost obstacles persist across MGR cycles
+# ---------------------------------------------------------------------------
+
+class TestMGRGhostBridge:
+    """When a drone exits MGR, the next MINCO solve should inherit the
+    pre-MGR ghost map (decayed by orbit duration) instead of starting
+    cold. PR #13 left this as a follow-up. These tests pin the bridge:
+
+      1. `_install_post_mgr_trajectory` applies orbit-duration cumulative
+         decay to the GhostManager when `ghost_persist_across_mgr=True`.
+      2. With `ghost_persist_across_mgr=False`, ghosts are explicitly
+         cleared at exit (the documented "cold restart" mode).
+      3. End-to-end metric `ghosts_carried_across_mgr` is reported and
+         non-zero under conditions that produce ghosts before MGR fires.
+    """
+
+    def _cfg(self, **overrides):
+        kw = dict(
+            field_radius=8.0,
+            gcopter_maxiter=10,
+            sim_duration_s=12.0,
+            replan_period_s=0.5,
+            sample_dt_s=0.1,
+            enable_roundabout=True,
+            roundabout_force_exit_s=3.0,
+            enable_ghost_obstacles=True,
+            enable_cbf_filter=True,
+            clearance_horizontal=2.0,
+        )
+        kw.update(overrides)
+        return Rig2Config(**kw)
+
+    def _seeded_drone(self, t_enter: float, n_ghosts: int = 3):
+        """Build a single Drone with a pre-populated ghost map and an
+        installed orbit so `_install_post_mgr_trajectory` is callable."""
+        from src.validation.rig2_swarm_avoidance import (
+            Drone, _RoundaboutOrbit, _initial_trajectory,
+        )
+        from src.swarm.ghost_obstacles import (
+            GhostManager, GhostManagerConfig,
+        )
+        from src.swarm.trajectory_broadcast import SwarmBroadcaster
+        from src.validation.broadcast_channel import (
+            BroadcastChannel, ChannelConfig,
+        )
+
+        cfg = self._cfg()
+        traj, polys = _initial_trajectory(
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            config=cfg,
+        )
+        channel = BroadcastChannel(
+            config=ChannelConfig(latency_ms_mean=0.0), n_agents=1
+        )
+        drone = Drone(
+            drone_id=0,
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            trajectory=traj,
+            polytopes=polys,
+            broadcaster=SwarmBroadcaster(drone_id=0, channel=channel),
+        )
+        drone._pre_mgr_trajectory = drone.trajectory
+        drone._mgr_orbit = _RoundaboutOrbit(
+            center_xy=np.array([0., 0.]),
+            center_z=5.0,
+            radius=2.0,
+            t_entered=t_enter,
+            initial_angle=0.0,
+            angular_velocity=1.0,
+            own_z_at_entry=5.0,
+            z_settle_s=0.5,
+        )
+        drone._ghost_manager = GhostManager(
+            config=GhostManagerConfig(
+                initial_weight=cfg.ghost_initial_weight,
+                decay_per_tick=cfg.ghost_decay_per_tick,
+                weight_threshold=cfg.ghost_weight_threshold,
+            )
+        )
+        positions = [
+            np.array([3.0 + i, 0.0, 5.0], dtype=np.float64)
+            for i in range(n_ghosts)
+        ]
+        drone._ghost_manager.seed_from_positions(positions, t_planted=0.0)
+        return drone, cfg
+
+    def test_persist_true_decays_by_orbit_duration(self) -> None:
+        """With persist=True and short orbit, ghosts survive with weights
+        scaled by `decay_per_tick ** (orbit_duration / replan_period)`."""
+        drone, cfg = self._seeded_drone(t_enter=1.0, n_ghosts=3)
+        assert cfg.ghost_persist_across_mgr is True
+        weights_before = [g.weight for g in drone._ghost_manager.active_ghosts()]
+        t_exit = 2.0  # 1.0 s orbit, replan_period 0.5 → 2 ticks of decay.
+        drone._install_post_mgr_trajectory(t_exit, cfg)
+        active = drone._ghost_manager.active_ghosts()
+        assert len(active) == len(weights_before), (
+            "all ghosts should survive short orbit"
+        )
+        expected_factor = cfg.ghost_decay_per_tick ** (
+            (t_exit - 1.0) / cfg.replan_period_s
+        )
+        for g, w_before in zip(active, weights_before):
+            assert g.weight == pytest.approx(w_before * expected_factor)
+        assert drone.n_ghosts_carried_across_mgr == len(active)
+
+    def test_persist_true_long_orbit_prunes_all(self) -> None:
+        """A long orbit fades pre-MGR ghosts below threshold → all pruned.
+        Matches the "stale info" intuition: by the time you've orbited for
+        many ticks, the original conflict map is no longer trustworthy."""
+        drone, cfg = self._seeded_drone(t_enter=0.0, n_ghosts=3)
+        t_exit = 20.0  # 40 ticks at 0.5s; 0.6**40 ≈ 1.3e-9 → all below threshold.
+        drone._install_post_mgr_trajectory(t_exit, cfg)
+        assert len(drone._ghost_manager) == 0
+        assert drone.n_ghosts_carried_across_mgr == 0
+
+    def test_persist_false_clears_ghosts(self) -> None:
+        """Opt-out path: persist=False clears the manager at exit, restoring
+        the documented "cold restart" semantics."""
+        drone, cfg_persist = self._seeded_drone(t_enter=1.0, n_ghosts=3)
+        cfg = Rig2Config(
+            **{**cfg_persist.__dict__, "ghost_persist_across_mgr": False}
+        )
+        drone._install_post_mgr_trajectory(2.0, cfg)
+        assert len(drone._ghost_manager) == 0
+        assert drone.n_ghosts_carried_across_mgr == 0
+
+    def test_empty_ghost_manager_is_noop(self) -> None:
+        """No ghosts to carry → no counter increment, no error."""
+        drone, cfg = self._seeded_drone(t_enter=1.0, n_ghosts=3)
+        drone._ghost_manager.clear()
+        drone._install_post_mgr_trajectory(2.0, cfg)
+        assert drone.n_ghosts_carried_across_mgr == 0
+
+    def test_no_ghost_manager_is_noop(self) -> None:
+        """Drone that never enabled ghosts must not crash on MGR exit."""
+        drone, cfg = self._seeded_drone(t_enter=1.0, n_ghosts=0)
+        drone._ghost_manager = None
+        drone._install_post_mgr_trajectory(2.0, cfg)
+        assert drone.n_ghosts_carried_across_mgr == 0
+
+    def test_metric_reported_in_run_one_trial(self) -> None:
+        """End-to-end: `ghosts_carried_across_mgr` is exported as an int
+        and reflects only the bridge codepath (so it stays 0 in scenarios
+        where MGR fires before any CBF probe can seed ghosts, which is
+        the dominant case for converge_dense)."""
+        cfg = self._cfg()
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        assert "ghosts_carried_across_mgr" in out
+        assert isinstance(out["ghosts_carried_across_mgr"], int)
+        assert out["ghosts_carried_across_mgr"] >= 0
+
+    def test_drone_reoptimise_carries_ghosts_across_orbit(self) -> None:
+        """Integration through `reoptimise`: seed ghosts on a drone, force
+        it into an orbit at a chosen time, then let `reoptimise` discover
+        the exit. The carry counter must reflect the surviving ghosts."""
+        from src.validation.rig2_swarm_avoidance import (
+            Drone, _RoundaboutOrbit, _initial_trajectory,
+        )
+        from src.swarm.ghost_obstacles import (
+            GhostManager, GhostManagerConfig,
+        )
+        from src.swarm.roundabout import RoundaboutManager, RoundaboutConfig
+        from src.swarm.trajectory_broadcast import SwarmBroadcaster
+        from src.validation.broadcast_channel import (
+            BroadcastChannel, ChannelConfig,
+        )
+
+        cfg = self._cfg(roundabout_force_exit_s=1.0)
+        traj, polys = _initial_trajectory(
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            config=cfg,
+        )
+        channel = BroadcastChannel(
+            config=ChannelConfig(latency_ms_mean=0.0), n_agents=1
+        )
+        drone = Drone(
+            drone_id=0,
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            trajectory=traj,
+            polytopes=polys,
+            broadcaster=SwarmBroadcaster(drone_id=0, channel=channel),
+        )
+        # Seed ghosts as if a previous CBF probe had hit.
+        drone._ghost_manager = GhostManager(
+            config=GhostManagerConfig(
+                initial_weight=cfg.ghost_initial_weight,
+                decay_per_tick=cfg.ghost_decay_per_tick,
+                weight_threshold=cfg.ghost_weight_threshold,
+            )
+        )
+        drone._ghost_manager.seed_from_positions(
+            [np.array([3.0, 0.0, 5.0]), np.array([4.0, 0.0, 5.0])],
+            t_planted=0.0,
+        )
+        # Manually install an orbit at t=0.5, short enough that decay leaves
+        # ghosts above threshold.
+        t_enter = 0.5
+        drone._pre_mgr_trajectory = drone.trajectory
+        drone._mgr_orbit = _RoundaboutOrbit(
+            center_xy=np.array([0., 0.]),
+            center_z=5.0,
+            radius=1.0,
+            t_entered=t_enter,
+            initial_angle=0.0,
+            angular_velocity=1.0,
+            own_z_at_entry=5.0,
+            z_settle_s=0.3,
+        )
+        # Seed the RoundaboutManager so its update() call has internal state.
+        drone._mgr_manager = RoundaboutManager(
+            drone_id=0,
+            config=RoundaboutConfig(v_max_ms=cfg.v_max),
+        )
+        # Drive reoptimise() forward until the force-exit timer fires.
+        for tick in range(20):
+            t_now = t_enter + 0.1 + tick * cfg.replan_period_s
+            drone.reoptimise(t_now, cfg)
+            if drone._mgr_exit_time is not None:
+                break
+        assert drone._mgr_exit_time is not None, "MGR never exited"
+        # Bridge fired: counter must reflect surviving ghosts.
+        assert drone.n_ghosts_carried_across_mgr >= 1
+
+    def test_persist_false_metric_stays_zero(self) -> None:
+        """End-to-end: with persist=False, the carry counter stays at 0
+        even after multiple MGR exits."""
+        cfg = self._cfg(ghost_persist_across_mgr=False)
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        assert out["ghosts_carried_across_mgr"] == 0
