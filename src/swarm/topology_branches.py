@@ -52,7 +52,9 @@ from src.swarm.homotopy import (
     HomotopyPenaltyContext,
     build_penalty_context,
     full_signature,
+    full_signature_3d,
     generate_target_signatures,
+    generate_target_signatures_3d,
 )
 
 
@@ -60,6 +62,9 @@ from src.swarm.homotopy import (
 class MultiBranchConfig:
     n_branches: int = 4
     perturbation_scale: float = 2.0
+    # When True, scale is rederived per call from corridor clearance and
+    # current neighbour separation; perturbation_scale becomes an upper bound.
+    adaptive_perturbation: bool = True
     trigger_dist_fraction: float = 2.0
     # Requiring non-convergence makes the trigger too restrictive in
     # warm-started flows where L-BFGS converges quickly even to
@@ -73,6 +78,14 @@ class MultiBranchConfig:
     branch_maxiter: int = 10
     branch_ftol: float = 1.0e-4
     branch_maxls: int = 10
+    # Gap 1: 3-D homotopy signature (h_sign, v_sign per neighbour).
+    # When True, signatures track horizontal AND vertical pass-by side,
+    # and target-signature enumeration explores both flips. Default False
+    # to preserve existing rig 2 behaviour byte-for-byte.
+    enable_3d_signature: bool = False
+    homotopy_penalty_weight_v: float = 5.0e2
+    homotopy_epsilon_v: float = 0.5
+    vertical_band_m: float = 0.5
 
 
 @dataclass
@@ -87,6 +100,7 @@ class MultiBranchResult:
     branch_min_dists: List[float] = field(default_factory=list)
     selected_branch_idx: int = 0
     trigger_reason: str = ""
+    perturbation_scale_used: float = 0.0
 
 
 def _sample_traj_on_grid(traj: Trajectory, ts: np.ndarray) -> np.ndarray:
@@ -144,15 +158,94 @@ def _total_cost_with_swarm(
     gc_config: GCopterConfig,
     swarm_neighbours: Sequence,
     swarm_config: object,
+    swarm_freshnesses: Optional[Sequence[float]] = None,
 ) -> float:
     cost = _evaluate_cost(trajectory, polytopes, gc_config)
     if swarm_neighbours and swarm_config is not None:
         from src.swarm.swarm_penalty import compute_swarm_cost_and_grad
         sc, _, _ = compute_swarm_cost_and_grad(
-            trajectory, list(swarm_neighbours), swarm_config
+            trajectory, list(swarm_neighbours), swarm_config,
+            freshnesses=swarm_freshnesses,
         )
         cost += sc
     return float(cost)
+
+
+def _corridor_min_half_extent(
+    polytopes: Sequence[Polytope], waypoints: np.ndarray
+) -> float:
+    """Approximate corridor Chebyshev radius along the trajectory.
+
+    For each interior waypoint, take the slack `b - A @ waypoint` in its
+    containing polytope (rows of A are unit-normalised, so the slack is in
+    metres). The minimum over all (waypoint, polytope-row) pairs gives a
+    conservative half-extent of free space transverse to the trajectory.
+    Returns infinity for empty inputs.
+    """
+    if not polytopes or waypoints.shape[0] == 0:
+        return float("inf")
+    n_interior = max(0, waypoints.shape[0] - 2)
+    if n_interior == 0:
+        return float("inf")
+    best = float("inf")
+    for idx in range(n_interior):
+        wp = waypoints[idx + 1]
+        poly_idx = min(idx, len(polytopes) - 1)
+        poly = polytopes[poly_idx]
+        slack = poly.b - poly.A @ wp
+        if slack.size == 0:
+            continue
+        slack_min = float(np.min(slack))
+        if slack_min < best:
+            best = slack_min
+    return max(best, 0.0)
+
+
+def _median_neighbour_separation(
+    waypoints: np.ndarray,
+    swarm_neighbours: Sequence,
+) -> float:
+    """Median Euclidean separation from the start waypoint to each neighbour.
+
+    Returns infinity when no neighbours are visible.
+    """
+    if not swarm_neighbours or waypoints.shape[0] == 0:
+        return float("inf")
+    start = waypoints[0]
+    dists: List[float] = []
+    for (nb_traj, t_offset) in swarm_neighbours:
+        T_nb = float(nb_traj.total_time)
+        # neighbour position at our t=0 corresponds to nb local time -t_offset
+        nb_t = max(0.0, min(T_nb, -float(t_offset)))
+        nb_p = nb_traj.evaluate(nb_t, 0)
+        dists.append(float(np.linalg.norm(nb_p - start)))
+    if not dists:
+        return float("inf")
+    return float(np.median(dists))
+
+
+def _adaptive_perturbation_scale(
+    polytopes: Sequence[Polytope],
+    waypoints: np.ndarray,
+    swarm_neighbours: Sequence,
+    fallback: float,
+) -> float:
+    """Return min(0.4 * corridor_half_extent, 0.6 * median_sep), clamped above by fallback.
+
+    The two bounds reflect competing requirements:
+      - the perturbation must stay inside the FIRI corridor with margin
+        (0.4 * half_extent keeps a 60 % safety buffer),
+      - it must reach across the neighbour spacing to enter a different
+        homotopy class (0.6 * median_sep ≈ comfortably crossing the gap).
+    Fallback caps the result so the user-supplied config still bounds it
+    from above; in sparse / wide-corridor cases the fallback is the answer.
+    """
+    corridor = _corridor_min_half_extent(polytopes, waypoints)
+    spacing = _median_neighbour_separation(waypoints, swarm_neighbours)
+    candidate = min(0.4 * corridor, 0.6 * spacing)
+    if not np.isfinite(candidate) or candidate <= 0.0:
+        return float(fallback)
+    return float(min(candidate, fallback))
 
 
 def _perturb_for_target(
@@ -195,6 +288,7 @@ def multi_branch_optimize(
     config: GCopterConfig,
     swarm_neighbours: Optional[Sequence] = None,
     swarm_config: Optional[object] = None,
+    swarm_freshnesses: Optional[Sequence[float]] = None,
     warm_start: bool = False,
     branch_config: Optional[MultiBranchConfig] = None,
     swarm_clearance_horizontal: float = 1.0,
@@ -209,10 +303,12 @@ def multi_branch_optimize(
         bc_start=bc_start, bc_end=bc_end,
         polytopes=polytopes, config=config,
         swarm_neighbours=swarm_neighbours, swarm_config=swarm_config,
+        swarm_freshnesses=swarm_freshnesses,
         warm_start=warm_start, return_meta=True,
     )
     main_cost = _total_cost_with_swarm(
-        main_traj, polytopes, config, swarm_neighbours or [], swarm_config
+        main_traj, polytopes, config, swarm_neighbours or [], swarm_config,
+        swarm_freshnesses=swarm_freshnesses,
     )
     main_min_dist = _min_predicted_swarm_distance(
         main_traj, swarm_neighbours or []
@@ -251,6 +347,7 @@ def multi_branch_optimize(
             trigger_reason=(
                 f"no-trigger (violation={violation_likely} non_conv={non_converged})"
             ),
+            perturbation_scale_used=0.0,
         )
 
     # Step 2b: Compute main's signature (expensive — only if we'll need it)
@@ -260,10 +357,17 @@ def multi_branch_optimize(
     if nbr_samples:
         own_ts = nbr_samples[0][1]
         own_xyz = _sample_traj_on_grid(main_traj, own_ts)
-        main_signature = full_signature(
-            own_xyz, own_ts, nbr_samples,
-            interaction_radius=swarm_clearance_horizontal * 2.0,
-        )
+        if bc.enable_3d_signature:
+            main_signature = full_signature_3d(
+                own_xyz, own_ts, nbr_samples,
+                interaction_radius=swarm_clearance_horizontal * 2.0,
+                vertical_band_m=bc.vertical_band_m,
+            )
+        else:
+            main_signature = full_signature(
+                own_xyz, own_ts, nbr_samples,
+                interaction_radius=swarm_clearance_horizontal * 2.0,
+            )
     else:
         main_signature = ()
 
@@ -272,7 +376,10 @@ def multi_branch_optimize(
     needs_branches = True  # noqa: F841 — kept for diagnostic parity
 
     # Step 4: Generate target signatures
-    targets = generate_target_signatures(main_signature, bc.n_branches)
+    if bc.enable_3d_signature:
+        targets = generate_target_signatures_3d(main_signature, bc.n_branches)
+    else:
+        targets = generate_target_signatures(main_signature, bc.n_branches)
     if not targets:
         return MultiBranchResult(
             trajectory=main_traj,
@@ -285,10 +392,20 @@ def multi_branch_optimize(
             branch_min_dists=[main_min_dist],
             selected_branch_idx=0,
             trigger_reason="triggered but no flippable signatures",
+            perturbation_scale_used=0.0,
         )
 
     # Step 5: Run constrained branches
     interior_times = np.cumsum(initial_durations)[:-1]
+    if bc.adaptive_perturbation:
+        effective_perturbation = _adaptive_perturbation_scale(
+            polytopes,
+            initial_waypoints,
+            swarm_neighbours or [],
+            fallback=bc.perturbation_scale,
+        )
+    else:
+        effective_perturbation = bc.perturbation_scale
 
     branch_gc_config = GCopterConfig(
         s=config.s,
@@ -322,12 +439,14 @@ def multi_branch_optimize(
                 target_signature=target_sig,
                 weight=bc.homotopy_penalty_weight,
                 epsilon=bc.homotopy_epsilon,
+                weight_v=bc.homotopy_penalty_weight_v,
+                epsilon_v=bc.homotopy_epsilon_v,
             )
         except Exception:
             continue
 
         perturbed_wps = _perturb_for_target(
-            initial_waypoints, ctx, bc.perturbation_scale
+            initial_waypoints, ctx, effective_perturbation
         )
 
         try:
@@ -338,6 +457,7 @@ def multi_branch_optimize(
                 polytopes=polytopes, config=branch_gc_config,
                 swarm_neighbours=swarm_neighbours,
                 swarm_config=swarm_config,
+                swarm_freshnesses=swarm_freshnesses,
                 warm_start=True,
                 return_meta=True,
                 homotopy_context=ctx,
@@ -350,13 +470,21 @@ def multi_branch_optimize(
             continue
 
         cand_xyz = _sample_traj_on_grid(cand_traj, nbr_samples[0][1])
-        cand_sig = full_signature(
-            cand_xyz, nbr_samples[0][1], nbr_samples,
-            interaction_radius=swarm_clearance_horizontal * 2.0,
-        )
+        if bc.enable_3d_signature:
+            cand_sig = full_signature_3d(
+                cand_xyz, nbr_samples[0][1], nbr_samples,
+                interaction_radius=swarm_clearance_horizontal * 2.0,
+                vertical_band_m=bc.vertical_band_m,
+            )
+        else:
+            cand_sig = full_signature(
+                cand_xyz, nbr_samples[0][1], nbr_samples,
+                interaction_radius=swarm_clearance_horizontal * 2.0,
+            )
         cand_cost = _total_cost_with_swarm(
             cand_traj, polytopes, branch_gc_config,
             swarm_neighbours or [], swarm_config,
+            swarm_freshnesses=swarm_freshnesses,
         )
         cand_min_d = _min_predicted_swarm_distance(
             cand_traj, swarm_neighbours or []
@@ -395,4 +523,5 @@ def multi_branch_optimize(
         branch_min_dists=branch_min_dists,
         selected_branch_idx=best_idx,
         trigger_reason="triggered (cheap+signature)",
+        perturbation_scale_used=float(effective_perturbation),
     )

@@ -56,3 +56,4 @@ audit_runs/
 
 # Binary documents
 *.docx
+/reports/

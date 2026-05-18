@@ -137,3 +137,73 @@ class TestEllipsoidGeometry:
         cost_z, _, _ = compute_swarm_cost_and_grad(own, [(nb_z, 0.0)], cfg)
         # 0.7 / 1.0 = 0.7 vs 1.5 / 2.0 = 0.75 — z-offset is *relatively* closer
         assert cost_z > cost_y
+
+
+# ---------------------------------------------------------------------------
+# Freshness decay (Gap 9)
+# ---------------------------------------------------------------------------
+
+from src.swarm.swarm_penalty import freshness_from_staleness  # noqa: E402
+
+
+class TestFreshnessFromStaleness:
+
+    def test_fresh_at_zero_staleness(self) -> None:
+        assert freshness_from_staleness(0.0, max_age_s=0.5) == 1.0
+
+    def test_decays_linearly(self) -> None:
+        assert freshness_from_staleness(0.25, max_age_s=0.5) == pytest.approx(0.5)
+
+    def test_zero_past_max_age(self) -> None:
+        assert freshness_from_staleness(1.0, max_age_s=0.5) == 0.0
+
+    def test_disabled_when_max_age_zero(self) -> None:
+        assert freshness_from_staleness(99.0, max_age_s=0.0) == 1.0
+
+
+class TestComputeSwarmCostWithFreshness:
+
+    def _make_overlapping_pair(self) -> tuple:
+        """Two overlapping trajectories: nonzero cost without freshness."""
+        own = _line_traj(-5.0, 5.0, y=0.0, z=1.0)
+        nbr = _line_traj(-5.0, 5.0, y=0.0, z=1.0)
+        return own, nbr
+
+    def test_fresh_full_cost(self) -> None:
+        own, nbr = self._make_overlapping_pair()
+        cfg = SwarmPenaltyConfig(weight=1.0e3, n_quad=8)
+        c_full, _, _ = compute_swarm_cost_and_grad(
+            own, [(nbr, 0.0)], cfg, freshnesses=[1.0]
+        )
+        c_default, _, _ = compute_swarm_cost_and_grad(own, [(nbr, 0.0)], cfg)
+        assert c_full == pytest.approx(c_default)
+
+    def test_half_fresh_quarter_cost(self) -> None:
+        own, nbr = self._make_overlapping_pair()
+        cfg = SwarmPenaltyConfig(weight=1.0e3, n_quad=8)
+        c_full, _, _ = compute_swarm_cost_and_grad(
+            own, [(nbr, 0.0)], cfg, freshnesses=[1.0]
+        )
+        c_half, _, _ = compute_swarm_cost_and_grad(
+            own, [(nbr, 0.0)], cfg, freshnesses=[0.5]
+        )
+        # weight scales as fresh², so 0.5 → 0.25 of full cost
+        assert c_half == pytest.approx(c_full * 0.25, rel=1e-9)
+
+    def test_zero_fresh_means_zero_cost(self) -> None:
+        own, nbr = self._make_overlapping_pair()
+        cfg = SwarmPenaltyConfig(weight=1.0e3, n_quad=8)
+        c, _, _ = compute_swarm_cost_and_grad(
+            own, [(nbr, 0.0)], cfg, freshnesses=[0.0]
+        )
+        assert c == 0.0
+
+    def test_length_mismatch_is_silent_for_short_list(self) -> None:
+        """If freshnesses is shorter than neighbours, the missing slot defaults to 1."""
+        own, nbr = self._make_overlapping_pair()
+        cfg = SwarmPenaltyConfig(weight=1.0e3, n_quad=8)
+        c, _, _ = compute_swarm_cost_and_grad(
+            own, [(nbr, 0.0), (nbr, 0.0)], cfg, freshnesses=[0.0]
+        )
+        # First neighbour zeroed, second defaults to fresh=1 → still nonzero
+        assert c > 0.0

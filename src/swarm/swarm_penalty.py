@@ -22,7 +22,7 @@ is held constant.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -35,6 +35,10 @@ class SwarmPenaltyConfig:
     clearance_vertical: float = 1.0     # ellipsoid z radius (m); smaller for downwash
     weight: float = 1.0e3
     n_quad: int = 12                    # quadrature samples per own segment
+    # Linear-decay window (seconds). A broadcast older than this contributes
+    # zero swarm penalty; freshness within the window decays as
+    # max(0, 1 - staleness / freshness_max_age_s). 0 disables decay.
+    freshness_max_age_s: float = 0.5
 
 
 def _overlap_window(
@@ -55,10 +59,27 @@ def _overlap_window(
     return lo, hi
 
 
+def freshness_from_staleness(
+    staleness_s: float, max_age_s: float = 0.5
+) -> float:
+    """Linear-decay freshness factor in [0, 1].
+
+    A broadcast that just arrived has freshness 1.0. After `max_age_s`
+    seconds it decays to 0.0. The squared form is applied where freshness
+    multiplies the swarm-penalty weight, so a 50 %-stale broadcast carries
+    25 % of the weight — discouraging the optimiser from overcommitting
+    against an obsolete neighbour prediction.
+    """
+    if max_age_s <= 0.0:
+        return 1.0
+    return float(max(0.0, min(1.0, 1.0 - max(0.0, staleness_s) / max_age_s)))
+
+
 def compute_swarm_cost_and_grad(
     own: Trajectory,
     neighbours: Sequence[Tuple[Trajectory, float]],
     config: SwarmPenaltyConfig,
+    freshnesses: Optional[Sequence[float]] = None,
 ) -> Tuple[float, np.ndarray, np.ndarray]:
     """Compute swarm-avoidance cost and analytical gradient w.r.t. own (q_int, T).
 
@@ -122,10 +143,18 @@ def compute_swarm_cost_and_grad(
             )
 
             # accumulate over neighbours that overlap at t_abs
-            for nb_traj, t_offset in neighbours:
+            for j_nb, (nb_traj, t_offset) in enumerate(neighbours):
                 t_nb_local = t_abs - t_offset
                 if t_nb_local < 0.0 or t_nb_local > nb_traj.total_time:
                     continue
+                if freshnesses is not None and j_nb < len(freshnesses):
+                    fresh = float(freshnesses[j_nb])
+                else:
+                    fresh = 1.0
+                if fresh <= 0.0:
+                    continue
+                # freshness² scales the cost and (linearly) the gradient.
+                effective_weight = config.weight * fresh * fresh
                 nb_p = nb_traj.evaluate(t_nb_local, 0)
                 nb_v = nb_traj.evaluate(t_nb_local, 1)
 
@@ -136,7 +165,7 @@ def compute_swarm_cost_and_grad(
                 if margin <= 0.0:
                     continue
                 # cost contribution
-                cost += config.weight * (margin * margin) * w_i
+                cost += effective_weight * (margin * margin) * w_i
 
                 # ∂f/∂own_p [d] = -4 margin (delta[d] / clearance[d]²),  f = relu²(1 − d²)
                 # ∂f/∂nb_p  [d] = +4 margin (delta[d] / clearance[d]²)
@@ -144,27 +173,27 @@ def compute_swarm_cost_and_grad(
                 gradf_dp_nb = -gradf_dp_own  # opposite sign
 
                 # (q) only own's q affects this
-                grad_q += config.weight * w_i * (gq_p * gradf_dp_own[None, :])
+                grad_q += effective_weight * w_i * (gq_p * gradf_dp_own[None, :])
 
                 # (T) through own's c (fixed local tau, all k)
-                grad_T += config.weight * w_i * (gT_p @ gradf_dp_own)
+                grad_T += effective_weight * w_i * (gT_p @ gradf_dp_own)
 
                 # (T) own's tau chain — only k == k_seg
                 grad_T[k_seg] += (
-                    config.weight * w_i * float(gradf_dp_own @ own_v) * s_frac
+                    effective_weight * w_i * float(gradf_dp_own @ own_v) * s_frac
                 )
 
                 # (T) neighbour's t_nb_local chain:
                 #   t_nb_local = knot_times[k_seg] + tau − t_offset
                 #   ∂t_nb_local/∂T_k = 1 (k < k_seg)  |  s_frac (k == k_seg)  |  0 (k > k_seg)
-                proj = config.weight * w_i * float(gradf_dp_nb @ nb_v)
+                proj = effective_weight * w_i * float(gradf_dp_nb @ nb_v)
                 for k_T in range(k_seg):
                     grad_T[k_T] += proj
                 grad_T[k_seg] += proj * s_frac
 
                 # (T) integration-weight chain on T_k_seg
                 grad_T[k_seg] += (
-                    config.weight * dw_i_dTseg * (margin * margin)
+                    effective_weight * dw_i_dTseg * (margin * margin)
                 )
 
     return cost, grad_q, grad_T
