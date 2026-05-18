@@ -110,6 +110,19 @@ class Rig2Config:
     multi_branch_perturbation_scale: float = 1.5
     multi_branch_trigger_dist_fraction: float = 1.0
 
+    # Avenue 2: Bayesian-filter warm start (simplified from Yuan & Yu 2025).
+    # When enabled, each Drone maintains a Kalman-style estimator over its
+    # (interior waypoints, durations) flat state vector. After a confidence
+    # threshold is reached (default 0.5), subsequent reoptimise calls use
+    # the filter's smoothed prediction as the warm-start initial guess
+    # rather than the raw previous solution. Helps in stable scenarios
+    # where the optimum drifts smoothly; auto-resets on regime change.
+    enable_bayesian_warm_start: bool = False
+    bayesian_process_noise: float = 1.0e-2
+    bayesian_observation_noise: float = 1.0e-1
+    bayesian_confidence_threshold: float = 0.5
+    bayesian_innovation_reset_threshold: float = 2.0
+
     # comms channel
     comms_latency_ms_mean: float = 50.0
     comms_latency_ms_jitter: float = 20.0
@@ -302,6 +315,10 @@ class Drone:
     # Avenue 3: multi-branch stats
     n_multibranch_triggered: int = 0
     n_multibranch_branch_won: int = 0
+    # Avenue 2: Bayesian filter
+    _bayesian_filter: Optional[object] = None  # BayesianWarmStartFilter
+    n_filter_predicted: int = 0
+    n_filter_resets: int = 0
 
     def reoptimise(
         self,
@@ -336,6 +353,36 @@ class Drone:
         bc_end = np.zeros((self.trajectory.s + 1, self.trajectory.D))
         bc_end[0] = self.goal
 
+        # Avenue 2: Bayesian-filter initial guess prediction.
+        # If the filter has enough updates and is confident, replace the
+        # raw previous-trajectory initial guess with the filter's smoothed
+        # estimate. On unconfident or first call, fall through to the
+        # default (self.trajectory.waypoints/durations as-is).
+        init_waypoints = self.trajectory.waypoints.copy()
+        init_durations = self.trajectory.durations.copy()
+        if config.enable_bayesian_warm_start:
+            from src.single_drone.planning.bayesian_warm_start import (
+                BayesianWarmStartFilter, pack_state, unpack_state,
+            )
+            if self._bayesian_filter is None:
+                self._bayesian_filter = BayesianWarmStartFilter(
+                    process_noise=config.bayesian_process_noise,
+                    observation_noise=config.bayesian_observation_noise,
+                    innovation_reset_threshold=(
+                        config.bayesian_innovation_reset_threshold
+                    ),
+                )
+            f = self._bayesian_filter
+            if f.confidence() >= config.bayesian_confidence_threshold:
+                x_pred = f.predict()
+                if x_pred is not None:
+                    pred_wps, pred_T = unpack_state(x_pred, init_waypoints)
+                    # Sanity: durations must be positive and within bounds
+                    if np.all(pred_T > 0.05) and np.all(pred_T < 30.0):
+                        init_waypoints = pred_wps
+                        init_durations = pred_T
+                        self.n_filter_predicted += 1
+
         t0 = time.perf_counter()
         try:
             if config.enable_multi_branch:
@@ -350,8 +397,8 @@ class Drone:
                     prefer_collision_free=True,
                 )
                 mb_result = multi_branch_optimize(
-                    initial_waypoints=self.trajectory.waypoints.copy(),
-                    initial_durations=self.trajectory.durations.copy(),
+                    initial_waypoints=init_waypoints,
+                    initial_durations=init_durations,
                     bc_start=bc_start, bc_end=bc_end,
                     polytopes=self.polytopes, config=gc_cfg,
                     swarm_neighbours=neighbours, swarm_config=sw_cfg,
@@ -369,8 +416,8 @@ class Drone:
                 self.n_full += 1
             else:
                 traj, meta = gcopter_optimize(
-                    initial_waypoints=self.trajectory.waypoints.copy(),
-                    initial_durations=self.trajectory.durations.copy(),
+                    initial_waypoints=init_waypoints,
+                    initial_durations=init_durations,
                     bc_start=bc_start,
                     bc_end=bc_end,
                     polytopes=self.polytopes,
@@ -389,6 +436,17 @@ class Drone:
                     self.n_full += 1
             # After the first successful optimise, future calls are warm.
             self._has_warm_start = True
+            # Avenue 2: feed the new optimum into the Bayesian filter so
+            # subsequent calls have an updated state estimate. Track reset
+            # count for diagnostics.
+            if config.enable_bayesian_warm_start and self._bayesian_filter is not None:
+                from src.single_drone.planning.bayesian_warm_start import pack_state
+                prev_resets = self._bayesian_filter.n_resets
+                self._bayesian_filter.update(
+                    pack_state(self.trajectory.waypoints, self.trajectory.durations)
+                )
+                if self._bayesian_filter.n_resets > prev_resets:
+                    self.n_filter_resets += 1
         except Exception:  # pragma: no cover — defensive
             pass
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
