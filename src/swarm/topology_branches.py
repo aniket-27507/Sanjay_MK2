@@ -218,7 +218,42 @@ def multi_branch_optimize(
         main_traj, swarm_neighbours or []
     )
 
-    # Step 2: Compute main's signature
+    # Step 2a: CHEAP trigger short-circuit — skip signature compute when
+    # we won't branch anyway. The signature pass would otherwise cost
+    # ~32 × N_neighbours trajectory evaluations per call, wasted when the
+    # main solve is already safe. This is the A3-performance fix.
+    threshold = bc.trigger_dist_fraction * swarm_clearance_horizontal
+    violation_likely = (
+        bool(swarm_neighbours)
+        and bc.n_branches > 0
+        and main_min_dist < threshold
+    )
+    main_iters = int(main_meta.get("iters", 0))
+    main_cap = int(main_meta.get("maxiter_used", config.maxiter))
+    non_converged = main_iters >= main_cap
+    if bc.require_non_convergence:
+        cheap_trigger = violation_likely and non_converged
+    else:
+        cheap_trigger = violation_likely
+
+    if not cheap_trigger:
+        # No signature compute, no neighbour sampling. Return main only.
+        return MultiBranchResult(
+            trajectory=main_traj,
+            total_cost=main_cost,
+            main_branch_used=True,
+            n_branches_run=1,
+            signature=(),
+            branch_costs=[main_cost],
+            branch_signatures=[()],
+            branch_min_dists=[main_min_dist],
+            selected_branch_idx=0,
+            trigger_reason=(
+                f"no-trigger (violation={violation_likely} non_conv={non_converged})"
+            ),
+        )
+
+    # Step 2b: Compute main's signature (expensive — only if we'll need it)
     nbr_samples = _neighbours_for_signature(
         swarm_neighbours or [], horizon=main_traj.total_time
     )
@@ -232,36 +267,9 @@ def multi_branch_optimize(
     else:
         main_signature = ()
 
-    # Step 3: Adaptive trigger
-    threshold = bc.trigger_dist_fraction * swarm_clearance_horizontal
-    violation_likely = (
-        bool(swarm_neighbours)
-        and bc.n_branches > 0
-        and main_min_dist < threshold
-    )
-    main_iters = int(main_meta.get("iters", 0))
-    main_cap = int(main_meta.get("maxiter_used", config.maxiter))
-    non_converged = main_iters >= main_cap
-    if bc.require_non_convergence:
-        needs_branches = violation_likely and non_converged
-        trigger_reason = f"violation={violation_likely} non_conv={non_converged}"
-    else:
-        needs_branches = violation_likely
-        trigger_reason = f"violation={violation_likely}"
-
-    if not needs_branches:
-        return MultiBranchResult(
-            trajectory=main_traj,
-            total_cost=main_cost,
-            main_branch_used=True,
-            n_branches_run=1,
-            signature=main_signature,
-            branch_costs=[main_cost],
-            branch_signatures=[main_signature],
-            branch_min_dists=[main_min_dist],
-            selected_branch_idx=0,
-            trigger_reason=f"no-trigger ({trigger_reason})",
-        )
+    # Step 3: Final trigger now that we have the signature
+    # (cheap_trigger above already verified we should branch)
+    needs_branches = True  # noqa: F841 — kept for diagnostic parity
 
     # Step 4: Generate target signatures
     targets = generate_target_signatures(main_signature, bc.n_branches)
@@ -386,5 +394,5 @@ def multi_branch_optimize(
         branch_signatures=branch_signatures,
         branch_min_dists=branch_min_dists,
         selected_branch_idx=best_idx,
-        trigger_reason=f"triggered ({trigger_reason})",
+        trigger_reason="triggered (cheap+signature)",
     )

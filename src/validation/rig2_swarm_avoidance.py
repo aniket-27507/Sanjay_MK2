@@ -740,6 +740,16 @@ def run_one_trial(
             **cbf_metrics,
         }
     )
+    # When CBF is the deployed safety layer, the user-facing "collisions"
+    # and "d_min_inter_m" should be the CBF-FILTERED counts — that's what
+    # the rig will produce in the air. The raw (pre-filter) values remain
+    # available as `raw_collisions` / `raw_d_min_inter_m` for diagnosis.
+    if config.enable_cbf_filter and cbf_metrics:
+        result["raw_collisions"] = result["collisions"]
+        result["raw_d_min_inter_m"] = result.get("d_min_inter_m", float("nan"))
+        result["collisions"] = cbf_metrics["cbf_collisions"]
+        result["d_min_inter_m"] = cbf_metrics["cbf_d_min_inter_m"]
+        result["near_misses"] = cbf_metrics["cbf_near_misses"]
     result["success"] = result["collisions"] == 0
 
     if viz is not None:
