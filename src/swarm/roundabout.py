@@ -117,6 +117,25 @@ class RoundaboutConfig:
     escape_arc_band_rad: float = 0.35   # ~20 deg sector around goal direction
     escape_delta_sensing_m: float = 1.5  # neighbour must be beyond r+ this to count free
     force_exit_s: float = 8.0
+    # Per-drone deterministic jitter (in seconds, +/- range) added to
+    # `force_exit_s` so symmetric N-drone deadlocks don't all time out on the
+    # same tick. Spread is derived from drone_id via Knuth's multiplicative
+    # hash, giving a stable, well-distributed offset across the swarm.
+    # 0 disables stagger (default for backward compat).
+    force_exit_jitter_s: float = 0.0
+    # Clearance band around the straight-line post-exit path (own_pos →
+    # own_goal). If any neighbour's current OR short-horizon predicted
+    # position falls within this band, exit is treated as unsafe.
+    escape_path_clearance_m: float = 2.0
+    # Goal-area exclusion zone. If any neighbour is currently within this
+    # distance of own_goal, exit is treated as unsafe (the goal is already
+    # contested by a drone that exited earlier).
+    escape_goal_exclusion_m: float = 3.0
+    # Post-exit re-entry cooldown. After exiting, the manager refuses to
+    # re-enter MGR until this many seconds have elapsed since the last
+    # exit. Stops chatter where a drone exits and immediately re-triggers
+    # on the same conflict set. 0 disables the cooldown.
+    reentry_cooldown_s: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +189,19 @@ class RoundaboutUpdate:
 def _wrap_pi(angle: float) -> float:
     """Wrap an angle into (-pi, pi]."""
     return float(np.arctan2(np.sin(angle), np.cos(angle)))
+
+
+def _force_exit_jitter(drone_id: int, jitter_s: float) -> float:
+    """Deterministic per-drone jitter in [-jitter_s, +jitter_s).
+
+    Uses Knuth's multiplicative hash so sequential drone_ids spread out
+    rather than cluster. With `jitter_s == 0`, returns 0.
+    """
+    if jitter_s <= 0.0:
+        return 0.0
+    h = ((int(drone_id) + 1) * 2654435761) & 0xFFFFFFFF
+    u = h / float(1 << 32)
+    return float(jitter_s) * (2.0 * u - 1.0)
 
 
 def _clamp_norm(vec: np.ndarray, cap: float) -> np.ndarray:
@@ -296,18 +328,46 @@ def _goal_sector_is_free(
     neighbours: Sequence[NeighbourObservation],
     config: RoundaboutConfig,
 ) -> bool:
-    """Return True if no neighbour blocks the arc from own to goal.
+    """Return True if no neighbour blocks a safe exit toward the goal.
 
-    We check neighbours within `state.radius_m + escape_delta_sensing_m`
-    of the center; their angle relative to center must be more than
-    `escape_arc_band_rad` away from the goal-direction angle. If any
-    neighbour falls inside the arc band on the path to goal, return False.
+    Three checks; ALL must pass:
+      1. Arc check (original): no neighbour sits inside the angular band
+         from self to goal along the orbit.
+      2. Path check: no neighbour (current or predicted over the
+         prediction horizon) is within `escape_path_clearance_m` of the
+         straight-line segment from own_pos to own_goal.
+      3. Goal-area check: no neighbour is currently within
+         `escape_goal_exclusion_m` of own_goal — the destination is
+         contested, likely by an earlier exiter.
+
+    The arc check is necessary but not sufficient for symmetric N-drone
+    converge geometries where the goal sits at (or near) the orbit
+    centroid: there the post-exit path is radial, and orbiting peers off
+    to the sides of the arc band still create downstream conflicts at the
+    goal. Checks (2) and (3) close that gap.
     """
+    if not _arc_to_goal_is_free(own_pos, own_goal, state, neighbours, config):
+        return False
+    if not _exit_path_is_clear(own_pos, own_goal, neighbours, config):
+        return False
+    if not _goal_area_is_clear(own_goal, neighbours, config):
+        return False
+    return True
+
+
+def _arc_to_goal_is_free(
+    own_pos: np.ndarray,
+    own_goal: np.ndarray,
+    state: RoundaboutState,
+    neighbours: Sequence[NeighbourObservation],
+    config: RoundaboutConfig,
+) -> bool:
+    """Original arc-based check, retained for cases where goal is far from center."""
     rel_self = own_pos[:2] - state.center_xy
     self_theta = float(np.arctan2(rel_self[1], rel_self[0]))
     rel_goal = own_goal[:2] - state.center_xy
     if float(np.linalg.norm(rel_goal)) < 1e-6:
-        return True  # goal coincides with center → escape trivially
+        return True  # goal coincides with center → arc is undefined
     goal_theta = float(np.arctan2(rel_goal[1], rel_goal[0]))
     arc_to_goal = _wrap_pi(goal_theta - self_theta)
     arc_sign = 1.0 if arc_to_goal >= 0.0 else -1.0
@@ -318,15 +378,71 @@ def _goal_sector_is_free(
         if nbr_dist > detection_radius:
             continue
         nbr_theta = float(np.arctan2(rel_nbr[1], rel_nbr[0]))
-        # Signed arc from self toward goal direction.
         arc_self_to_nbr = _wrap_pi(nbr_theta - self_theta)
-        # On the path side of self (same sign as arc_to_goal) and inside
-        # the band leading up to goal_theta?
         if arc_sign * arc_self_to_nbr < 0.0:
-            continue  # neighbour is behind us along the orbit
-        # If neighbour is within the arc-to-goal range (modulo the band),
-        # the sector is blocked.
+            continue
         if abs(arc_self_to_nbr) <= abs(arc_to_goal) + config.escape_arc_band_rad:
+            return False
+    return True
+
+
+def _exit_path_is_clear(
+    own_pos: np.ndarray,
+    own_goal: np.ndarray,
+    neighbours: Sequence[NeighbourObservation],
+    config: RoundaboutConfig,
+) -> bool:
+    """Reject exit if any neighbour falls within the clearance band of the
+    straight-line post-exit path (own_pos → own_goal) in the xy plane.
+
+    Checks current AND predicted positions so an orbiting neighbour that
+    will cross the exit corridor in the next prediction horizon also
+    blocks exit.
+    """
+    seg_start = own_pos[:2]
+    seg_end = own_goal[:2]
+    seg = seg_end - seg_start
+    seg_len = float(np.linalg.norm(seg))
+    if seg_len < 1e-6:
+        return True  # already at goal; nothing to check
+    seg_hat = seg / seg_len
+    seg_perp = np.array([-seg_hat[1], seg_hat[0]], dtype=np.float64)
+    clearance = float(config.escape_path_clearance_m)
+
+    def too_close(p_xy: np.ndarray) -> bool:
+        rel = p_xy - seg_start
+        along = float(np.dot(rel, seg_hat))
+        if along < -clearance or along > seg_len + clearance:
+            return False
+        perp = abs(float(np.dot(rel, seg_perp)))
+        return perp <= clearance
+
+    for obs in neighbours:
+        if too_close(obs.position[:2]):
+            return False
+        for k in range(obs.predicted_positions.shape[0]):
+            if too_close(obs.predicted_positions[k, :2]):
+                return False
+    return True
+
+
+def _goal_area_is_clear(
+    own_goal: np.ndarray,
+    neighbours: Sequence[NeighbourObservation],
+    config: RoundaboutConfig,
+) -> bool:
+    """Reject exit if any neighbour is currently camped near the goal.
+
+    Catches the converge-dense pattern where one drone has already
+    exited and reached the shared goal — the remaining drones must keep
+    orbiting (or stagger) rather than pile in.
+    """
+    zone = float(config.escape_goal_exclusion_m)
+    if zone <= 0.0:
+        return True
+    goal_xy = own_goal[:2]
+    for obs in neighbours:
+        if float(np.linalg.norm(obs.position[:2] - goal_xy)) < zone:
             return False
     return True
 
@@ -348,12 +464,23 @@ class RoundaboutManager:
     drone_id: int
     config: RoundaboutConfig = field(default_factory=RoundaboutConfig)
     _state: Optional[RoundaboutState] = None
+    # Wall-clock time of the most recent exit (any reason). Used by the
+    # re-entry cooldown so a drone that just exited cannot immediately
+    # re-trigger on the same conflict; cooldown is opt-in via
+    # `config.reentry_cooldown_s`.
+    _last_exit_t: Optional[float] = None
 
     def is_active(self) -> bool:
         return self._state is not None
 
     def current_state(self) -> Optional[RoundaboutState]:
         return self._state
+
+    def effective_force_exit_s(self) -> float:
+        """Per-drone-jittered timeout. Exposed for tests + diagnostics."""
+        return float(self.config.force_exit_s) + _force_exit_jitter(
+            self.drone_id, self.config.force_exit_jitter_s
+        )
 
     def force_exit(self) -> None:
         """External override (e.g. operator command, RTL trigger)."""
@@ -402,7 +529,7 @@ class RoundaboutManager:
         # Step 2a: if already active, evaluate exit conditions.
         if self._state is not None:
             elapsed = float(t_now) - self._state.t_entered_s
-            timed_out = elapsed >= self.config.force_exit_s
+            timed_out = elapsed >= self.effective_force_exit_s()
             sector_free = _goal_sector_is_free(
                 own_position, own_goal, self._state, neighbours, self.config
             )
@@ -410,6 +537,7 @@ class RoundaboutManager:
                 exit_reason = "timeout" if timed_out else "sector_free"
                 exited_state = self._state
                 self._state = None
+                self._last_exit_t = float(t_now)
                 return RoundaboutUpdate(
                     active=False,
                     state=exited_state,
@@ -431,6 +559,17 @@ class RoundaboutManager:
         # Step 2b: not active; check whether to enter.
         if not conflicted:
             return RoundaboutUpdate(active=False, conflict_count=0)
+
+        # Re-entry cooldown: drones that just exited refuse to re-enter on the
+        # same tick or shortly after to avoid chatter. The post-exit MINCO
+        # solve gets at least one full optimisation pass to push the drone
+        # away from the orbit before another trigger is allowed.
+        if (
+            self.config.reentry_cooldown_s > 0.0
+            and self._last_exit_t is not None
+            and float(t_now) - float(self._last_exit_t) < self.config.reentry_cooldown_s
+        ):
+            return RoundaboutUpdate(active=False, conflict_count=len(conflicted))
 
         new_state = _build_roundabout(
             self.drone_id, own_position, conflicted, t_now, self.config

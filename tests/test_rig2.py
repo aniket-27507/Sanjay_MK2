@@ -268,7 +268,13 @@ class TestRoundaboutExit:
         return Rig2Config(**kwargs)
 
     def test_force_exit_fires_in_long_sim(self) -> None:
-        """With force_exit < sim_duration, every drone that enters MGR exits."""
+        """With force_exit < sim_duration, MGR exits fire at least once.
+
+        Drones may re-enter MGR if the post-exit MINCO encounters a fresh
+        conflict (Gap 4 post-exit policy), so the test no longer asserts
+        all drones have left the orbit at sim end — only that the exit
+        path was exercised.
+        """
         out = run_one_trial(
             seed=11,
             n_drones=6,
@@ -277,8 +283,6 @@ class TestRoundaboutExit:
         )
         assert out["mgr_triggers"] >= 1
         assert out["mgr_exits"] >= 1
-        # No drone should be orbiting at end of sim because force_exit < sim.
-        assert out["mgr_drones_orbiting"] == 0
 
     def test_post_mgr_trajectory_starts_at_orbit_exit_pose(self) -> None:
         """After exit, the rebuilt trajectory's bc_start is the orbit exit pose."""
@@ -429,3 +433,139 @@ class TestRoundaboutExit:
         last_poly = drone.polytopes[-1]
         assert polytope_contains(first_poly, drone.trajectory.bc_start[0])
         assert polytope_contains(last_poly, drone.goal)
+
+
+# ---------------------------------------------------------------------------
+# Avenue 5 post-exit policy (Gap 4 part 4)
+# ---------------------------------------------------------------------------
+
+class TestRoundaboutPostExitPolicy:
+    """Stagger + tighter sector + re-entry: residual collisions on
+    `converge_dense` (3 in PR #8) drop to zero."""
+
+    def _cfg(self, **overrides):
+        kwargs = dict(
+            field_radius=8.0,
+            gcopter_maxiter=10,
+            sim_duration_s=12.0,
+            replan_period_s=0.5,
+            sample_dt_s=0.1,
+            enable_roundabout=True,
+            roundabout_force_exit_s=3.0,
+            # Defaults exercise the new policy:
+            roundabout_force_exit_jitter_s=1.5,
+            roundabout_escape_path_clearance_m=2.0,
+            roundabout_escape_goal_exclusion_m=4.0,
+            roundabout_reentry_cooldown_s=0.6,
+        )
+        kwargs.update(overrides)
+        return Rig2Config(**kwargs)
+
+    def test_converge_dense_no_collisions_with_post_exit_policy(self) -> None:
+        """Drones exit on staggered ticks and re-enter MGR when the path
+        through the centroid is still occupied — collisions drop to zero."""
+        out = run_one_trial(
+            seed=11,
+            n_drones=6,
+            scenario="converge_dense",
+            config=self._cfg(),
+        )
+        assert out["collisions"] == 0
+        # The fix should keep drones well apart, not just below the
+        # 0.5 m collision radius.
+        assert out["d_min_inter_m"] > 1.0
+
+    def test_reentry_metric_populated(self) -> None:
+        """The new `mgr_reentries` metric is reported and non-zero on a
+        scenario engineered to provoke re-entry."""
+        out = run_one_trial(
+            seed=11,
+            n_drones=6,
+            scenario="converge_dense",
+            config=self._cfg(),
+        )
+        assert "mgr_reentries" in out
+        # With force_exit=3s and sim=12s, drones cycle in and out of MGR
+        # repeatedly while the shared goal remains contested.
+        assert out["mgr_reentries"] >= 1
+
+    def test_reentry_disabled_when_default(self) -> None:
+        """With the new knobs at their defaults (jitter=0, cooldown=0,
+        clearance/exclusion small), behaviour matches PR #8 — re-entry
+        still fires structurally (rig change), but the test only asserts
+        the metric is reported."""
+        cfg = Rig2Config(
+            enable_roundabout=True,
+            field_radius=8.0,
+            gcopter_maxiter=10,
+            sim_duration_s=4.0,
+            replan_period_s=1.0,
+            sample_dt_s=0.1,
+        )
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        assert "mgr_reentries" in out
+
+    def test_position_at_serves_historical_cycles(self) -> None:
+        """After a re-entry, `position_at` for the prior cycle's orbit
+        window still returns the orbit position (not the current orbit)."""
+        from src.validation.rig2_swarm_avoidance import (
+            Drone, _RoundaboutOrbit, _CompletedCycle, _initial_trajectory,
+        )
+        from src.swarm.trajectory_broadcast import SwarmBroadcaster
+        from src.validation.broadcast_channel import BroadcastChannel, ChannelConfig
+
+        cfg = self._cfg()
+        traj, polys = _initial_trajectory(
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            config=cfg,
+        )
+        channel = BroadcastChannel(config=ChannelConfig(latency_ms_mean=0.0), n_agents=1)
+        drone = Drone(
+            drone_id=0,
+            start=np.array([8., 0., 5.]),
+            goal=np.array([0., 0., 5.]),
+            trajectory=traj,
+            polytopes=polys,
+            broadcaster=SwarmBroadcaster(drone_id=0, channel=channel),
+        )
+        # Manually install one complete cycle in the history.
+        old_orbit = _RoundaboutOrbit(
+            center_xy=np.array([0., 0.]),
+            center_z=5.0,
+            radius=2.0,
+            t_entered=1.0,
+            initial_angle=0.0,
+            angular_velocity=1.0,
+            own_z_at_entry=5.0,
+            z_settle_s=0.5,
+        )
+        drone._completed_cycles.append(
+            _CompletedCycle(
+                orbit=old_orbit,
+                t_exit=3.0,
+                post_trajectory=traj,
+                post_t0=3.0,
+                post_t_end=5.0,
+            )
+        )
+        # And install a new active orbit starting at t=5.
+        new_orbit = _RoundaboutOrbit(
+            center_xy=np.array([5., 0.]),
+            center_z=5.0,
+            radius=2.0,
+            t_entered=5.0,
+            initial_angle=0.0,
+            angular_velocity=1.0,
+            own_z_at_entry=5.0,
+            z_settle_s=0.5,
+        )
+        drone._mgr_orbit = new_orbit
+        # Position at t=2 should come from old_orbit, not new_orbit.
+        pos = drone.position_at(2.0)
+        np.testing.assert_allclose(pos, old_orbit.position_at(2.0), atol=1e-12)
+        # Position at t=5.5 should come from new_orbit.
+        pos = drone.position_at(5.5)
+        np.testing.assert_allclose(pos, new_orbit.position_at(5.5), atol=1e-12)
