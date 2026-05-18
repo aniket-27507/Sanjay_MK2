@@ -70,6 +70,24 @@ class GCopterConfig:
     max_duration: float = 30.0
     maxiter: int = 200
     ftol: float = 1e-6
+    # ---- Warm-start parameters (Avenue 1) ----------------------------------
+    # When the caller passes `warm_start=True` to gcopter_optimize, the
+    # optimiser does a single gradient evaluation at the initial guess and
+    # decides between three cases:
+    #   1. ||grad|| / cost < warm_start_skip_ratio  → SKIP L-BFGS entirely
+    #   2. ratio < warm_start_relax_ratio           → use warm_start_maxiter
+    #   3. otherwise                                → use full maxiter
+    # The thresholds are RELATIVE (gradient norm divided by cost magnitude)
+    # to be invariant under weight scaling — absolute thresholds don't work
+    # when penalty weights vary across rigs from 1e1 to 1e4.
+    warm_start_skip_ratio: float = 1.0e-4
+    warm_start_relax_ratio: float = 1.0e-2
+    warm_start_maxiter: int = 5
+    # When warm-starting and budget is reduced, also use a coarser ftol and
+    # cap line-search effort. Defaults are tuned so the optimiser accepts the
+    # first "good enough" reduction rather than chasing 1e-6 relative ftol.
+    warm_start_ftol: float = 1.0e-3
+    warm_start_maxls: int = 5
 
 
 def gcopter_optimize(
@@ -81,7 +99,9 @@ def gcopter_optimize(
     config: Optional[GCopterConfig] = None,
     swarm_neighbours: Optional[Sequence[tuple]] = None,
     swarm_config: Optional[object] = None,
-) -> Trajectory:
+    warm_start: bool = False,
+    return_meta: bool = False,
+) -> "Trajectory | tuple[Trajectory, dict]":
     """Run L-BFGS-B over (q_interior, T) and return the optimised Trajectory.
 
     Endpoints (waypoints[0], waypoints[-1]) and boundary conditions are held
@@ -196,20 +216,78 @@ def gcopter_optimize(
         (config.min_duration, config.max_duration)
     ] * M
 
-    result = minimize(
-        cost_and_grad,
-        x0,
-        method="L-BFGS-B",
-        jac=True,
-        bounds=bounds,
-        options={"maxiter": config.maxiter, "ftol": config.ftol},
-    )
+    # ---- Avenue 1: opt-in adaptive warm-start ------------------------------
+    # When `warm_start=True`, do one gradient evaluation at x0 and use a
+    # COST-RELATIVE ratio to decide whether to skip L-BFGS, run reduced
+    # iterations, or run full. The absolute gradient-norm thresholds from
+    # the first attempt were calibration-dependent (rig swarm penalties have
+    # weights from 1e1 to 1e4 — same trajectory, different gradient norms).
+    # The ratio ||g|| / max(|cost|, 1) is invariant under weight scaling.
+    #
+    # When `warm_start=False` (cold start, no usable previous solution),
+    # skip the gradient check entirely so there is zero overhead for first
+    # planning calls. This matters because rig1 / initial trajectory builds
+    # are cold-start by definition and shouldn't pay warm-start cost.
+    skipped = False
+    use_maxiter = config.maxiter
+    grad_norm = float("nan")
+    ratio = float("nan")
+    cost_at_x0 = float("nan")
 
-    q_int_final, T_final = unflatten(result.x)
+    if warm_start:
+        cost_at_x0, grad_at_x0 = cost_and_grad(x0)
+        grad_norm = float(np.linalg.norm(grad_at_x0))
+        ratio = grad_norm / max(abs(cost_at_x0), 1.0)
+        if ratio < config.warm_start_skip_ratio:
+            skipped = True
+        elif ratio < config.warm_start_relax_ratio:
+            use_maxiter = max(config.warm_start_maxiter, 1)
+
+    if not skipped:
+        lbfgs_options = {"maxiter": use_maxiter, "ftol": config.ftol}
+        # When the caller flags warm_start=True, apply tuning that matches
+        # the actual bottleneck (line search, NOT outer-iteration count).
+        # Profiling on Rig 2 showed median 1 outer iteration with median 35
+        # function evaluations per call — almost all line search. A coarser
+        # ftol accepts the first meaningful cost reduction; smaller maxls
+        # caps the search even when scipy hasn't met its default tolerance.
+        if warm_start:
+            lbfgs_options["ftol"] = config.warm_start_ftol
+            lbfgs_options["maxls"] = config.warm_start_maxls
+
+        result = minimize(
+            cost_and_grad,
+            x0,
+            method="L-BFGS-B",
+            jac=True,
+            bounds=bounds,
+            options=lbfgs_options,
+        )
+        x_final = result.x
+        iters = int(result.nit)
+        n_evals = int(result.nfev)
+    else:
+        x_final = x0
+        iters = 0
+        n_evals = 1  # the one gradient check at x0
+
+    q_int_final, T_final = unflatten(x_final)
     final = build_traj(q_int_final, T_final)
     if final is None:
         # fall back to initial — should not happen with bounded durations
-        return Trajectory(waypoints, durations, bc_start, bc_end, s=s)
+        final = Trajectory(waypoints, durations, bc_start, bc_end, s=s)
+    if return_meta:
+        meta = {
+            "warm_start": warm_start,
+            "skipped": skipped,
+            "iters": iters,
+            "n_evals": n_evals,
+            "grad_norm_at_x0": grad_norm,
+            "ratio_at_x0": ratio,
+            "cost_at_x0": cost_at_x0,
+            "maxiter_used": use_maxiter,
+        }
+        return final, meta
     return final
 
 

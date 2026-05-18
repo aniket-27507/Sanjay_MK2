@@ -280,6 +280,14 @@ class Drone:
     broadcaster: SwarmBroadcaster
     t_broadcast: float = 0.0    # when the current trajectory was sent
     bytes_sent: int = 0
+    # Avenue 1: warm-start state. Tracks whether we have a previous OPTIMISED
+    # solution to seed the next L-BFGS call. Initial trajectory from
+    # _initial_trajectory does NOT count as warm — it's a straight-line guess.
+    _has_warm_start: bool = False
+    # Aggregate stats for instrumentation (read in run_one_trial → metrics)
+    n_skipped: int = 0
+    n_reduced: int = 0
+    n_full: int = 0
 
     def reoptimise(
         self,
@@ -316,7 +324,7 @@ class Drone:
 
         t0 = time.perf_counter()
         try:
-            traj = gcopter_optimize(
+            traj, meta = gcopter_optimize(
                 initial_waypoints=self.trajectory.waypoints.copy(),
                 initial_durations=self.trajectory.durations.copy(),
                 bc_start=bc_start,
@@ -325,8 +333,19 @@ class Drone:
                 config=gc_cfg,
                 swarm_neighbours=neighbours,
                 swarm_config=sw_cfg,
+                warm_start=self._has_warm_start,
+                return_meta=True,
             )
             self.trajectory = traj
+            # Update aggregate stats
+            if meta["skipped"]:
+                self.n_skipped += 1
+            elif meta["maxiter_used"] < gc_cfg.maxiter:
+                self.n_reduced += 1
+            else:
+                self.n_full += 1
+            # After the first successful optimise, future calls are warm.
+            self._has_warm_start = True
         except Exception:  # pragma: no cover — defensive
             pass
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
