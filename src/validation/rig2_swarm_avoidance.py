@@ -99,6 +99,43 @@ class Rig2Config:
     clearance_vertical: float = 1.0
     swarm_weight: float = 1.0e3
 
+    # Avenue 3: topology-guided multi-branch (TRUST-Planner pattern).
+    # When enabled, the warm-started main solve is first checked for
+    # predicted swarm violations; if any neighbour is within
+    # `multi_branch_trigger_dist_fraction * clearance_horizontal`, k
+    # additional branches with perturbed initial guesses are run and
+    # the best (collision-free first, then lowest cost) is selected.
+    enable_multi_branch: bool = False
+    multi_branch_n: int = 4
+    multi_branch_perturbation_scale: float = 1.5
+    multi_branch_trigger_dist_fraction: float = 2.0
+
+    # Avenue 2: Bayesian-filter warm start (simplified from Yuan & Yu 2025).
+    # When enabled, each Drone maintains a Kalman-style estimator over its
+    # (interior waypoints, durations) flat state vector. After a confidence
+    # threshold is reached (default 0.5), subsequent reoptimise calls use
+    # the filter's smoothed prediction as the warm-start initial guess
+    # rather than the raw previous solution. Helps in stable scenarios
+    # where the optimum drifts smoothly; auto-resets on regime change.
+    enable_bayesian_warm_start: bool = False
+    bayesian_process_noise: float = 1.0e-2
+    bayesian_observation_noise: float = 1.0e-1
+    bayesian_confidence_threshold: float = 0.5
+    bayesian_innovation_reset_threshold: float = 2.0
+
+    # Avenue 4: CBF safety filter applied as a POST-MINCO layer.
+    # When enabled, sampled trajectory positions/velocities are passed
+    # through a Control Barrier Function filter that enforces pairwise
+    # h_dot + alpha h >= 0 by projecting onto the safe half-space. The
+    # rig reports both raw and CBF-filtered collision counts. The filter
+    # does NOT modify the underlying MINCO trajectories — it acts on the
+    # sampled output as a safety overlay. This is the simplified version
+    # of FECBF (arXiv 2603.13103); the full version replaces the swarm
+    # penalty entirely with a per-tick QP.
+    enable_cbf_filter: bool = False
+    cbf_alpha: float = 2.0
+    cbf_max_velocity_correction: float = 3.0
+
     # comms channel
     comms_latency_ms_mean: float = 50.0
     comms_latency_ms_jitter: float = 20.0
@@ -280,6 +317,27 @@ class Drone:
     broadcaster: SwarmBroadcaster
     t_broadcast: float = 0.0    # when the current trajectory was sent
     bytes_sent: int = 0
+    # Avenue 1: warm-start state. Tracks whether we have a previous OPTIMISED
+    # solution to seed the next L-BFGS call. Initial trajectory from
+    # _initial_trajectory does NOT count as warm — it's a straight-line guess.
+    _has_warm_start: bool = False
+    # Aggregate stats for instrumentation (read in run_one_trial → metrics)
+    n_skipped: int = 0
+    n_reduced: int = 0
+    n_full: int = 0
+    # Avenue 3: multi-branch stats
+    n_multibranch_triggered: int = 0
+    n_multibranch_branch_won: int = 0
+    _prev_signature: Optional[Tuple[int, ...]] = None
+    n_signature_held: int = 0
+    n_signature_switched: int = 0
+    # Silent-exception canaries (catch the next time something quietly breaks)
+    n_optim_exceptions: int = 0
+    last_optim_exception: Optional[str] = None
+    # Avenue 2: Bayesian filter
+    _bayesian_filter: Optional[object] = None  # BayesianWarmStartFilter
+    n_filter_predicted: int = 0
+    n_filter_resets: int = 0
 
     def reoptimise(
         self,
@@ -314,21 +372,111 @@ class Drone:
         bc_end = np.zeros((self.trajectory.s + 1, self.trajectory.D))
         bc_end[0] = self.goal
 
+        # Avenue 2: Bayesian-filter initial guess prediction.
+        # If the filter has enough updates and is confident, replace the
+        # raw previous-trajectory initial guess with the filter's smoothed
+        # estimate. On unconfident or first call, fall through to the
+        # default (self.trajectory.waypoints/durations as-is).
+        init_waypoints = self.trajectory.waypoints.copy()
+        init_durations = self.trajectory.durations.copy()
+        if config.enable_bayesian_warm_start:
+            from src.single_drone.planning.bayesian_warm_start import (
+                BayesianWarmStartFilter, pack_state, unpack_state,
+            )
+            if self._bayesian_filter is None:
+                self._bayesian_filter = BayesianWarmStartFilter(
+                    process_noise=config.bayesian_process_noise,
+                    observation_noise=config.bayesian_observation_noise,
+                    innovation_reset_threshold=(
+                        config.bayesian_innovation_reset_threshold
+                    ),
+                )
+            f = self._bayesian_filter
+            if f.confidence() >= config.bayesian_confidence_threshold:
+                x_pred = f.predict()
+                if x_pred is not None:
+                    pred_wps, pred_T = unpack_state(x_pred, init_waypoints)
+                    # Sanity: durations must be positive and within bounds
+                    if np.all(pred_T > 0.05) and np.all(pred_T < 30.0):
+                        init_waypoints = pred_wps
+                        init_durations = pred_T
+                        self.n_filter_predicted += 1
+
         t0 = time.perf_counter()
         try:
-            traj = gcopter_optimize(
-                initial_waypoints=self.trajectory.waypoints.copy(),
-                initial_durations=self.trajectory.durations.copy(),
-                bc_start=bc_start,
-                bc_end=bc_end,
-                polytopes=self.polytopes,
-                config=gc_cfg,
-                swarm_neighbours=neighbours,
-                swarm_config=sw_cfg,
-            )
-            self.trajectory = traj
-        except Exception:  # pragma: no cover — defensive
-            pass
+            if config.enable_multi_branch:
+                from src.swarm.topology_branches import (
+                    MultiBranchConfig, multi_branch_optimize,
+                )
+                mb_cfg = MultiBranchConfig(
+                    n_branches=config.multi_branch_n,
+                    perturbation_scale=config.multi_branch_perturbation_scale,
+                    trigger_dist_fraction=config.multi_branch_trigger_dist_fraction,
+                )
+                mb_result = multi_branch_optimize(
+                    initial_waypoints=init_waypoints,
+                    initial_durations=init_durations,
+                    bc_start=bc_start, bc_end=bc_end,
+                    polytopes=self.polytopes, config=gc_cfg,
+                    swarm_neighbours=neighbours, swarm_config=sw_cfg,
+                    warm_start=self._has_warm_start,
+                    branch_config=mb_cfg,
+                    swarm_clearance_horizontal=config.clearance_horizontal,
+                    prev_signature=self._prev_signature,
+                )
+                self.trajectory = mb_result.trajectory
+                # Track signature continuity for diagnostics
+                if (self._prev_signature is not None
+                        and mb_result.signature == self._prev_signature):
+                    self.n_signature_held += 1
+                else:
+                    self.n_signature_switched += 1
+                self._prev_signature = mb_result.signature
+                # Stats: did multi-branch even get triggered (>1 branch run)?
+                if mb_result.n_branches_run > 1:
+                    self.n_multibranch_triggered += 1
+                    if not mb_result.main_branch_used:
+                        self.n_multibranch_branch_won += 1
+                # Approximate skipped/reduced/full from single-branch path
+                self.n_full += 1
+            else:
+                traj, meta = gcopter_optimize(
+                    initial_waypoints=init_waypoints,
+                    initial_durations=init_durations,
+                    bc_start=bc_start,
+                    bc_end=bc_end,
+                    polytopes=self.polytopes,
+                    config=gc_cfg,
+                    swarm_neighbours=neighbours,
+                    swarm_config=sw_cfg,
+                    warm_start=self._has_warm_start,
+                    return_meta=True,
+                )
+                self.trajectory = traj
+                if meta["skipped"]:
+                    self.n_skipped += 1
+                elif meta["maxiter_used"] < gc_cfg.maxiter:
+                    self.n_reduced += 1
+                else:
+                    self.n_full += 1
+            # After the first successful optimise, future calls are warm.
+            self._has_warm_start = True
+            # Avenue 2: feed the new optimum into the Bayesian filter so
+            # subsequent calls have an updated state estimate. Track reset
+            # count for diagnostics.
+            if config.enable_bayesian_warm_start and self._bayesian_filter is not None:
+                from src.single_drone.planning.bayesian_warm_start import pack_state
+                prev_resets = self._bayesian_filter.n_resets
+                self._bayesian_filter.update(
+                    pack_state(self.trajectory.waypoints, self.trajectory.durations)
+                )
+                if self._bayesian_filter.n_resets > prev_resets:
+                    self.n_filter_resets += 1
+        except Exception as _exc:  # pragma: no cover — defensive
+            # Record so silent swallowing never again hides a real bug.
+            # Diagnostics field is added on the Drone dataclass.
+            self.last_optim_exception = repr(_exc)
+            self.n_optim_exceptions += 1
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return elapsed_ms
 
@@ -357,6 +505,28 @@ def _sample_positions(
         for j, t in enumerate(t_grid):
             tc = min(max(0.0, float(t)), T)
             out[i, j] = dr.trajectory.evaluate(tc, 0)
+    return out
+
+
+def _sample_velocities(
+    drones: Sequence[Drone],
+    t_grid: np.ndarray,
+) -> np.ndarray:
+    """Return velocities of shape (n_drones, n_steps, 3).
+
+    Reads the first time-derivative of the MINCO trajectory at each t.
+    Out-of-range t values return zero velocity (drone has reached goal).
+    """
+    n = len(drones)
+    m = t_grid.size
+    out = np.zeros((n, m, 3), dtype=np.float64)
+    for i, dr in enumerate(drones):
+        T = float(dr.trajectory.total_time)
+        for j, t in enumerate(t_grid):
+            tf = float(t)
+            if tf < 0.0 or tf > T:
+                continue  # zero velocity at goal / before start
+            out[i, j] = dr.trajectory.evaluate(tf, 1)
     return out
 
 
@@ -507,6 +677,41 @@ def run_one_trial(
         positions, config.near_miss_radius, config.collision_radius
     )
 
+    # ---- 4b. Avenue 4: CBF safety filter as post-MINCO layer ---------------
+    # Sample velocities, run the filter, and report both raw and CBF-filtered
+    # collision metrics so the rig can show the safety-overlay impact.
+    cbf_metrics: Dict[str, float] = {}
+    if config.enable_cbf_filter:
+        from src.swarm.cbf_safety_filter import (
+            CBFConfig, apply_cbf_filter,
+        )
+        velocities = _sample_velocities(drones, t_grid)
+        # cbf module expects (T, N, 3); rig stores as (N, T, 3)
+        pos_T_first = np.transpose(positions, (1, 0, 2))
+        vel_T_first = np.transpose(velocities, (1, 0, 2))
+        dt = config.sample_dt_s
+        cbf_cfg = CBFConfig(
+            clearance=config.clearance_horizontal,
+            alpha=config.cbf_alpha,
+            max_velocity_correction=config.cbf_max_velocity_correction,
+            apply_to_positions=True,
+        )
+        cbf_result = apply_cbf_filter(pos_T_first, vel_T_first, dt, cbf_cfg)
+        # Re-transpose to rig's (N, T, 3) convention
+        filtered_positions = np.transpose(cbf_result.filtered_positions, (1, 0, 2))
+        cbf_dist_metrics = _pairwise_min_distance_metrics(
+            filtered_positions, config.near_miss_radius, config.collision_radius
+        )
+        cbf_metrics = {
+            "cbf_interventions": int(cbf_result.total_interventions),
+            "cbf_max_correction_m_s": float(cbf_result.max_correction_magnitude),
+            "cbf_n_infeasible": int(cbf_result.n_infeasible),
+            "cbf_d_min_inter_m": float(cbf_dist_metrics["d_min_inter_m"]),
+            "cbf_d_mean_inter_m": float(cbf_dist_metrics["d_mean_inter_m"]),
+            "cbf_near_misses": int(cbf_dist_metrics["near_misses"]),
+            "cbf_collisions": int(cbf_dist_metrics["collisions"]),
+        }
+
     # ---- 5. comms / bandwidth
     ch_stats = channel.stats()
     total_bytes = sum(dr.bytes_sent for dr in drones)
@@ -532,8 +737,19 @@ def run_one_trial(
             "packets_delivered": float(ch_stats["delivered"]),
             "packets_dropped": float(ch_stats["dropped"]),
             **dist_metrics,
+            **cbf_metrics,
         }
     )
+    # When CBF is the deployed safety layer, the user-facing "collisions"
+    # and "d_min_inter_m" should be the CBF-FILTERED counts — that's what
+    # the rig will produce in the air. The raw (pre-filter) values remain
+    # available as `raw_collisions` / `raw_d_min_inter_m` for diagnosis.
+    if config.enable_cbf_filter and cbf_metrics:
+        result["raw_collisions"] = result["collisions"]
+        result["raw_d_min_inter_m"] = result.get("d_min_inter_m", float("nan"))
+        result["collisions"] = cbf_metrics["cbf_collisions"]
+        result["d_min_inter_m"] = cbf_metrics["cbf_d_min_inter_m"]
+        result["near_misses"] = cbf_metrics["cbf_near_misses"]
     result["success"] = result["collisions"] == 0
 
     if viz is not None:
