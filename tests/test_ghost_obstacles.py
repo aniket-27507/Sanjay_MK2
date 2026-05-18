@@ -20,6 +20,8 @@ from src.single_drone.planning.corridor_generator import Polytope
 from src.single_drone.planning.gcopter import GCopterConfig, gcopter_optimize
 from src.single_drone.planning.minco import Trajectory
 from src.swarm.ghost_obstacles import (
+    GhostManager,
+    GhostManagerConfig,
     GhostObstacle,
     GhostObstacleConfig,
     compute_ghost_cost_and_grad,
@@ -345,4 +347,90 @@ class TestGcopterIntegration:
         )
         np.testing.assert_allclose(
             traj_default.waypoints, traj_empty.waypoints, atol=0.0
+        )
+
+
+# ---------------------------------------------------------------------------
+# GhostManager.decay_by_factor — Avenue 4 ↔ Avenue 5 bridge support
+# ---------------------------------------------------------------------------
+
+
+class TestGhostManagerDecayByFactor:
+    """`decay_by_factor` generalises `decay()` to arbitrary multipliers so
+    `_install_post_mgr_trajectory` can apply orbit-duration cumulative
+    decay in one shot."""
+
+    @staticmethod
+    def _seeded(weight: float = 1.0e3, threshold: float = 10.0) -> GhostManager:
+        mgr = GhostManager(
+            config=GhostManagerConfig(
+                initial_weight=weight, weight_threshold=threshold
+            )
+        )
+        mgr.seed_from_positions(
+            [np.array([0.0, 0.0, 2.0]), np.array([5.0, 0.0, 2.0])],
+            t_planted=0.0,
+        )
+        return mgr
+
+    def test_identity_factor_preserves_weights(self) -> None:
+        mgr = self._seeded()
+        weights_before = [g.weight for g in mgr.active_ghosts()]
+        mgr.decay_by_factor(1.0)
+        weights_after = [g.weight for g in mgr.active_ghosts()]
+        assert weights_before == weights_after
+        assert len(mgr) == 2
+
+    def test_partial_factor_scales_weights(self) -> None:
+        mgr = self._seeded(weight=100.0, threshold=1.0)
+        mgr.decay_by_factor(0.25)
+        active = mgr.active_ghosts()
+        assert len(active) == 2
+        for g in active:
+            assert g.weight == pytest.approx(25.0)
+
+    def test_factor_below_threshold_prunes_all(self) -> None:
+        mgr = self._seeded(weight=100.0, threshold=50.0)
+        # 100 * 0.4 = 40 < threshold → both pruned.
+        mgr.decay_by_factor(0.4)
+        assert len(mgr) == 0
+        assert mgr.n_pruned_total == 2
+
+    def test_zero_factor_clears_all(self) -> None:
+        mgr = self._seeded()
+        mgr.decay_by_factor(0.0)
+        assert len(mgr) == 0
+        assert mgr.n_pruned_total == 2
+
+    def test_negative_factor_clears_all(self) -> None:
+        mgr = self._seeded()
+        mgr.decay_by_factor(-0.5)
+        assert len(mgr) == 0
+
+    def test_equivalent_to_repeated_decay(self) -> None:
+        """`decay_by_factor(d**n)` == n calls to `decay()` when no entries
+        cross the threshold during the iterated path."""
+        d = 0.6
+        n = 4
+        mgr_iter = GhostManager(
+            config=GhostManagerConfig(
+                initial_weight=1.0e3, decay_per_tick=d, weight_threshold=1.0
+            )
+        )
+        mgr_bulk = GhostManager(
+            config=GhostManagerConfig(
+                initial_weight=1.0e3, decay_per_tick=d, weight_threshold=1.0
+            )
+        )
+        mgr_iter.seed_from_positions(
+            [np.array([1.0, 2.0, 3.0])], t_planted=0.0
+        )
+        mgr_bulk.seed_from_positions(
+            [np.array([1.0, 2.0, 3.0])], t_planted=0.0
+        )
+        for _ in range(n):
+            mgr_iter.decay()
+        mgr_bulk.decay_by_factor(d ** n)
+        assert mgr_iter.active_ghosts()[0].weight == pytest.approx(
+            mgr_bulk.active_ghosts()[0].weight
         )

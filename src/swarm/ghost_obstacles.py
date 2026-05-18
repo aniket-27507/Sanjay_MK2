@@ -313,7 +313,27 @@ class GhostManager:
 
     def decay(self) -> None:
         """Multiplicative weight decay; prune entries below threshold."""
-        factor = float(self.config.decay_per_tick)
+        self.decay_by_factor(float(self.config.decay_per_tick))
+
+    def decay_by_factor(self, factor: float) -> None:
+        """Apply arbitrary multiplicative decay to all ghost weights;
+        prune entries below `weight_threshold`.
+
+        Generalises `decay()`, which always uses `config.decay_per_tick`.
+        Used by the Avenue 4 ↔ Avenue 5 bridge to apply orbit-duration
+        cumulative decay at MGR exit (a single bulk update equivalent to
+        the per-tick decay that would have run had the replan loop been
+        active throughout the orbit).
+
+        `factor <= 0.0` clears all ghosts. `factor == 1.0` is a no-op
+        (weights and pruning unchanged).
+        """
+        factor = float(factor)
+        if factor <= 0.0:
+            self.n_pruned_total += len(self._ghosts)
+            self._ghosts = []
+            self._planted_at = []
+            return
         threshold = float(self.config.weight_threshold)
         survivors: List[GhostObstacle] = []
         survivors_t: List[float] = []
