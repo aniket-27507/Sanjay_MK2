@@ -424,6 +424,9 @@ def run_one_trial(
             "coverage_timeline": coverage_timeline_with_t,
             "coverage_pct_timeline_mean": coverage_mean,
             "coverage_gap_max_s": coverage_gap_total,
+            "coverage_loss_at_end_pct": 100.0 - coverage_end,
+            "drones_alive_at_end": n_alive,
+            "success": bool(result["success"]),
         }
     return result
 

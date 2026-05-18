@@ -452,6 +452,10 @@ def run_one_trial(
         )
         viz["t_detect_to_replan_ms"] = result["t_detect_to_replan_ms"]
         viz["coverage_pct_during"] = result["coverage_pct_during"]
+        viz["inspector_arrival_s"] = result["inspector_arrival_s"]
+        viz["t_coverage_gap_s"] = result["t_coverage_gap_s"]
+        viz["t_regroup_s"] = result["t_regroup_s"]
+        viz["success"] = bool(result["success"])
         result["viz_record"] = viz
     return result
 

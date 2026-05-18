@@ -39,6 +39,8 @@ Design choices
 
 from __future__ import annotations
 
+import json
+from html import escape
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -154,14 +156,629 @@ def _make_play_pause_buttons() -> List[dict]:
     ]
 
 
-def _save_html(fig: "go.Figure", out_html: str) -> None:
-    """Write a standalone HTML file (Plotly JS embedded inline-cdn)."""
-    fig.write_html(
-        out_html,
-        include_plotlyjs="cdn",
-        full_html=True,
-        config={"displayModeBar": True, "displaylogo": False},
+def _fmt_value(value: object, unit: str = "", precision: int = 2) -> str:
+    """Format compact metric values for the HTML validation panel."""
+    if isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+        return f"{int(value)}{unit}"
+    if isinstance(value, (float, np.floating)):
+        if not np.isfinite(float(value)):
+            return f"n/a{unit}"
+        return f"{float(value):.{precision}f}{unit}"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "n/a"
+    return f"{value}{unit}"
+
+
+def _validation_item(
+    label: str,
+    value: object,
+    status: str,
+    detail: str,
+    unit: str = "",
+    precision: int = 2,
+) -> Dict[str, str]:
+    return {
+        "label": label,
+        "value": _fmt_value(value, unit=unit, precision=precision),
+        "status": status,
+        "detail": detail,
+    }
+
+
+def _safe_float(record: Dict, key: str, default: float = float("nan")) -> float:
+    value = record.get(key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _story_shell_html(story: Optional[Dict]) -> str:
+    if not story:
+        return ""
+
+    validation = story.get("validation", [])
+    behaviours = story.get("behaviours", [])
+    controls = story.get("controls", [])
+
+    validation_html = "\n".join(
+        (
+            f'<div class="viz-card viz-card--{escape(item["status"])}">'
+            f'<div><span>{escape(item["label"])}</span>'
+            f'<strong>{escape(item["value"])}</strong></div>'
+            f'<p>{escape(item["detail"])}</p>'
+            "</div>"
+        )
+        for item in validation
     )
+    behaviours_html = "\n".join(f"<li>{escape(text)}</li>" for text in behaviours)
+    controls_html = "\n".join(f"<li>{escape(text)}</li>" for text in controls)
+
+    camera_html = ""
+    if story.get("is_3d"):
+        camera_html = """
+        <div class="viz-camera">
+          <button type="button" data-camera="iso">Iso</button>
+          <button type="button" data-camera="top">Top</button>
+          <button type="button" data-camera="side">Side</button>
+          <button type="button" data-camera="front">Front</button>
+        </div>
+        """
+
+    return f"""
+    <aside class="viz-side">
+      <p class="viz-kicker">{escape(story.get("kicker", "Validation Rig"))}</p>
+      <h1>{escape(story.get("title", "Interactive validation"))}</h1>
+      <p class="viz-summary">{escape(story.get("summary", ""))}</p>
+      {camera_html}
+      <section>
+        <h2>Validation</h2>
+        <div class="viz-cards">{validation_html}</div>
+      </section>
+      <section>
+        <h2>What To Watch</h2>
+        <ul>{behaviours_html}</ul>
+      </section>
+      <section>
+        <h2>Controls</h2>
+        <ul>{controls_html}</ul>
+      </section>
+    </aside>
+    """
+
+
+def _save_html(fig: "go.Figure", out_html: str, story: Optional[Dict] = None) -> None:
+    """Write a standalone HTML file with a rig explanation shell."""
+    fig.update_layout(template="plotly_white")
+    fig_html = fig.to_html(
+        include_plotlyjs="cdn",
+        full_html=False,
+        config={
+            "displayModeBar": True,
+            "displaylogo": False,
+            "scrollZoom": True,
+            "responsive": True,
+        },
+    )
+    story_json = json.dumps(story or {}).replace("</", "<\\/")
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape((story or {}).get("title", "Validation visualization"))}</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #5c6773;
+      --line: #d7dde5;
+      --panel: #f7f9fb;
+      --pass: #117a48;
+      --watch: #a05a00;
+      --fail: #b42318;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: #fff;
+    }}
+    .viz-layout {{
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+    }}
+    .viz-plot {{
+      min-width: 0;
+      min-height: 100vh;
+      padding: 10px 0 0 0;
+      touch-action: none;
+    }}
+    .viz-plot .js-plotly-plot, .viz-plot .plot-container {{
+      width: 100% !important;
+    }}
+    .viz-side {{
+      border-left: 1px solid var(--line);
+      background: var(--panel);
+      padding: 22px 20px;
+      overflow: auto;
+      max-height: 100vh;
+    }}
+    .viz-kicker {{
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }}
+    h1 {{
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }}
+    h2 {{
+      margin: 22px 0 10px;
+      font-size: 13px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }}
+    .viz-summary {{
+      margin: 10px 0 16px;
+      color: #344054;
+      line-height: 1.45;
+      font-size: 14px;
+    }}
+    .viz-camera {{
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin: 12px 0 16px;
+    }}
+    .viz-camera button {{
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 6px;
+      padding: 8px 4px;
+      color: var(--ink);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }}
+    .viz-camera button:hover {{ border-color: #7b8794; }}
+    .viz-cards {{
+      display: grid;
+      gap: 8px;
+    }}
+    .viz-card {{
+      border: 1px solid var(--line);
+      border-left-width: 4px;
+      background: #fff;
+      border-radius: 8px;
+      padding: 10px 11px;
+    }}
+    .viz-card--pass {{ border-left-color: var(--pass); }}
+    .viz-card--watch {{ border-left-color: var(--watch); }}
+    .viz-card--fail {{ border-left-color: var(--fail); }}
+    .viz-card div {{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 13px;
+    }}
+    .viz-card strong {{
+      font-size: 15px;
+      white-space: nowrap;
+    }}
+    .viz-card p {{
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }}
+    ul {{
+      margin: 0;
+      padding-left: 18px;
+      color: #344054;
+      font-size: 13px;
+      line-height: 1.45;
+    }}
+    li + li {{ margin-top: 7px; }}
+    @media (max-width: 980px) {{
+      .viz-layout {{ grid-template-columns: 1fr; }}
+      .viz-plot {{ min-height: 68vh; }}
+      .viz-side {{
+        max-height: none;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="viz-layout">
+    <section class="viz-plot">{fig_html}</section>
+    {_story_shell_html(story)}
+  </main>
+  <script type="application/json" id="viz-story">{story_json}</script>
+  <script>
+    (function () {{
+      const plot = document.querySelector(".js-plotly-plot");
+      if (!plot || !window.Plotly) return;
+      const cameras = {{
+        iso: {{ eye: {{ x: 1.55, y: 1.55, z: 1.2 }} }},
+        top: {{ eye: {{ x: 0, y: 0, z: 2.4 }}, up: {{ x: 0, y: 1, z: 0 }} }},
+        side: {{ eye: {{ x: 2.2, y: 0, z: 0.2 }} }},
+        front: {{ eye: {{ x: 0, y: 2.2, z: 0.2 }} }}
+      }};
+      document.querySelectorAll("[data-camera]").forEach((button) => {{
+        button.addEventListener("click", () => {{
+          const camera = cameras[button.dataset.camera];
+          if (camera) Plotly.relayout(plot, {{ "scene.camera": camera }});
+        }});
+      }});
+      window.addEventListener("resize", () => Plotly.Plots.resize(plot));
+    }})();
+  </script>
+</body>
+</html>
+"""
+    with open(out_html, "w", encoding="utf-8") as f:
+        f.write(html)
+
+
+def _common_controls(is_3d: bool) -> List[str]:
+    controls = [
+        "Drag the slider to scrub exact mission time, or use Play/Pause for motion.",
+        "Click legend entries to isolate or hide individual traces.",
+        "Hover markers and paths to inspect values at that point.",
+    ]
+    if is_3d:
+        controls.insert(
+            0,
+            "Drag to rotate the 3D scene, pinch or scroll to zoom, and use the angle buttons for repeatable views.",
+        )
+    else:
+        controls.insert(0, "Drag to pan the map, pinch or scroll to zoom.")
+    return controls
+
+
+def _rig1_story(record: Dict) -> Dict:
+    success = bool(record.get("success", False))
+    leak = _safe_float(record, "max_corridor_leak_m")
+    density = _safe_float(record, "achieved_dilated_density")
+    samples = len(record.get("trajectory_samples", []))
+    rrt_pts = len(record.get("rrt_route", []))
+    shortcut_pts = len(record.get("shortcut_route", []))
+    leak_status = "pass" if success else "fail"
+    return {
+        "kicker": "Rig 1",
+        "title": "Corridor MINCO Validation",
+        "summary": (
+            "Validates the RRT to shortcut to FIRI to MINCO pipeline in a voxel "
+            "obstacle field. The visual check is whether the animated drone stays "
+            "inside the green safe flight corridor while following the velocity-coded path."
+        ),
+        "is_3d": True,
+        "validation": [
+            _validation_item(
+                "Corridor containment",
+                leak,
+                leak_status,
+                "PASS means sampled MINCO positions stayed within the FIRI corridor tolerance.",
+                unit=" m",
+                precision=3,
+            ),
+            _validation_item(
+                "Dilated obstacle density",
+                density,
+                "pass" if np.isfinite(density) else "watch",
+                "This is the planner-visible voxel occupancy after drone-radius dilation.",
+                precision=3,
+            ),
+            _validation_item(
+                "Route simplification",
+                f"{rrt_pts} -> {shortcut_pts}",
+                "pass" if shortcut_pts and rrt_pts and shortcut_pts <= rrt_pts else "watch",
+                "Shortcutting should reduce or preserve waypoint count before MINCO smoothing.",
+            ),
+            _validation_item(
+                "Animated samples",
+                samples,
+                "pass" if samples > 1 else "fail",
+                "Frame count used for the orange drone marker and time scrubber.",
+            ),
+        ],
+        "behaviours": [
+            "Purple dotted line is the raw RRT route; red line is the shortcut route.",
+            "Green transparent boxes approximate FIRI safe polytopes; obstacles are grey voxels.",
+            "The MINCO trajectory is color-graded by speed, so hot velocity sections are visible without reading logs.",
+        ],
+        "controls": _common_controls(True),
+    }
+
+
+def _rig2_story(record: Dict, n_drones: int) -> Dict:
+    d_min = _safe_float(record, "d_min_inter_m")
+    collisions = int(record.get("collisions", 0))
+    near_misses = int(record.get("near_misses", 0))
+    nm_radius = _safe_float(record, "near_miss_radius_m", 1.5)
+    if collisions > 0:
+        separation_status = "fail"
+    elif np.isfinite(d_min) and d_min < nm_radius:
+        separation_status = "watch"
+    else:
+        separation_status = "pass"
+    return {
+        "kicker": "Rig 2",
+        "title": "Swarm Avoidance Validation",
+        "summary": (
+            "Shows all drones moving at once and flags separation risk visually. "
+            "Red connectors are generated from the sampled pairwise distance at each frame."
+        ),
+        "is_3d": True,
+        "validation": [
+            _validation_item(
+                "Minimum separation",
+                d_min,
+                separation_status,
+                f"PASS target is no connector inside near_miss_radius={nm_radius:.2f} m and zero collisions.",
+                unit=" m",
+            ),
+            _validation_item(
+                "Collisions",
+                collisions,
+                "pass" if collisions == 0 else "fail",
+                "Any non-zero collision count is a hard swarm safety failure.",
+            ),
+            _validation_item(
+                "Near-miss frames",
+                near_misses,
+                "pass" if near_misses == 0 else "watch",
+                "Near misses draw red inter-drone connector lines during playback.",
+            ),
+            _validation_item(
+                "Fleet size",
+                n_drones,
+                "pass" if n_drones > 1 else "watch",
+                "The visualization validates simultaneous trajectories, not one drone at a time.",
+            ),
+        ],
+        "behaviours": [
+            "Each colored path is a drone's full planned motion; labeled markers show synchronized current positions.",
+            "If red connectors never appear, sampled pairwise spacing stayed outside the near-miss radius.",
+            "Use top and side camera buttons to check whether apparent closeness is only perspective overlap.",
+        ],
+        "controls": _common_controls(True),
+    }
+
+
+def _rig3_story(record: Dict, n_drones: int) -> Dict:
+    drift = _safe_float(record, "drift_magnitude_max_m")
+    perim = _safe_float(record, "perimeter_deviation_max_m")
+    tol = _safe_float(record, "perimeter_tolerance_m", 2.0)
+    return {
+        "kicker": "Rig 3",
+        "title": "VIO Drift Perimeter Validation",
+        "summary": (
+            "Compares truth positions against estimated VIO positions on the patrol perimeter. "
+            "The line from circle to X is the drift vector that the correction loop must bound."
+        ),
+        "is_3d": False,
+        "validation": [
+            _validation_item(
+                "Perimeter deviation",
+                perim,
+                "pass" if np.isfinite(perim) and perim <= tol else "fail",
+                f"Estimated positions must stay inside the +/-{tol:.1f} m dashed tolerance ring.",
+                unit=" m",
+                precision=3,
+            ),
+            _validation_item(
+                "Max VIO drift",
+                drift,
+                "pass" if np.isfinite(drift) and drift <= tol else "watch",
+                "Longer truth-to-estimate segments indicate accumulated odometry error.",
+                unit=" m",
+                precision=3,
+            ),
+            _validation_item(
+                "Correction mode",
+                record.get("correction", "unknown"),
+                "pass" if record.get("correction") == "on" else "watch",
+                "With correction enabled, X markers should drift then snap back periodically.",
+            ),
+            _validation_item(
+                "Tracked drones",
+                n_drones,
+                "pass" if n_drones >= 3 else "watch",
+                "Hex-sector coverage is easiest to inspect with at least three patrol agents.",
+            ),
+        ],
+        "behaviours": [
+            "Filled circles are ground truth; black-edged X markers are VIO estimates.",
+            "Dashed red rings are the perimeter tolerance envelope.",
+            "Correction ticks should shorten the colored drift segments instead of letting them grow unbounded.",
+        ],
+        "controls": _common_controls(False),
+    }
+
+
+def _rig4_story(record: Dict, n_drones: int) -> Dict:
+    inspector_id = int(record.get("inspector_id", -1))
+    replan_ms = _safe_float(record, "t_detect_to_replan_ms")
+    coverage = _safe_float(record, "coverage_pct_during")
+    regroup = _safe_float(record, "t_regroup_s")
+    return {
+        "kicker": "Rig 4",
+        "title": "Threat Response Validation",
+        "summary": (
+            "Shows patrol agents reallocating after a threat appears. The inspector should break off, "
+            "service the threat, and rejoin while the remaining drones widen their patrol arcs."
+        ),
+        "is_3d": False,
+        "validation": [
+            _validation_item(
+                "Inspector assignment",
+                f"D{inspector_id}" if inspector_id >= 0 else "none",
+                "pass" if inspector_id >= 0 else "fail",
+                "A valid inspector means the auction found an eligible responder.",
+            ),
+            _validation_item(
+                "Detect-to-replan",
+                replan_ms,
+                "pass" if np.isfinite(replan_ms) else "watch",
+                "Lower is better; this is the assignment decision latency.",
+                unit=" ms",
+                precision=1,
+            ),
+            _validation_item(
+                "Coverage during response",
+                coverage,
+                "pass" if np.isfinite(coverage) and coverage >= 90.0 else "watch",
+                "Remaining drones should keep most of the perimeter covered while the inspector is away.",
+                unit="%",
+                precision=1,
+            ),
+            _validation_item(
+                "Regroup time",
+                regroup,
+                "pass" if np.isfinite(regroup) else "watch",
+                "Time from break-off until the inspector returns to patrol.",
+                unit=" s",
+                precision=1,
+            ),
+        ],
+        "behaviours": [
+            "The star is the threat; the diamond marker is the selected inspector.",
+            "The inspector path is drawn heavier so break-off, dwell, and return are visually separable.",
+            "Non-inspector drones should continue circulating rather than clustering at the threat.",
+        ],
+        "controls": _common_controls(False),
+    }
+
+
+def _rig5_story(record: Dict, n_drones: int) -> Dict:
+    cov_mean = _safe_float(record, "coverage_pct_timeline_mean")
+    gap = _safe_float(record, "coverage_gap_max_s")
+    battery = np.asarray(record.get("battery_per_drone", []), dtype=np.float64)
+    min_batt = float(np.nanmin(battery)) if battery.size else float("nan")
+    failed_frames = sum(
+        1
+        for drone_status in record.get("status_per_drone", [])
+        for status in drone_status
+        if status == "failed"
+    )
+    return {
+        "kicker": "Rig 5",
+        "title": "Endurance Coverage Validation",
+        "summary": (
+            "Combines patrol position, coverage percentage, and battery state so endurance faults "
+            "can be interpreted as mission impact rather than isolated telemetry."
+        ),
+        "is_3d": False,
+        "validation": [
+            _validation_item(
+                "Mean coverage",
+                cov_mean,
+                "pass" if np.isfinite(cov_mean) and cov_mean >= 90.0 else "watch",
+                "Coverage should degrade gracefully even during the selected scenario.",
+                unit="%",
+                precision=1,
+            ),
+            _validation_item(
+                "Coverage gap",
+                gap,
+                "pass" if np.isfinite(gap) and gap <= 15.0 else "watch",
+                "Accumulated time with incomplete perimeter coverage.",
+                unit=" s",
+                precision=1,
+            ),
+            _validation_item(
+                "Minimum battery",
+                min_batt,
+                "pass" if np.isfinite(min_batt) and min_batt > 0.0 else "watch",
+                "Battery bars are animated from the same per-drone SoC samples.",
+                unit="%",
+                precision=1,
+            ),
+            _validation_item(
+                "Failed samples",
+                failed_frames,
+                "watch" if failed_frames else "pass",
+                "Failed drones switch to X markers; the coverage panel shows mission impact.",
+            ),
+        ],
+        "behaviours": [
+            "Left panel shows patrol motion; right panels tie the same timestamp to coverage and SoC.",
+            "Failed drones become dark X markers, standby drones are open circles, returning drones are triangles.",
+            "The red vertical cursor should line up with the active animation frame.",
+        ],
+        "controls": _common_controls(False),
+    }
+
+
+def _rig6_story(record: Dict) -> Dict:
+    track = _safe_float(record, "tracking_error_max_m")
+    clearance = _safe_float(record, "corridor_clearance_min_m")
+    depth = _safe_float(record, "depth_valid_fraction_mean")
+    wind = _safe_float(record, "wind_speed_max_observed_ms")
+    breached = bool(record.get("corridor_breached", False))
+    return {
+        "kicker": "Rig 6",
+        "title": "Disturbance Tracking Validation",
+        "summary": (
+            "Validates that the tracker follows the commanded MINCO trajectory inside the corridor "
+            "while wind and depth-sensor degradation perturb the vehicle."
+        ),
+        "is_3d": True,
+        "validation": [
+            _validation_item(
+                "Max tracking error",
+                track,
+                "pass" if np.isfinite(track) and track <= 0.5 else "watch",
+                "Distance between the commanded MINCO position and the simulated drone.",
+                unit=" m",
+                precision=3,
+            ),
+            _validation_item(
+                "Corridor clearance",
+                clearance,
+                "pass" if not breached and np.isfinite(clearance) else "fail" if breached else "watch",
+                "Negative clearance means the drone left the safety corridor before any RTL transition.",
+                unit=" m",
+                precision=3,
+            ),
+            _validation_item(
+                "Mean valid depth",
+                depth,
+                "pass" if np.isfinite(depth) and depth >= 0.5 else "watch",
+                "Depth validity drives whether the sensor stack remains trusted.",
+                precision=3,
+            ),
+            _validation_item(
+                "Max wind force",
+                wind,
+                "pass" if np.isfinite(wind) else "watch",
+                "Purple vector length is proportional to the sampled wind acceleration force.",
+                unit=" N",
+                precision=2,
+            ),
+        ],
+        "behaviours": [
+            "Dotted grey line is the commanded trajectory; solid red line is actual tracked motion.",
+            "The purple line starts at the drone and points in the current wind-force direction.",
+            "If RTL triggers, the diamond-open marker shows the handoff point.",
+        ],
+        "controls": _common_controls(True),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +978,7 @@ def viz_rig1(record: Dict, out_html: str) -> None:
         height=800,
         margin=dict(l=0, r=0, b=80, t=50),
     )
-    _save_html(fig, out_html)
+    _save_html(fig, out_html, _rig1_story(record))
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +1150,7 @@ def viz_rig2(record: Dict, out_html: str) -> None:
         sliders=_make_slider(len(frames), times),
         updatemenus=_make_play_pause_buttons(),
     )
-    _save_html(fig, out_html)
+    _save_html(fig, out_html, _rig2_story(record, N))
 
 
 # ---------------------------------------------------------------------------
@@ -704,7 +1321,7 @@ def viz_rig3(record: Dict, out_html: str) -> None:
         showlegend=True,
     )
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
-    _save_html(fig, out_html)
+    _save_html(fig, out_html, _rig3_story(record, N))
 
 
 # ---------------------------------------------------------------------------
@@ -830,7 +1447,7 @@ def viz_rig4(record: Dict, out_html: str) -> None:
         updatemenus=_make_play_pause_buttons(),
     )
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
-    _save_html(fig, out_html)
+    _save_html(fig, out_html, _rig4_story(record, N))
 
 
 # ---------------------------------------------------------------------------
@@ -1023,7 +1640,7 @@ def viz_rig5(record: Dict, out_html: str) -> None:
     fig.update_xaxes(title_text="time (s)", row=1, col=2)
     fig.update_yaxes(title_text="coverage (%)", range=[0, 105], row=1, col=2)
     fig.update_yaxes(title_text="SoC (%)", range=[0, 100], row=2, col=2)
-    _save_html(fig, out_html)
+    _save_html(fig, out_html, _rig5_story(record, N))
 
 
 # ---------------------------------------------------------------------------
@@ -1208,7 +1825,7 @@ def viz_rig6(record: Dict, out_html: str) -> None:
         sliders=_make_slider(len(frames), times),
         updatemenus=_make_play_pause_buttons(),
     )
-    _save_html(fig, out_html)
+    _save_html(fig, out_html, _rig6_story(record))
 
 
 # ---------------------------------------------------------------------------

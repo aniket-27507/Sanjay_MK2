@@ -373,6 +373,10 @@ def run_one_trial(
             )
         viz["trajectory_samples"] = samples
         viz["success"] = bool(result["success"])
+        viz["max_corridor_leak_m"] = float(result["max_corridor_leak_m"])
+        viz["leak_tolerance_m"] = float(config.leak_tolerance_m)
+        viz["t_total_ms"] = float(result["t_total_ms"])
+        viz["v_max_observed"] = float(result["v_max_observed"])
         result["viz_record"] = viz
 
     return result
