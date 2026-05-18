@@ -178,3 +178,70 @@ class TestStressMatrix:
             f"per-agent replan time grew more than 2× between N=3 and N=6: "
             f"{t_small:.2f} ms → {t_large:.2f} ms"
         )
+
+
+# ---------------------------------------------------------------------------
+# Avenue 5: roundabout integration (Gap 4 wiring)
+# ---------------------------------------------------------------------------
+
+class TestRoundaboutIntegration:
+    """Validate that MGR triggers and prevents collisions in `converge_dense`."""
+
+    def _kwargs(self):
+        return dict(
+            field_radius=8.0,
+            gcopter_maxiter=10,
+            sim_duration_s=4.0,
+            replan_period_s=1.0,
+            sample_dt_s=0.1,
+        )
+
+    def test_converge_dense_without_mgr_collides(self) -> None:
+        """Baseline: 6 drones converging on origin collide without Avenue 5."""
+        cfg = Rig2Config(enable_roundabout=False, **self._kwargs())
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        assert out["collisions"] > 0
+        assert out["success"] is False
+        assert out["mgr_triggers"] == 0
+        assert out["mgr_drones_orbiting"] == 0
+
+    def test_converge_dense_with_mgr_prevents_collisions(self) -> None:
+        """Avenue 5 on: same scenario, no collisions, drones orbit centroid."""
+        cfg = Rig2Config(enable_roundabout=True, **self._kwargs())
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        assert out["collisions"] == 0
+        assert out["success"] is True
+        assert out["mgr_triggers"] >= 1
+        assert out["mgr_drones_orbiting"] >= 1
+        # Minimum separation should be at the orbit radius scale (>=1 m), well
+        # outside the collision radius.
+        assert out["d_min_inter_m"] > 1.0
+
+    def test_converge_dense_requires_minimum_drones(self) -> None:
+        # endpoints_for_scenario raises; run_one_trial captures it into the
+        # result dict like the other "wrong fleet size for scenario" cases.
+        result = run_one_trial(
+            seed=0,
+            n_drones=3,
+            scenario="converge_dense",
+            config=Rig2Config(),
+        )
+        assert "error" in result and result["success"] is False
+
+    def test_mgr_disabled_by_default(self) -> None:
+        """Backward compat: existing scenarios run unchanged when MGR is off."""
+        cfg = Rig2Config(
+            gcopter_maxiter=4,
+            sim_duration_s=2.0,
+            replan_period_s=2.0,
+            sample_dt_s=0.2,
+        )
+        # Existing `patrol` regression with N=3 should not enter MGR.
+        out = run_one_trial(seed=17, n_drones=3, scenario="patrol", config=cfg)
+        assert out["mgr_enabled"] is False
+        assert out["mgr_triggers"] == 0
+        assert out["mgr_drones_orbiting"] == 0

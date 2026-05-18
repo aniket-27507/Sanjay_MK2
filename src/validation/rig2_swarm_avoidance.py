@@ -63,6 +63,11 @@ from src.single_drone.planning import (
     Trajectory,
     gcopter_optimize,
 )
+from src.swarm.roundabout import (
+    NeighbourObservation,
+    RoundaboutConfig,
+    RoundaboutManager,
+)
 from src.swarm.swarm_penalty import SwarmPenaltyConfig
 from src.swarm.trajectory_broadcast import SwarmBroadcaster
 from src.validation.broadcast_channel import BroadcastChannel, ChannelConfig
@@ -73,7 +78,7 @@ from src.validation.metrics import MetricsCollector, summarise
 # Configuration
 # ---------------------------------------------------------------------------
 
-SCENARIOS = ("head_on", "crossing", "converge", "patrol")
+SCENARIOS = ("head_on", "crossing", "converge", "converge_dense", "patrol")
 
 
 @dataclass
@@ -139,6 +144,22 @@ class Rig2Config:
     enable_cbf_filter: bool = False
     cbf_alpha: float = 2.0
     cbf_max_velocity_correction: float = 3.0
+
+    # Avenue 5: roundabout (MGR) deadlock breaker.
+    # When enabled, each drone owns a RoundaboutManager that fires on
+    # symmetric N>=3 conflict geometries that A4 cannot resolve. First-cut
+    # behaviour: once triggered, the drone follows the orbit until the
+    # simulation ends — exit handling is deferred to a follow-up PR.
+    enable_roundabout: bool = False
+    roundabout_r_safe_m: float = 2.0
+    roundabout_k_d: float = 1.5
+    roundabout_prediction_horizon_s: float = 1.0
+    roundabout_prediction_samples: int = 8
+    roundabout_min_radius_m: float = 0.5
+    roundabout_radius_fraction: float = 0.6
+    roundabout_v_max_tangential_ms: float = 1.0
+    roundabout_z_settle_s: float = 1.5
+    roundabout_barrier_band_m: float = 0.5
 
     # comms channel
     comms_latency_ms_mean: float = 50.0
@@ -210,6 +231,21 @@ def endpoints_for_scenario(
         endpoints = []
         for i in range(3):
             theta = 2.0 * np.pi * i / 3.0
+            start = np.array([r * np.cos(theta), r * np.sin(theta), alt])
+            endpoints.append((start, goal.copy()))
+        return endpoints
+
+    if scenario == "converge_dense":
+        # N drones placed evenly around a circle of radius r, all aimed at
+        # origin. For N>=4 this creates symmetric multi-pair conflict at the
+        # center that the right-hand-rule cannot resolve — exactly the
+        # geometry the MGR layer (Avenue 5) is meant to handle.
+        if n_drones < 4:
+            raise ValueError("converge_dense requires at least 4 drones")
+        goal = np.array([0.0, 0.0, alt])
+        endpoints = []
+        for i in range(n_drones):
+            theta = 2.0 * np.pi * i / n_drones
             start = np.array([r * np.cos(theta), r * np.sin(theta), alt])
             endpoints.append((start, goal.copy()))
         return endpoints
@@ -312,6 +348,49 @@ def _initial_trajectory(
 
 
 @dataclass
+class _RoundaboutOrbit:
+    """Parametric circular orbit used during Avenue 5 activation.
+
+    Once a drone enters MGR (in this PR), it follows this orbit for the
+    rest of the simulation. Position evolves as a constant-angular-velocity
+    curve in xy; z drifts linearly toward `center_z` over `z_settle_s`
+    seconds and stays there.
+    """
+
+    center_xy: np.ndarray
+    center_z: float
+    radius: float
+    t_entered: float
+    initial_angle: float        # angle at entry, atan2 in xy relative to center
+    angular_velocity: float     # rad/s, positive = CCW
+    own_z_at_entry: float
+    z_settle_s: float
+
+    def position_at(self, t: float) -> np.ndarray:
+        dt = max(0.0, float(t) - self.t_entered)
+        angle = self.initial_angle + self.angular_velocity * dt
+        x = self.center_xy[0] + self.radius * np.cos(angle)
+        y = self.center_xy[1] + self.radius * np.sin(angle)
+        if self.z_settle_s > 0.0:
+            alpha = min(1.0, dt / self.z_settle_s)
+        else:
+            alpha = 1.0
+        z = self.own_z_at_entry + alpha * (self.center_z - self.own_z_at_entry)
+        return np.array([x, y, z], dtype=np.float64)
+
+    def velocity_at(self, t: float) -> np.ndarray:
+        dt = max(0.0, float(t) - self.t_entered)
+        angle = self.initial_angle + self.angular_velocity * dt
+        vx = -self.radius * self.angular_velocity * np.sin(angle)
+        vy = self.radius * self.angular_velocity * np.cos(angle)
+        if self.z_settle_s > 0.0 and dt < self.z_settle_s:
+            vz = (self.center_z - self.own_z_at_entry) / self.z_settle_s
+        else:
+            vz = 0.0
+        return np.array([vx, vy, vz], dtype=np.float64)
+
+
+@dataclass
 class Drone:
     drone_id: int
     start: np.ndarray
@@ -342,6 +421,120 @@ class Drone:
     _bayesian_filter: Optional[object] = None  # BayesianWarmStartFilter
     n_filter_predicted: int = 0
     n_filter_resets: int = 0
+    # Avenue 5: roundabout manager + active orbit. _mgr_manager is lazy-init
+    # in reoptimise the first time `config.enable_roundabout` is observed.
+    _mgr_manager: Optional[RoundaboutManager] = None
+    _mgr_orbit: Optional[_RoundaboutOrbit] = None
+    n_mgr_triggers: int = 0
+
+    def _mgr_evaluate(
+        self,
+        t_now: float,
+        snapshots: Dict[int, "object"],
+        config: Rig2Config,
+    ) -> Optional[object]:
+        """Tick the RoundaboutManager. Returns RoundaboutUpdate (or None)."""
+        if self._mgr_manager is None:
+            self._mgr_manager = RoundaboutManager(
+                drone_id=self.drone_id,
+                config=RoundaboutConfig(
+                    r_safe_m=config.roundabout_r_safe_m,
+                    barrier_band_m=config.roundabout_barrier_band_m,
+                    k_d=config.roundabout_k_d,
+                    prediction_horizon_s=config.roundabout_prediction_horizon_s,
+                    prediction_samples=config.roundabout_prediction_samples,
+                    min_radius_m=config.roundabout_min_radius_m,
+                    radius_fraction_of_pair_max=config.roundabout_radius_fraction,
+                    v_max_ms=config.v_max,
+                    v_max_tangential_ms=config.roundabout_v_max_tangential_ms,
+                ),
+            )
+
+        horizon = float(config.roundabout_prediction_horizon_s)
+        K = max(2, int(config.roundabout_prediction_samples))
+        offsets = np.linspace(0.0, horizon, K)
+
+        own_pos = self.position_at(t_now)
+        own_vel = self.velocity_at(t_now)
+        own_predicted = np.zeros((K, 3), dtype=np.float64)
+        T = float(self.trajectory.total_time)
+        for i, off in enumerate(offsets):
+            t_local = min(max(0.0, float(t_now) + float(off)), T)
+            own_predicted[i] = self.trajectory.evaluate(t_local, 0)
+
+        nbr_obs: List[NeighbourObservation] = []
+        for nb_id, snap in snapshots.items():
+            T_nb = float(snap.trajectory.total_time)
+            t_local = float(t_now) - float(snap.t_sent)
+            if t_local < 0.0 or t_local > T_nb:
+                continue
+            pos = np.asarray(snap.trajectory.evaluate(t_local, 0), dtype=np.float64)
+            vel = np.asarray(snap.trajectory.evaluate(t_local, 1), dtype=np.float64)
+            predicted = np.zeros((K, 3), dtype=np.float64)
+            for i, off in enumerate(offsets):
+                t_eval = min(t_local + float(off), T_nb)
+                predicted[i] = snap.trajectory.evaluate(t_eval, 0)
+            nbr_obs.append(NeighbourObservation(
+                drone_id=int(nb_id),
+                position=pos,
+                velocity=vel,
+                predicted_positions=predicted,
+            ))
+
+        return self._mgr_manager.update(
+            t_now=float(t_now),
+            own_position=own_pos,
+            own_velocity=own_vel,
+            own_goal=self.goal,
+            own_predicted=own_predicted,
+            neighbours=nbr_obs,
+        )
+
+    def _install_mgr_orbit(
+        self,
+        t_now: float,
+        mgr_update: object,
+        config: Rig2Config,
+    ) -> None:
+        """Translate a RoundaboutState into the parametric `_RoundaboutOrbit`."""
+        state = mgr_update.state  # type: ignore[attr-defined]
+        own_pos = self.position_at(t_now)
+        rel = own_pos[:2] - state.center_xy
+        initial_angle = float(np.arctan2(rel[1], rel[0]))
+        angular_velocity = float(
+            config.roundabout_v_max_tangential_ms / max(state.radius_m, 1e-3)
+        )
+        self._mgr_orbit = _RoundaboutOrbit(
+            center_xy=state.center_xy.copy(),
+            center_z=float(state.center_z),
+            radius=float(state.radius_m),
+            t_entered=float(t_now),
+            initial_angle=initial_angle,
+            angular_velocity=angular_velocity,
+            own_z_at_entry=float(own_pos[2]),
+            z_settle_s=float(config.roundabout_z_settle_s),
+        )
+
+    def position_at(self, t: float) -> np.ndarray:
+        """Sample drone position at rig-global time `t`.
+
+        While the roundabout orbit is active (Avenue 5), the orbit's
+        parametric circle is the ground truth. Otherwise the underlying
+        MINCO trajectory is evaluated. Out-of-range queries clamp.
+        """
+        if self._mgr_orbit is not None and float(t) >= self._mgr_orbit.t_entered:
+            return self._mgr_orbit.position_at(float(t))
+        T = float(self.trajectory.total_time)
+        tc = min(max(0.0, float(t)), T)
+        return np.asarray(self.trajectory.evaluate(tc, 0), dtype=np.float64)
+
+    def velocity_at(self, t: float) -> np.ndarray:
+        if self._mgr_orbit is not None and float(t) >= self._mgr_orbit.t_entered:
+            return self._mgr_orbit.velocity_at(float(t))
+        T = float(self.trajectory.total_time)
+        if not (0.0 <= float(t) <= T):
+            return np.zeros(3, dtype=np.float64)
+        return np.asarray(self.trajectory.evaluate(float(t), 1), dtype=np.float64)
 
     def reoptimise(
         self,
@@ -353,6 +546,23 @@ class Drone:
         Returns wall-clock elapsed milliseconds.
         """
         snapshots = self.broadcaster.latest()
+
+        # Avenue 5: short-circuit if the drone is already orbiting. The
+        # first cut keeps orbits in place for the rest of the simulation;
+        # exit handling is deferred. While orbiting, the drone is no longer
+        # consuming planner cycles or re-broadcasting fresh trajectories.
+        if config.enable_roundabout and self._mgr_orbit is not None:
+            return 0.0
+
+        # Avenue 5: trigger check before MINCO. If MGR fires this tick,
+        # install the orbit, skip MINCO, and return.
+        if config.enable_roundabout:
+            mgr_update = self._mgr_evaluate(t_now, snapshots, config)
+            if mgr_update is not None and mgr_update.active:
+                self._install_mgr_orbit(t_now, mgr_update, config)
+                self.n_mgr_triggers += 1
+                return 0.0
+
         sw_cfg = SwarmPenaltyConfig(
             clearance_horizontal=config.clearance_horizontal,
             clearance_vertical=config.clearance_vertical,
@@ -510,15 +720,17 @@ def _sample_positions(
     drones: Sequence[Drone],
     t_grid: np.ndarray,
 ) -> np.ndarray:
-    """Return positions of shape (n_drones, n_steps, 3)."""
+    """Return positions of shape (n_drones, n_steps, 3).
+
+    Uses `Drone.position_at` so MGR-orbit positions (Avenue 5) are sampled
+    transparently when the underlying drone is in the roundabout layer.
+    """
     n = len(drones)
     m = t_grid.size
     out = np.zeros((n, m, 3), dtype=np.float64)
     for i, dr in enumerate(drones):
-        T = float(dr.trajectory.total_time)
         for j, t in enumerate(t_grid):
-            tc = min(max(0.0, float(t)), T)
-            out[i, j] = dr.trajectory.evaluate(tc, 0)
+            out[i, j] = dr.position_at(float(t))
     return out
 
 
@@ -528,19 +740,15 @@ def _sample_velocities(
 ) -> np.ndarray:
     """Return velocities of shape (n_drones, n_steps, 3).
 
-    Reads the first time-derivative of the MINCO trajectory at each t.
-    Out-of-range t values return zero velocity (drone has reached goal).
+    Delegates to `Drone.velocity_at`, which returns the MGR-orbit
+    velocity when Avenue 5 is active and falls back to MINCO otherwise.
     """
     n = len(drones)
     m = t_grid.size
     out = np.zeros((n, m, 3), dtype=np.float64)
     for i, dr in enumerate(drones):
-        T = float(dr.trajectory.total_time)
         for j, t in enumerate(t_grid):
-            tf = float(t)
-            if tf < 0.0 or tf > T:
-                continue  # zero velocity at goal / before start
-            out[i, j] = dr.trajectory.evaluate(tf, 1)
+            out[i, j] = dr.velocity_at(float(t))
     return out
 
 
@@ -739,6 +947,8 @@ def run_one_trial(
             100.0 * ch_stats["dropped"] / delivered_or_dropped
         )
 
+    n_mgr_triggers_total = sum(int(dr.n_mgr_triggers) for dr in drones)
+    n_mgr_drones_active = sum(1 for dr in drones if dr._mgr_orbit is not None)
     result.update(
         {
             "t_replan_total_ms": sum_t_replan_ms,
@@ -750,6 +960,9 @@ def run_one_trial(
             "packets_sent": float(ch_stats["sent"]),
             "packets_delivered": float(ch_stats["delivered"]),
             "packets_dropped": float(ch_stats["dropped"]),
+            "mgr_triggers": int(n_mgr_triggers_total),
+            "mgr_drones_orbiting": int(n_mgr_drones_active),
+            "mgr_enabled": bool(config.enable_roundabout),
             **dist_metrics,
             **cbf_metrics,
         }
