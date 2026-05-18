@@ -99,6 +99,17 @@ class Rig2Config:
     clearance_vertical: float = 1.0
     swarm_weight: float = 1.0e3
 
+    # Avenue 3: topology-guided multi-branch (TRUST-Planner pattern).
+    # When enabled, the warm-started main solve is first checked for
+    # predicted swarm violations; if any neighbour is within
+    # `multi_branch_trigger_dist_fraction * clearance_horizontal`, k
+    # additional branches with perturbed initial guesses are run and
+    # the best (collision-free first, then lowest cost) is selected.
+    enable_multi_branch: bool = False
+    multi_branch_n: int = 4
+    multi_branch_perturbation_scale: float = 1.5
+    multi_branch_trigger_dist_fraction: float = 1.0
+
     # comms channel
     comms_latency_ms_mean: float = 50.0
     comms_latency_ms_jitter: float = 20.0
@@ -288,6 +299,9 @@ class Drone:
     n_skipped: int = 0
     n_reduced: int = 0
     n_full: int = 0
+    # Avenue 3: multi-branch stats
+    n_multibranch_triggered: int = 0
+    n_multibranch_branch_won: int = 0
 
     def reoptimise(
         self,
@@ -324,26 +338,55 @@ class Drone:
 
         t0 = time.perf_counter()
         try:
-            traj, meta = gcopter_optimize(
-                initial_waypoints=self.trajectory.waypoints.copy(),
-                initial_durations=self.trajectory.durations.copy(),
-                bc_start=bc_start,
-                bc_end=bc_end,
-                polytopes=self.polytopes,
-                config=gc_cfg,
-                swarm_neighbours=neighbours,
-                swarm_config=sw_cfg,
-                warm_start=self._has_warm_start,
-                return_meta=True,
-            )
-            self.trajectory = traj
-            # Update aggregate stats
-            if meta["skipped"]:
-                self.n_skipped += 1
-            elif meta["maxiter_used"] < gc_cfg.maxiter:
-                self.n_reduced += 1
-            else:
+            if config.enable_multi_branch:
+                from src.swarm.topology_branches import (
+                    MultiBranchConfig, multi_branch_optimize,
+                )
+                mb_cfg = MultiBranchConfig(
+                    n_branches=config.multi_branch_n,
+                    perturbation_scale=config.multi_branch_perturbation_scale,
+                    trigger_dist_fraction=config.multi_branch_trigger_dist_fraction,
+                    max_branches_when_triggered=config.multi_branch_n,
+                    prefer_collision_free=True,
+                )
+                mb_result = multi_branch_optimize(
+                    initial_waypoints=self.trajectory.waypoints.copy(),
+                    initial_durations=self.trajectory.durations.copy(),
+                    bc_start=bc_start, bc_end=bc_end,
+                    polytopes=self.polytopes, config=gc_cfg,
+                    swarm_neighbours=neighbours, swarm_config=sw_cfg,
+                    warm_start=self._has_warm_start,
+                    branch_config=mb_cfg,
+                    swarm_clearance_horizontal=config.clearance_horizontal,
+                )
+                self.trajectory = mb_result.trajectory
+                # Stats: did multi-branch even get triggered (>1 branch run)?
+                if mb_result.n_branches_run > 1:
+                    self.n_multibranch_triggered += 1
+                    if not mb_result.main_branch_used:
+                        self.n_multibranch_branch_won += 1
+                # Approximate skipped/reduced/full from single-branch path
                 self.n_full += 1
+            else:
+                traj, meta = gcopter_optimize(
+                    initial_waypoints=self.trajectory.waypoints.copy(),
+                    initial_durations=self.trajectory.durations.copy(),
+                    bc_start=bc_start,
+                    bc_end=bc_end,
+                    polytopes=self.polytopes,
+                    config=gc_cfg,
+                    swarm_neighbours=neighbours,
+                    swarm_config=sw_cfg,
+                    warm_start=self._has_warm_start,
+                    return_meta=True,
+                )
+                self.trajectory = traj
+                if meta["skipped"]:
+                    self.n_skipped += 1
+                elif meta["maxiter_used"] < gc_cfg.maxiter:
+                    self.n_reduced += 1
+                else:
+                    self.n_full += 1
             # After the first successful optimise, future calls are warm.
             self._has_warm_start = True
         except Exception:  # pragma: no cover — defensive
