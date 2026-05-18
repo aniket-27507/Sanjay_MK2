@@ -289,6 +289,8 @@ def multi_branch_optimize(
     swarm_neighbours: Optional[Sequence] = None,
     swarm_config: Optional[object] = None,
     swarm_freshnesses: Optional[Sequence[float]] = None,
+    ghost_obstacles: Optional[Sequence[object]] = None,
+    ghost_config: Optional[object] = None,
     warm_start: bool = False,
     branch_config: Optional[MultiBranchConfig] = None,
     swarm_clearance_horizontal: float = 1.0,
@@ -304,6 +306,7 @@ def multi_branch_optimize(
         polytopes=polytopes, config=config,
         swarm_neighbours=swarm_neighbours, swarm_config=swarm_config,
         swarm_freshnesses=swarm_freshnesses,
+        ghost_obstacles=ghost_obstacles, ghost_config=ghost_config,
         warm_start=warm_start, return_meta=True,
     )
     main_cost = _total_cost_with_swarm(
@@ -458,6 +461,8 @@ def multi_branch_optimize(
                 swarm_neighbours=swarm_neighbours,
                 swarm_config=swarm_config,
                 swarm_freshnesses=swarm_freshnesses,
+                ghost_obstacles=ghost_obstacles,
+                ghost_config=ghost_config,
                 warm_start=True,
                 return_meta=True,
                 homotopy_context=ctx,

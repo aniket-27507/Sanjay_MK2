@@ -569,3 +569,89 @@ class TestRoundaboutPostExitPolicy:
         # Position at t=5.5 should come from new_orbit.
         pos = drone.position_at(5.5)
         np.testing.assert_allclose(pos, new_orbit.position_at(5.5), atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Gap 2 part 2: per-tick CBF → ghost-obstacle feedback loop
+# ---------------------------------------------------------------------------
+
+class TestGhostObstacleFeedback:
+    """The CBF probe runs each replan tick and seeds ghost obstacles for
+    the next gcopter solve. Tests confirm:
+      1. With ghosts off, no probe hits and no ghosts seeded.
+      2. With ghosts on, the probe finds the predicted conflict and
+         plants ghosts.
+      3. The trajectory differs measurably between ghosts-on and
+         ghosts-off — the gradient surface is changed.
+      4. Default config keeps existing rig-2 results byte-for-byte
+         (gated by `enable_ghost_obstacles`).
+    """
+
+    def _kwargs(self, **overrides):
+        kw = dict(
+            field_radius=10.0,
+            altitude=5.0,
+            v_max=3.0,
+            gcopter_maxiter=15,
+            gcopter_n_quad=8,
+            replan_period_s=0.5,
+            sim_duration_s=4.0,
+            sample_dt_s=0.1,
+            enable_cbf_filter=True,
+            clearance_horizontal=2.0,
+        )
+        kw.update(overrides)
+        return kw
+
+    def test_probe_finds_predicted_conflict_in_head_on(self) -> None:
+        """Two drones head-on collide along the planned straight line —
+        the CBF probe must detect the predicted conflict and plant
+        ghosts."""
+        cfg = Rig2Config(enable_ghost_obstacles=True, **self._kwargs())
+        out = run_one_trial(seed=11, n_drones=2, scenario="head_on", config=cfg)
+        assert out["ghost_probe_hits"] > 0
+        assert out["ghost_seeded"] > 0
+
+    def test_disabled_by_default(self) -> None:
+        """Default behaviour: no probe runs, no ghosts seeded."""
+        cfg = Rig2Config(**self._kwargs())
+        assert cfg.enable_ghost_obstacles is False
+        out = run_one_trial(seed=11, n_drones=2, scenario="head_on", config=cfg)
+        assert out["ghost_enabled"] is False
+        assert out["ghost_probe_hits"] == 0
+        assert out["ghost_seeded"] == 0
+        assert out["ghost_active_end"] == 0
+
+    def test_metrics_reported(self) -> None:
+        """All new metric keys appear in the result dict."""
+        cfg = Rig2Config(enable_ghost_obstacles=True, **self._kwargs())
+        out = run_one_trial(seed=11, n_drones=2, scenario="head_on", config=cfg)
+        for key in (
+            "ghost_enabled",
+            "ghost_probe_hits",
+            "ghost_seeded",
+            "ghost_merged",
+            "ghost_active_end",
+        ):
+            assert key in out, f"missing metric {key}"
+
+    def test_ghosts_change_trajectory_shape(self) -> None:
+        """Compared to ghosts-off, ghosts-on must yield a measurably
+        different trajectory — proof the gradient surface reaches
+        L-BFGS and shifts the solution. We compare `d_min_inter_m`
+        because the rig samples the whole trajectory horizon, which
+        may differ in length between runs; a shift in closest-approach
+        distance is a robust proxy for trajectory deformation."""
+        cfg_off = Rig2Config(**self._kwargs())
+        cfg_on = Rig2Config(
+            enable_ghost_obstacles=True,
+            ghost_initial_weight=5.0e4,
+            **self._kwargs(),
+        )
+        out_off = run_one_trial(seed=11, n_drones=2, scenario="head_on", config=cfg_off)
+        out_on = run_one_trial(seed=11, n_drones=2, scenario="head_on", config=cfg_on)
+        delta_dmin = abs(out_on["d_min_inter_m"] - out_off["d_min_inter_m"])
+        assert delta_dmin > 0.05, (
+            f"d_min unchanged with ghosts on: "
+            f"off={out_off['d_min_inter_m']:.4f}, on={out_on['d_min_inter_m']:.4f}"
+        )

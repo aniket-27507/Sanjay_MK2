@@ -321,3 +321,117 @@ def apply_cbf_filter(
         max_correction_magnitude=max_correction,
         n_infeasible=n_infeasible,
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-tick probe — Gap 2 part 2 (CBF → MINCO ghost feedback)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CbfProbeHit:
+    """One CBF-flagged conflict on the probed horizon.
+
+    Attributes
+    ----------
+    t_local : float
+        Time along own's trajectory (own-clock) where the CBF would
+        intervene.
+    own_position : (3,) ndarray
+        Own's position at `t_local`.
+    conflict_position : (3,) ndarray
+        Position of the neighbour that drove the CBF violation. The
+        `min_h` neighbour wins ties — that's the "closest to unsafe"
+        peer at this sample.
+    min_h : float
+        CBF safety value at the hit (negative ⇒ inside clearance). The
+        more negative, the more dangerous; useful for weight scaling.
+    correction_magnitude : float
+        Norm of the CBF velocity correction that would be applied.
+    """
+
+    t_local: float
+    own_position: np.ndarray
+    conflict_position: np.ndarray
+    min_h: float
+    correction_magnitude: float
+
+
+def probe_cbf_for_conflicts(
+    own_position_at,
+    own_velocity_at,
+    neighbour_sample_fns,
+    t_grid_local: np.ndarray,
+    cfg: Optional[CBFConfig] = None,
+) -> List[CbfProbeHit]:
+    """Look ahead along own's trajectory and report CBF interventions.
+
+    Unlike `apply_cbf_filter` this does NOT modify positions or
+    propagate corrections — it just answers "where would the CBF have
+    to clip me if I follow my current plan against my current
+    neighbour broadcasts?". The hits are the input to the Gap 2
+    feedback loop: each one seeds a `GhostObstacle` for the next
+    `gcopter_optimize` call so MINCO learns to route around the
+    region.
+
+    Parameters
+    ----------
+    own_position_at, own_velocity_at : callable(float) -> (3,) ndarray
+        Closures that evaluate own's current trajectory at a local
+        time (own-clock seconds, 0 at trajectory start).
+    neighbour_sample_fns : sequence of callables, each
+        `(t_local) -> Optional[Tuple[(3,) ndarray, (3,) ndarray]]`
+        Returns (position, velocity) of one neighbour at own-clock
+        `t_local`, or None when the neighbour's broadcast does not
+        cover that sample.
+    t_grid_local : (K,) ndarray
+        Own-clock times to probe.
+    cfg : CBFConfig
+        Re-uses the same clearance / alpha as the runtime filter.
+
+    Returns
+    -------
+    hits : list of CbfProbeHit
+        One entry per sample time where the CBF would intervene.
+        Empty list if nothing violates.
+    """
+    cfg = cfg or CBFConfig()
+    hits: List[CbfProbeHit] = []
+    for t_local in t_grid_local:
+        x_self = np.asarray(own_position_at(float(t_local)), dtype=np.float64).reshape(3)
+        v_self = np.asarray(own_velocity_at(float(t_local)), dtype=np.float64).reshape(3)
+        xs = []
+        vs = []
+        for sample_fn in neighbour_sample_fns:
+            pair = sample_fn(float(t_local))
+            if pair is None:
+                continue
+            xs.append(np.asarray(pair[0], dtype=np.float64).reshape(3))
+            vs.append(np.asarray(pair[1], dtype=np.float64).reshape(3))
+        if not xs:
+            continue
+        x_others = np.stack(xs, axis=0)
+        v_others = np.stack(vs, axis=0)
+        _, intervened, mag, _ = _cbf_filter_one_drone(
+            x_self=x_self,
+            v_self=v_self,
+            x_others=x_others,
+            v_others=v_others,
+            cfg=cfg,
+        )
+        if not intervened:
+            continue
+        # Identify the most-violating neighbour for ghost placement.
+        rel_x = x_self - x_others
+        h = np.sum(rel_x * rel_x, axis=1) - cfg.clearance ** 2
+        j_worst = int(np.argmin(h))
+        hits.append(
+            CbfProbeHit(
+                t_local=float(t_local),
+                own_position=x_self,
+                conflict_position=x_others[j_worst].copy(),
+                min_h=float(h[j_worst]),
+                correction_magnitude=float(mag),
+            )
+        )
+    return hits
