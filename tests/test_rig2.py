@@ -746,34 +746,51 @@ class TestMGRGhostBridge:
         drone._ghost_manager.seed_from_positions(positions, t_planted=0.0)
         return drone, cfg
 
-    def test_persist_true_decays_by_orbit_duration(self) -> None:
-        """With persist=True and short orbit, ghosts survive with weights
-        scaled by `decay_per_tick ** (orbit_duration / replan_period)`."""
+    def test_install_post_mgr_does_not_double_decay(self) -> None:
+        """`_install_post_mgr_trajectory` MUST NOT apply bulk decay. The
+        CBF probe runs every tick (including during orbit), so per-tick
+        `decay()` has already aged the ghosts; another bulk decay here
+        would double-count and over-prune. The bridge's job at install
+        time is just to record the surviving count and honour the
+        explicit-clear opt-out — nothing else."""
         drone, cfg = self._seeded_drone(t_enter=1.0, n_ghosts=3)
         assert cfg.ghost_persist_across_mgr is True
         weights_before = [g.weight for g in drone._ghost_manager.active_ghosts()]
-        t_exit = 2.0  # 1.0 s orbit, replan_period 0.5 → 2 ticks of decay.
-        drone._install_post_mgr_trajectory(t_exit, cfg)
+        drone._install_post_mgr_trajectory(2.0, cfg)
         active = drone._ghost_manager.active_ghosts()
-        assert len(active) == len(weights_before), (
-            "all ghosts should survive short orbit"
-        )
-        expected_factor = cfg.ghost_decay_per_tick ** (
-            (t_exit - 1.0) / cfg.replan_period_s
-        )
+        assert len(active) == len(weights_before)
         for g, w_before in zip(active, weights_before):
-            assert g.weight == pytest.approx(w_before * expected_factor)
+            assert g.weight == pytest.approx(w_before), (
+                "install_post_mgr should not modify ghost weights — that "
+                "happens per-tick in _probe_cbf_and_seed_ghosts"
+            )
         assert drone.n_ghosts_carried_across_mgr == len(active)
 
-    def test_persist_true_long_orbit_prunes_all(self) -> None:
-        """A long orbit fades pre-MGR ghosts below threshold → all pruned.
-        Matches the "stale info" intuition: by the time you've orbited for
-        many ticks, the original conflict map is no longer trustworthy."""
+    def test_per_tick_decay_during_orbit_prunes_long_running_ghosts(
+        self,
+    ) -> None:
+        """Driving `reoptimise` for many orbit ticks fades pre-MGR ghosts
+        below threshold via per-tick decay — same end state as the old
+        bulk-decay path, but now produced by the natural per-tick flow."""
+        from src.swarm.roundabout import (
+            RoundaboutManager, RoundaboutConfig,
+        )
+
+        # Long force_exit so we get many orbit ticks before exit fires.
         drone, cfg = self._seeded_drone(t_enter=0.0, n_ghosts=3)
-        t_exit = 20.0  # 40 ticks at 0.5s; 0.6**40 ≈ 1.3e-9 → all below threshold.
-        drone._install_post_mgr_trajectory(t_exit, cfg)
+        cfg = Rig2Config(**{**cfg.__dict__, "roundabout_force_exit_s": 30.0})
+        drone._mgr_manager = RoundaboutManager(
+            drone_id=0,
+            config=RoundaboutConfig(v_max_ms=cfg.v_max),
+        )
+        # 40 orbit ticks at replan_period_s=0.5 → 0.6**40 ≈ 1.3e-9 weight.
+        for tick in range(40):
+            t_now = 0.1 + tick * cfg.replan_period_s
+            drone.reoptimise(t_now, cfg)
+        # All originally-seeded ghosts should be gone. (Reoptimise probes
+        # at each tick; with no neighbours the probe seeds nothing new,
+        # so we get pure per-tick decay of the seed set.)
         assert len(drone._ghost_manager) == 0
-        assert drone.n_ghosts_carried_across_mgr == 0
 
     def test_persist_false_clears_ghosts(self) -> None:
         """Opt-out path: persist=False clears the manager at exit, restoring
@@ -800,18 +817,23 @@ class TestMGRGhostBridge:
         drone._install_post_mgr_trajectory(2.0, cfg)
         assert drone.n_ghosts_carried_across_mgr == 0
 
-    def test_metric_reported_in_run_one_trial(self) -> None:
-        """End-to-end: `ghosts_carried_across_mgr` is exported as an int
-        and reflects only the bridge codepath (so it stays 0 in scenarios
-        where MGR fires before any CBF probe can seed ghosts, which is
-        the dominant case for converge_dense)."""
+    def test_metric_fires_in_converge_dense(self) -> None:
+        """End-to-end: with the CBF probe lifted ahead of the MGR check,
+        the bridge now actually fires even in MGR-dominated scenarios
+        like converge_dense — ghosts seed every tick (including during
+        orbit), so any drone with surviving ghosts at MGR exit time
+        bumps `ghosts_carried_across_mgr`. This was the architectural
+        gap that motivated lifting the probe."""
         cfg = self._cfg()
         out = run_one_trial(
             seed=11, n_drones=6, scenario="converge_dense", config=cfg
         )
-        assert "ghosts_carried_across_mgr" in out
-        assert isinstance(out["ghosts_carried_across_mgr"], int)
-        assert out["ghosts_carried_across_mgr"] >= 0
+        assert out["mgr_exits"] >= 1
+        assert out["ghost_seeded"] >= 1
+        assert out["ghosts_carried_across_mgr"] >= 1, (
+            "bridge failed to fire in converge_dense: lift-the-probe "
+            "regression"
+        )
 
     def test_drone_reoptimise_carries_ghosts_across_orbit(self) -> None:
         """Integration through `reoptimise`: seed ghosts on a drone, force

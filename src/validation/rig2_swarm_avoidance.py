@@ -671,24 +671,12 @@ class Drone:
         self.n_mgr_exits += 1
 
         # Avenue 4 ↔ Avenue 5 bridge: hand the pre-MGR ghost map over to
-        # the post-exit MINCO solve. Without this, every orbit cycle
-        # effectively wipes prior conflict awareness — the freshly-installed
-        # trajectory falls through to a CBF probe that has to re-discover
-        # the same conflicts from scratch each exit.
-        #
-        # We apply a single bulk decay equivalent to per-tick decay running
-        # for the orbit duration; long orbits naturally fade old ghosts to
-        # nothing (matching the "stale info" intuition), short orbits keep
-        # them near full strength.
+        # the post-exit MINCO solve. With the CBF probe lifted ahead of
+        # the MGR check, per-tick decay during orbit already aged the
+        # ghosts naturally; we just record the survivors here for
+        # instrumentation and honour the explicit-clear opt-out.
         if self._ghost_manager is not None and len(self._ghost_manager) > 0:
             if config.ghost_persist_across_mgr:
-                orbit_duration_s = max(
-                    0.0, float(t_exit) - float(self._mgr_orbit.t_entered)
-                )
-                period = max(1e-6, float(config.replan_period_s))
-                n_ticks = orbit_duration_s / period
-                factor = float(config.ghost_decay_per_tick) ** n_ticks
-                self._ghost_manager.decay_by_factor(factor)
                 self.n_ghosts_carried_across_mgr += len(self._ghost_manager)
             else:
                 self._ghost_manager.clear()
@@ -781,13 +769,15 @@ class Drone:
         snapshots: Dict[int, "object"],
         config: Rig2Config,
     ) -> int:
-        """Per-tick Gap 2 step: run CBF along own's current trajectory
-        against current neighbour broadcasts, plant ghosts at flagged
-        conflict positions. Returns the number of probe hits this tick.
+        """Per-tick Gap 2 step: run CBF along own's actual planned
+        future (pre-MGR trajectory, orbit, or post-MGR trajectory —
+        whichever segment `position_at` resolves to right now) against
+        current neighbour broadcasts, plant ghosts at flagged conflict
+        positions. Returns the number of probe hits this tick.
 
-        Called BEFORE re-optimising so the upcoming `gcopter_optimize`
-        sees the new ghosts. Decays existing ghosts first so old ones
-        fade out naturally.
+        Called BEFORE the MGR check in `reoptimise` so ghosts seed
+        every tick regardless of MGR state — including during orbit.
+        Decays existing ghosts first so old ones fade out naturally.
         """
         from src.swarm.cbf_safety_filter import CBFConfig, probe_cbf_for_conflicts
 
@@ -808,34 +798,51 @@ class Drone:
         if not snapshots:
             return 0
 
-        # Probe own's current trajectory in own-local time.
-        T_own = float(self.trajectory.total_time)
-        t_local_now = max(0.0, float(t_now) - float(self._trajectory_t0))
-        remaining = T_own - t_local_now
-        if remaining <= 1e-6:
-            return 0
-        horizon_cap = float(config.ghost_probe_horizon_s)
-        # Non-positive cap → probe to trajectory end.
-        horizon = remaining if horizon_cap <= 0.0 else min(horizon_cap, remaining)
-        n_samples = max(2, int(config.ghost_probe_n_samples))
-        t_local_grid = np.linspace(
-            t_local_now, t_local_now + horizon, n_samples
+        # Sampling is in rig-global time so the same probe code works
+        # for pre-MGR / orbit / post-MGR (own's `position_at` already
+        # routes each global t to the correct segment).
+        in_orbit = (
+            self._mgr_orbit is not None and self._mgr_exit_time is None
         )
+        horizon_cap = float(config.ghost_probe_horizon_s)
+        if in_orbit:
+            # Orbit segment is unbounded in time (parametric circle).
+            # Use the configured cap, or a small default (a few replan
+            # periods) when uncapped — probing far into a circle adds
+            # no extra information.
+            horizon = (
+                horizon_cap if horizon_cap > 0.0
+                else max(1.0, float(config.replan_period_s) * 4.0)
+            )
+        else:
+            T_own = float(self.trajectory.total_time)
+            t_local_now = max(
+                0.0, float(t_now) - float(self._trajectory_t0)
+            )
+            remaining = T_own - t_local_now
+            if remaining <= 1e-6:
+                return 0
+            horizon = (
+                remaining if horizon_cap <= 0.0
+                else min(horizon_cap, remaining)
+            )
+        n_samples = max(2, int(config.ghost_probe_n_samples))
+        t_grid = np.linspace(t_now, t_now + horizon, n_samples)
 
-        def own_pos_at(t_l: float) -> np.ndarray:
-            return np.asarray(self.trajectory.evaluate(t_l, 0), dtype=np.float64)
+        def own_pos_at(t_g: float) -> np.ndarray:
+            return self.position_at(t_g)
 
-        def own_vel_at(t_l: float) -> np.ndarray:
-            return np.asarray(self.trajectory.evaluate(t_l, 1), dtype=np.float64)
+        def own_vel_at(t_g: float) -> np.ndarray:
+            return self.velocity_at(t_g)
 
         neighbour_fns = []
         for snap in snapshots.values():
             T_nb = float(snap.trajectory.total_time)
-            offset_local = float(snap.t_sent) - float(self._trajectory_t0)
+            t_sent = float(snap.t_sent)
 
-            def make_fn(nb_traj=snap.trajectory, T_nb=T_nb, offset=offset_local):
-                def sample(t_l: float):
-                    t_nb = t_l - offset
+            def make_fn(nb_traj=snap.trajectory, T_nb=T_nb, t_sent=t_sent):
+                def sample(t_g: float):
+                    t_nb = t_g - t_sent
                     if t_nb < 0.0 or t_nb > T_nb:
                         return None
                     return (
@@ -857,7 +864,7 @@ class Drone:
             own_position_at=own_pos_at,
             own_velocity_at=own_vel_at,
             neighbour_sample_fns=neighbour_fns,
-            t_grid_local=t_local_grid,
+            t_grid_local=t_grid,
             cfg=cbf_cfg,
         )
         if hits:
@@ -885,6 +892,16 @@ class Drone:
         Returns wall-clock elapsed milliseconds.
         """
         snapshots = self.broadcaster.latest()
+
+        # Avenue 4 ↔ Avenue 5: probe BEFORE the MGR decision so ghosts
+        # seed and decay every tick regardless of state — including
+        # during orbit. Was previously gated behind the MINCO
+        # fall-through, which meant in MGR-dominated scenarios the
+        # probe never ran and the cross-MGR bridge had nothing to
+        # carry. With probe-first, the Avenue 4 ↔ 5 bridge actually
+        # demonstrates value in converge_dense / patrol.
+        if config.enable_ghost_obstacles:
+            self._probe_cbf_and_seed_ghosts(t_now, snapshots, config)
 
         # Avenue 5: when the orbit is currently active, tick the MGR
         # manager. If it exits (sector-free or force timeout), install a
@@ -953,18 +970,20 @@ class Drone:
             for snap in snapshots.values()
         ]
 
-        # Gap 2: probe CBF for upcoming conflicts and update ghost list
-        # BEFORE the L-BFGS solve so the gradient surface includes the
-        # new ghosts on this very tick.
+        # Gap 2: hand the (already probed-this-tick) active ghost list
+        # to the L-BFGS solve so the gradient surface includes them.
+        # The probe itself ran at the top of `reoptimise`.
         ghost_obstacles_arg = None
         ghost_cfg_arg = None
-        if config.enable_ghost_obstacles:
-            self._probe_cbf_and_seed_ghosts(t_now, snapshots, config)
-            if self._ghost_manager is not None and len(self._ghost_manager) > 0:
-                ghost_obstacles_arg = self._ghost_manager.active_ghosts()
-                ghost_cfg_arg = GhostObstacleConfig(
-                    n_quad=int(config.ghost_penalty_n_quad)
-                )
+        if (
+            config.enable_ghost_obstacles
+            and self._ghost_manager is not None
+            and len(self._ghost_manager) > 0
+        ):
+            ghost_obstacles_arg = self._ghost_manager.active_ghosts()
+            ghost_cfg_arg = GhostObstacleConfig(
+                n_quad=int(config.ghost_penalty_n_quad)
+            )
 
         gc_cfg = GCopterConfig(
             s=self.trajectory.s,
