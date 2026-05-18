@@ -123,6 +123,19 @@ class Rig2Config:
     bayesian_confidence_threshold: float = 0.5
     bayesian_innovation_reset_threshold: float = 2.0
 
+    # Avenue 4: CBF safety filter applied as a POST-MINCO layer.
+    # When enabled, sampled trajectory positions/velocities are passed
+    # through a Control Barrier Function filter that enforces pairwise
+    # h_dot + alpha h >= 0 by projecting onto the safe half-space. The
+    # rig reports both raw and CBF-filtered collision counts. The filter
+    # does NOT modify the underlying MINCO trajectories — it acts on the
+    # sampled output as a safety overlay. This is the simplified version
+    # of FECBF (arXiv 2603.13103); the full version replaces the swarm
+    # penalty entirely with a per-tick QP.
+    enable_cbf_filter: bool = False
+    cbf_alpha: float = 2.0
+    cbf_max_velocity_correction: float = 3.0
+
     # comms channel
     comms_latency_ms_mean: float = 50.0
     comms_latency_ms_jitter: float = 20.0
@@ -480,6 +493,28 @@ def _sample_positions(
     return out
 
 
+def _sample_velocities(
+    drones: Sequence[Drone],
+    t_grid: np.ndarray,
+) -> np.ndarray:
+    """Return velocities of shape (n_drones, n_steps, 3).
+
+    Reads the first time-derivative of the MINCO trajectory at each t.
+    Out-of-range t values return zero velocity (drone has reached goal).
+    """
+    n = len(drones)
+    m = t_grid.size
+    out = np.zeros((n, m, 3), dtype=np.float64)
+    for i, dr in enumerate(drones):
+        T = float(dr.trajectory.total_time)
+        for j, t in enumerate(t_grid):
+            tf = float(t)
+            if tf < 0.0 or tf > T:
+                continue  # zero velocity at goal / before start
+            out[i, j] = dr.trajectory.evaluate(tf, 1)
+    return out
+
+
 def _pairwise_min_distance_metrics(
     positions: np.ndarray,
     near_miss_radius: float,
@@ -627,6 +662,41 @@ def run_one_trial(
         positions, config.near_miss_radius, config.collision_radius
     )
 
+    # ---- 4b. Avenue 4: CBF safety filter as post-MINCO layer ---------------
+    # Sample velocities, run the filter, and report both raw and CBF-filtered
+    # collision metrics so the rig can show the safety-overlay impact.
+    cbf_metrics: Dict[str, float] = {}
+    if config.enable_cbf_filter:
+        from src.swarm.cbf_safety_filter import (
+            CBFConfig, apply_cbf_filter,
+        )
+        velocities = _sample_velocities(drones, t_grid)
+        # cbf module expects (T, N, 3); rig stores as (N, T, 3)
+        pos_T_first = np.transpose(positions, (1, 0, 2))
+        vel_T_first = np.transpose(velocities, (1, 0, 2))
+        dt = config.sample_dt_s
+        cbf_cfg = CBFConfig(
+            clearance=config.clearance_horizontal,
+            alpha=config.cbf_alpha,
+            max_velocity_correction=config.cbf_max_velocity_correction,
+            apply_to_positions=True,
+        )
+        cbf_result = apply_cbf_filter(pos_T_first, vel_T_first, dt, cbf_cfg)
+        # Re-transpose to rig's (N, T, 3) convention
+        filtered_positions = np.transpose(cbf_result.filtered_positions, (1, 0, 2))
+        cbf_dist_metrics = _pairwise_min_distance_metrics(
+            filtered_positions, config.near_miss_radius, config.collision_radius
+        )
+        cbf_metrics = {
+            "cbf_interventions": int(cbf_result.total_interventions),
+            "cbf_max_correction_m_s": float(cbf_result.max_correction_magnitude),
+            "cbf_n_infeasible": int(cbf_result.n_infeasible),
+            "cbf_d_min_inter_m": float(cbf_dist_metrics["d_min_inter_m"]),
+            "cbf_d_mean_inter_m": float(cbf_dist_metrics["d_mean_inter_m"]),
+            "cbf_near_misses": int(cbf_dist_metrics["near_misses"]),
+            "cbf_collisions": int(cbf_dist_metrics["collisions"]),
+        }
+
     # ---- 5. comms / bandwidth
     ch_stats = channel.stats()
     total_bytes = sum(dr.bytes_sent for dr in drones)
@@ -652,6 +722,7 @@ def run_one_trial(
             "packets_delivered": float(ch_stats["delivered"]),
             "packets_dropped": float(ch_stats["dropped"]),
             **dist_metrics,
+            **cbf_metrics,
         }
     )
     result["success"] = result["collisions"] == 0
