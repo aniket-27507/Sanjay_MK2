@@ -53,7 +53,7 @@ import json
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -64,9 +64,11 @@ from src.single_drone.planning import (
     gcopter_optimize,
 )
 from src.swarm.goal_arbitration import (
+    AUDIT_EVENT_TYPE as ARBITRATION_AUDIT_EVENT_TYPE,
     DroneBidState,
     GoalArbitrationConfig,
     arbitrate as arbitrate_goals,
+    format_arbitration_audit,
     has_arrived as drone_has_arrived,
 )
 from src.swarm.ghost_obstacles import (
@@ -1273,7 +1275,21 @@ def run_one_trial(
     scenario: str,
     config: Optional[Rig2Config] = None,
     keep_record: bool = False,
+    audit_cb: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, float]:
+    """Run one Rig 2 trial.
+
+    Parameters
+    ----------
+    audit_cb : Optional[Callable[[str, str], None]]
+        Audit-event sink with the same signature as
+        `GCSServer.emit_audit(event_type, detail)`. Called once per
+        cluster per arbitration round when
+        `config.enable_goal_arbitration` is True. Pass a closure that
+        forwards into a live GCSServer instance, or omit and read the
+        captured log from `result["arbitration_audit_log"]` for
+        offline inspection.
+    """
     if config is None:
         config = Rig2Config()
     rng = np.random.default_rng(seed)
@@ -1357,6 +1373,11 @@ def run_one_trial(
     n_arbitration_rounds = 0
     n_arbitration_assignments = 0
     n_arbitration_satisfied = 0
+    # Captured audit trail — one dict per cluster per round. JSON
+    # detail strings are parsed back into dicts here for easy
+    # offline inspection. Production callers wire `audit_cb` into a
+    # live GCSServer; rig users read this list from the result dict.
+    arbitration_audit_log: List[Dict] = []
     while t < config.sim_duration_s:
         t += config.replan_period_s
         for dr in drones:
@@ -1403,6 +1424,13 @@ def run_one_trial(
                     1 for sid in arb_result.assignments.values()
                     if sid is not None
                 )
+                # Emit + capture one audit entry per cluster.
+                for event_type, detail_json in format_arbitration_audit(
+                    t, arb_result
+                ):
+                    arbitration_audit_log.append(json.loads(detail_json))
+                    if audit_cb is not None:
+                        audit_cb(event_type, detail_json)
             for dr in drones:
                 dr.goal = arb_result.effective_goals[dr.drone_id]
                 slot_id = arb_result.assignments[dr.drone_id]
@@ -1536,6 +1564,10 @@ def run_one_trial(
             "goal_arbitration_holds": int(
                 sum(int(dr.n_arbitration_holds) for dr in drones)
             ),
+            # Audit trail: list of parsed-JSON dicts, one per cluster
+            # per round. Schema documented in
+            # `src.swarm.goal_arbitration.format_arbitration_audit`.
+            "arbitration_audit_log": arbitration_audit_log,
             **dist_metrics,
             **cbf_metrics,
         }

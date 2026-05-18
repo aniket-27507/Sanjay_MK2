@@ -1035,3 +1035,81 @@ class TestGoalArbitration:
                 seed=11, n_drones=n, scenario=scenario, config=cfg
             )
             assert out["collisions"] == 0, f"{scenario}: collisions > 0"
+
+    def test_audit_log_captured_in_result(self) -> None:
+        """When arbitration fires, each round emits one audit dict per
+        cluster into `result['arbitration_audit_log']`. Police-context
+        contract: bid matrices + winners + assignments are all
+        recoverable from the captured log."""
+        cfg = self._cfg(enable_goal_arbitration=True)
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        log = out["arbitration_audit_log"]
+        assert isinstance(log, list)
+        # converge_dense → one cluster of 6 drones, arbitration fires
+        # every replan tick → at least `goal_arbitration_rounds` entries.
+        assert len(log) >= out["goal_arbitration_rounds"]
+        entry = log[0]
+        assert set(entry.keys()) == {
+            "t", "cluster", "winner", "assignments", "slots", "bids"
+        }
+        # 6-drone converge_dense cluster.
+        assert entry["cluster"] == [0, 1, 2, 3, 4, 5]
+        # Bid matrix is 6×6.
+        assert len(entry["bids"]) == 6
+        assert all(len(row) == 6 for row in entry["bids"])
+
+    def test_audit_log_empty_when_arbitration_off(self) -> None:
+        """No arbitration → empty audit log."""
+        cfg = self._cfg(enable_goal_arbitration=False)
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        assert out["arbitration_audit_log"] == []
+
+    def test_audit_log_empty_when_no_clusters(self) -> None:
+        """Patrol has unique goals → no clusters → no audit emission."""
+        cfg = self._cfg(enable_goal_arbitration=True)
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="patrol", config=cfg
+        )
+        assert out["arbitration_audit_log"] == []
+
+    def test_audit_callback_invoked_per_cluster_per_round(self) -> None:
+        """When `audit_cb` is provided, it's called with the same
+        events that land in the captured log."""
+        cfg = self._cfg(enable_goal_arbitration=True)
+        captured: list = []
+        out = run_one_trial(
+            seed=11,
+            n_drones=6,
+            scenario="converge_dense",
+            config=cfg,
+            audit_cb=lambda et, d: captured.append((et, d)),
+        )
+        # One callback call per entry in the captured log.
+        assert len(captured) == len(out["arbitration_audit_log"])
+        # Event type matches the convention.
+        for event_type, detail in captured:
+            assert event_type == "goal_arbitration"
+            assert isinstance(detail, str)  # GCSServer.emit_audit signature
+
+    def test_audit_callback_signature_matches_gcs_emit_audit(self) -> None:
+        """The captured events must flow through a real GCSServer
+        round-trip — no shape mismatch between the formatter and the
+        GCS sink."""
+        from src.gcs.gcs_server import GCSServer
+        cfg = self._cfg(enable_goal_arbitration=True)
+        gcs = GCSServer()
+        run_one_trial(
+            seed=11,
+            n_drones=6,
+            scenario="converge_dense",
+            config=cfg,
+            audit_cb=gcs.emit_audit,
+        )
+        log = gcs.get_audit_log(limit=1000)
+        assert len(log) >= 1
+        # GCSServer.AuditEntry.to_dict() exposes keys {ts, event, detail}.
+        assert all(e["event"] == "goal_arbitration" for e in log)

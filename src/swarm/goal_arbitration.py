@@ -64,11 +64,18 @@ into the audit channel).
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+
+
+# Audit event type emitted to the GCS audit channel. One event per
+# cluster per arbitration round. Matches the free-string convention
+# used elsewhere in GCSServer (see `src/gcs/gcs_server.py:emit_audit`).
+AUDIT_EVENT_TYPE = "goal_arbitration"
 
 
 # ---------------------------------------------------------------------------
@@ -454,3 +461,84 @@ def has_arrived(
     `satisfied=True` once a slot-0 winner reaches the goal."""
     d2 = float(np.sum((np.asarray(drone_position) - np.asarray(target)) ** 2))
     return d2 <= float(goal_arrived_radius_m) ** 2
+
+
+# ---------------------------------------------------------------------------
+# Audit serialisation — police-context post-hoc review
+# ---------------------------------------------------------------------------
+
+
+def format_arbitration_audit(
+    t_now: float,
+    result: ArbitrationResult,
+) -> List[Tuple[str, str]]:
+    """Serialise an `ArbitrationResult` into one audit event per
+    cluster, ready to hand to `GCSServer.emit_audit(event_type, detail)`.
+
+    Each entry is `(event_type, detail_json_str)` where `event_type` is
+    the constant `AUDIT_EVENT_TYPE` ("goal_arbitration") and
+    `detail_json_str` is a JSON object with this schema:
+
+        {
+            "t": float,                  # rig-global time of the round
+            "cluster": [int, ...],       # drone_ids in this cluster
+            "winner": int,               # drone_id assigned slot 0
+            "assignments": {             # drone_id (str) → slot_id
+                "0": 0, "1": 4, ...
+            },
+            "slots": [                   # one entry per slot, in order
+                {"id": int, "pos": [x, y, z], "is_goal": bool},
+                ...
+            ],
+            "bids": [[float, ...], ...]  # N×N row-major bid matrix
+        }
+
+    Police-context requirement: every slot-0 assignment must be
+    defensible. The full bid matrix + slot positions in the JSON lets
+    a reviewer recompute the assignment offline and verify it matches
+    the broadcast — no hidden state, no opaque optimiser.
+
+    Empty result (no clusters) returns an empty list — no audit
+    spam when nothing is being arbitrated.
+    """
+    out: List[Tuple[str, str]] = []
+    for cluster_ids in result.clusters:
+        cluster_key = cluster_ids[0]
+        slots = result.slots_per_cluster.get(cluster_key, [])
+        bids = result.bid_matrices.get(cluster_key)
+        # Find the slot-0 winner inside this cluster.
+        winner = next(
+            (
+                drone_id for drone_id in cluster_ids
+                if result.assignments.get(drone_id) == 0
+            ),
+            -1,
+        )
+        detail = {
+            "t": float(t_now),
+            "cluster": [int(d) for d in cluster_ids],
+            "winner": int(winner),
+            "assignments": {
+                str(d): int(result.assignments[d])
+                for d in cluster_ids
+                if result.assignments.get(d) is not None
+            },
+            "slots": [
+                {
+                    "id": int(s.slot_id),
+                    "pos": [
+                        float(s.position[0]),
+                        float(s.position[1]),
+                        float(s.position[2]),
+                    ],
+                    "is_goal": bool(s.is_goal),
+                }
+                for s in slots
+            ],
+            "bids": (
+                [[float(v) for v in row] for row in bids]
+                if bids is not None else []
+            ),
+        }
+        out.append((AUDIT_EVENT_TYPE, json.dumps(detail, separators=(",", ":"))))
+    return out

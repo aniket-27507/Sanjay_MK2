@@ -15,10 +15,13 @@ Coverage:
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
 from src.swarm.goal_arbitration import (
+    AUDIT_EVENT_TYPE,
     ApproachSlot,
     ArbitrationResult,
     DroneBidState,
@@ -27,6 +30,7 @@ from src.swarm.goal_arbitration import (
     assign_slots,
     compute_bid_matrix,
     detect_shared_goal_clusters,
+    format_arbitration_audit,
     generate_approach_slots,
     has_arrived,
 )
@@ -419,3 +423,130 @@ class TestHasArrived:
         assert not has_arrived(
             np.array([0, 0, 7]), np.array([0, 0, 5]), 1.0
         )
+
+
+# ---------------------------------------------------------------------------
+# Audit serialisation — police-context post-hoc review
+# ---------------------------------------------------------------------------
+
+
+class TestAuditFormatter:
+    """`format_arbitration_audit` must produce events compatible with
+    `GCSServer.emit_audit(event_type: str, detail: str)`. The detail
+    string is a JSON object that a reviewer can use to recompute the
+    assignment offline and verify it matches the broadcast — police
+    audit context demands no hidden state."""
+
+    def test_no_clusters_emits_no_events(self) -> None:
+        ds = [_bid(0, goal=(0, 0, 5)), _bid(1, goal=(100, 100, 5))]
+        result = arbitrate(ds, GoalArbitrationConfig())
+        events = format_arbitration_audit(t_now=1.0, result=result)
+        assert events == []
+
+    def test_one_cluster_one_event(self) -> None:
+        ds = [_bid(i, goal=(0, 0, 5)) for i in range(4)]
+        result = arbitrate(ds, GoalArbitrationConfig())
+        events = format_arbitration_audit(t_now=2.5, result=result)
+        assert len(events) == 1
+        event_type, detail_json = events[0]
+        assert event_type == AUDIT_EVENT_TYPE
+        # The detail field is what GCSServer.emit_audit wants — a string.
+        assert isinstance(detail_json, str)
+
+    def test_two_clusters_two_events(self) -> None:
+        ds = [
+            _bid(0, goal=(0, 0, 5)),
+            _bid(1, goal=(0, 0, 5)),
+            _bid(2, goal=(100, 0, 5)),
+            _bid(3, goal=(100, 0, 5)),
+        ]
+        result = arbitrate(ds, GoalArbitrationConfig())
+        events = format_arbitration_audit(t_now=3.0, result=result)
+        assert len(events) == 2
+
+    def test_detail_schema_complete(self) -> None:
+        """The JSON must include every field the audit narrative needs:
+        time, cluster, winner, assignments, slots (with positions),
+        and the full bid matrix."""
+        ds = [_bid(i, position=(i, 0, 5), goal=(0, 0, 5)) for i in range(3)]
+        result = arbitrate(ds, GoalArbitrationConfig())
+        events = format_arbitration_audit(t_now=7.25, result=result)
+        detail = json.loads(events[0][1])
+        assert set(detail.keys()) == {
+            "t", "cluster", "winner", "assignments", "slots", "bids"
+        }
+        assert detail["t"] == pytest.approx(7.25)
+        assert detail["cluster"] == [0, 1, 2]
+        # Winner must be the drone assigned slot 0.
+        assert detail["assignments"][str(detail["winner"])] == 0
+        # Slots: 3 entries, one with is_goal=True.
+        assert len(detail["slots"]) == 3
+        n_goal = sum(1 for s in detail["slots"] if s["is_goal"])
+        assert n_goal == 1
+        # Each slot position has 3 coords.
+        for s in detail["slots"]:
+            assert len(s["pos"]) == 3
+        # Bid matrix is N×N row-major.
+        assert len(detail["bids"]) == 3
+        for row in detail["bids"]:
+            assert len(row) == 3
+
+    def test_winner_recomputable_from_bids(self) -> None:
+        """A reviewer with the audit detail alone must be able to
+        verify the winner — argmax of column 0 of the bid matrix."""
+        ds = [
+            _bid(0, position=(5, 0, 5), goal=(0, 0, 5), mission_priority=0.5),
+            _bid(1, position=(5, 0, 5), goal=(0, 0, 5), mission_priority=0.8),
+            _bid(2, position=(5, 0, 5), goal=(0, 0, 5), mission_priority=0.3),
+        ]
+        result = arbitrate(ds, GoalArbitrationConfig())
+        events = format_arbitration_audit(t_now=0.0, result=result)
+        detail = json.loads(events[0][1])
+        # Recompute the slot-0 winner from the bid matrix alone.
+        bids = np.asarray(detail["bids"])
+        recomputed_winner_idx = int(np.argmax(bids[:, 0]))
+        recomputed_winner_id = detail["cluster"][recomputed_winner_idx]
+        assert recomputed_winner_id == detail["winner"]
+        # The drone with highest priority should win.
+        assert detail["winner"] == 1
+
+    def test_detail_is_compact_json(self) -> None:
+        """No whitespace — the GCS audit channel is bandwidth-bounded
+        on real swarms, and the audit log is capped at 500 entries."""
+        ds = [_bid(i, goal=(0, 0, 5)) for i in range(3)]
+        result = arbitrate(ds, GoalArbitrationConfig())
+        events = format_arbitration_audit(t_now=1.0, result=result)
+        # Compact JSON has no spaces between separators.
+        assert ", " not in events[0][1]
+        assert ": " not in events[0][1]
+
+
+# ---------------------------------------------------------------------------
+# Live-GCS round-trip — does GCSServer.emit_audit actually accept these?
+# ---------------------------------------------------------------------------
+
+
+class TestGCSRoundTrip:
+    """Sanity-check that the audit events produced by
+    `format_arbitration_audit` flow through a real `GCSServer.emit_audit`
+    call and are retrievable via `get_audit_log`. This is the contract
+    we promised in the goal_arbitration module docstring."""
+
+    def test_emit_audit_accepts_arbitration_events(self) -> None:
+        from src.gcs.gcs_server import GCSServer
+        gcs = GCSServer()
+        ds = [_bid(i, goal=(0, 0, 5)) for i in range(3)]
+        result = arbitrate(ds, GoalArbitrationConfig())
+        for event_type, detail in format_arbitration_audit(
+            t_now=5.0, result=result
+        ):
+            gcs.emit_audit(event_type, detail)
+        log = gcs.get_audit_log(limit=10)
+        assert len(log) == 1
+        entry = log[0]
+        # GCSServer.AuditEntry.to_dict() returns {ts, event, detail}.
+        assert entry["event"] == AUDIT_EVENT_TYPE
+        # detail is the JSON-stringified payload.
+        parsed = json.loads(entry["detail"])
+        assert parsed["cluster"] == [0, 1, 2]
+        assert parsed["t"] == pytest.approx(5.0)
