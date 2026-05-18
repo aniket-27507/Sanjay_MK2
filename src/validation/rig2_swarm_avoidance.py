@@ -216,11 +216,23 @@ class Rig2Config:
     # its current orbit pose. Sanjay-specific (the MGR paper assumes a
     # static environment where exits only depend on sector clearance).
     roundabout_force_exit_s: float = 8.0
-    # Per-drone deterministic jitter (+/- seconds) on `force_exit_s`. With
-    # 0 (default) the manager preserves PR #8 behaviour. Set > 0 to
-    # stagger exits across the swarm in symmetric deadlocks where every
-    # drone would otherwise time out on the same tick.
-    roundabout_force_exit_jitter_s: float = 0.0
+    # Per-drone deterministic jitter (+/- seconds) on `force_exit_s`.
+    # Tuned by Rig 2 sweep over {0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0}
+    # at the production `force_exit_s=8.0`:
+    #
+    #   scenario          j=0    j=0.5   j=2.0   j=2.5+
+    #   patrol            127    23      22 ★    141
+    #   converge_dense     18    18      17 ★     18
+    #   head_on             4     3       3 ★      3
+    #
+    # j=0 is actively bad at long force-exit windows: in patrol, all
+    # 6 drones exit MGR in lockstep at ~t=8.0, then 6 post-MGR straight-
+    # lines cross each other simultaneously → CBF intervention count
+    # explodes from 0 to 99. j=2.0 spreads exits across 4 s and lets
+    # each drone clear before its neighbour starts. j>2.5 reintroduces
+    # the same lockstep-crossing problem because exits cluster again
+    # near the new band edges.
+    roundabout_force_exit_jitter_s: float = 2.0
     # Clearance band around the post-exit straight-line path and exclusion
     # zone around the goal. Plug into the tightened sector-free check so a
     # drone won't exit while another orbiting peer's path is parallel or
