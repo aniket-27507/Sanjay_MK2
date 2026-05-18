@@ -108,7 +108,7 @@ class Rig2Config:
     enable_multi_branch: bool = False
     multi_branch_n: int = 4
     multi_branch_perturbation_scale: float = 1.5
-    multi_branch_trigger_dist_fraction: float = 1.0
+    multi_branch_trigger_dist_fraction: float = 2.0
 
     # Avenue 2: Bayesian-filter warm start (simplified from Yuan & Yu 2025).
     # When enabled, each Drone maintains a Kalman-style estimator over its
@@ -328,6 +328,12 @@ class Drone:
     # Avenue 3: multi-branch stats
     n_multibranch_triggered: int = 0
     n_multibranch_branch_won: int = 0
+    _prev_signature: Optional[Tuple[int, ...]] = None
+    n_signature_held: int = 0
+    n_signature_switched: int = 0
+    # Silent-exception canaries (catch the next time something quietly breaks)
+    n_optim_exceptions: int = 0
+    last_optim_exception: Optional[str] = None
     # Avenue 2: Bayesian filter
     _bayesian_filter: Optional[object] = None  # BayesianWarmStartFilter
     n_filter_predicted: int = 0
@@ -406,8 +412,6 @@ class Drone:
                     n_branches=config.multi_branch_n,
                     perturbation_scale=config.multi_branch_perturbation_scale,
                     trigger_dist_fraction=config.multi_branch_trigger_dist_fraction,
-                    max_branches_when_triggered=config.multi_branch_n,
-                    prefer_collision_free=True,
                 )
                 mb_result = multi_branch_optimize(
                     initial_waypoints=init_waypoints,
@@ -418,8 +422,16 @@ class Drone:
                     warm_start=self._has_warm_start,
                     branch_config=mb_cfg,
                     swarm_clearance_horizontal=config.clearance_horizontal,
+                    prev_signature=self._prev_signature,
                 )
                 self.trajectory = mb_result.trajectory
+                # Track signature continuity for diagnostics
+                if (self._prev_signature is not None
+                        and mb_result.signature == self._prev_signature):
+                    self.n_signature_held += 1
+                else:
+                    self.n_signature_switched += 1
+                self._prev_signature = mb_result.signature
                 # Stats: did multi-branch even get triggered (>1 branch run)?
                 if mb_result.n_branches_run > 1:
                     self.n_multibranch_triggered += 1
@@ -460,8 +472,11 @@ class Drone:
                 )
                 if self._bayesian_filter.n_resets > prev_resets:
                     self.n_filter_resets += 1
-        except Exception:  # pragma: no cover — defensive
-            pass
+        except Exception as _exc:  # pragma: no cover — defensive
+            # Record so silent swallowing never again hides a real bug.
+            # Diagnostics field is added on the Drone dataclass.
+            self.last_optim_exception = repr(_exc)
+            self.n_optim_exceptions += 1
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return elapsed_ms
 

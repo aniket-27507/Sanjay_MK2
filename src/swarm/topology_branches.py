@@ -1,49 +1,45 @@
-"""Topology-guided multi-branch trajectory optimisation (Avenue 3).
+"""Topology-guided multi-branch trajectory optimisation (Avenue 3, rebuilt).
 
-Inspired by TRUST-Planner (arXiv 2508.14610, Aug 2025) and the broader
-homotopy-class enumeration literature. The motivation: in symmetric or
-dense multi-agent scenarios — Rig 2 converge with N drones aimed at the
-same point, patrol N≥6 with crossings at the centre — L-BFGS gets stuck
-at saddle points because multiple equally-good homotopy classes exist
-(go left vs right vs over vs under each neighbour) and no local gradient
-information distinguishes them.
+Inspired by T-MPC (de Groot et al., arXiv 2401.06021v2). This rebuild
+fixes the four failure modes identified after the first attempt:
 
-The fix: enumerate `k` topology hints by perturbing the interior waypoints
-along directions that span the homotopy space (lateral and vertical from
-the drone's forward axis), run each as a separate L-BFGS branch, pick the
-lowest-cost feasible result.
+  Failure 1 — Branches used pure cold-start L-BFGS (~127 evals each).
+              FIX: intermediate warm-start config (maxiter=10, ftol=1e-4,
+              maxls=10), cutting per-branch cost roughly in half.
 
-Key design decisions
---------------------
-1. **Adaptive triggering.** Naive multi-branch is k× more expensive. We
-   first run a single warm-started branch (cheap, ~20ms in Rig 2) and
-   only escalate to multi-branch if the result shows predicted swarm
-   violations (min inter-agent distance below threshold). Easy scenarios
-   pay 1× cost; hard scenarios pay (k+1)×.
+  Failure 2 — Branches collapsed to the same homotopy class because the
+              swarm/corridor penalty pulled perturbed initial guesses
+              back to the same local minimum.
+              FIX: pass a HomotopyPenaltyContext per branch. The penalty
+              enforces target homotopy signature via analytical gradient
+              and survives the L-BFGS optimisation.
 
-2. **Perturbation generation, not random restarts.** The branches are
-   structured (lateral ±, vertical ±) rather than random. This is what
-   makes them "topology hints" — each branch represents a different
-   homotopy class of how the drone passes its neighbours.
+  Failure 3 — Broadcast instability: when all branches were colliding,
+              cost was noise-dominated and the winning branch index
+              changed each tick. Neighbours saw oscillating broadcasts.
+              FIX: consistency bonus on the prior-tick signature, plus a
+              "main_solve always considered" rule so single-branch
+              equilibria remain available.
 
-3. **Cost-based tie-break, collision-first.** When picking the winner
-   among branches, prefer ones with zero predicted swarm violations.
-   Among those, pick lowest total cost. This avoids picking a
-   "smoother but colliding" trajectory over a "rougher but safe" one.
+  Failure 4 — Trigger fired on "predicted collision," which is true even
+              for unsolvable scenarios (converge). A3 would then keep
+              trying to find a better homotopy class when none existed.
+              FIX: trigger only when L-BFGS did NOT converge (hit
+              maxiter) AND main solve has predicted violations. A
+              converged-but-colliding solution is the best the local
+              optimiser can do; A3 should respect it.
 
-What's simplified from TRUST-Planner
-------------------------------------
-The reference paper enumerates topologies via a dynamic-enhanced visible
-PRM front-end and incrementally manages a multi-branch tree across
-replan ticks. We do a per-replan k-branch enumeration without the PRM
-or the cross-tick tree management. This captures the saddle-escape
-mechanic without the full topology-tracking machinery.
+The interface
+=============
+The caller is the rig's Drone.reoptimise. Each Drone tracks its
+previous-tick signature; that is passed in as `prev_signature` here.
+On return, the caller stores `result.signature` for the next tick.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -52,91 +48,69 @@ from src.single_drone.planning.gcopter import (
     GCopterConfig, _evaluate_cost, gcopter_optimize,
 )
 from src.single_drone.planning.minco import Trajectory
+from src.swarm.homotopy import (
+    HomotopyPenaltyContext,
+    build_penalty_context,
+    full_signature,
+    generate_target_signatures,
+)
 
 
 @dataclass
 class MultiBranchConfig:
-    """Multi-branch optimisation hyperparameters."""
-    # How many extra branches beyond the main warm-started solve.
-    # 4 = lateral ±, vertical ± (covers the main homotopy classes).
     n_branches: int = 4
-    # Magnitude of waypoint perturbation in meters. Should be comparable
-    # to clearance_horizontal so the branches really land in different
-    # homotopy classes rather than just nudging within the same.
-    perturbation_scale: float = 1.0
-    # Adaptive trigger: if min predicted inter-agent distance from the
-    # main solve is below this threshold (relative to clearance), fall
-    # back to multi-branch. Default 1.0 means "trigger if predicted
-    # distance is below the swarm clearance" — i.e. an actual violation.
-    trigger_dist_fraction: float = 1.0
-    # Cap branch count even when adaptive trigger fires. Useful to bound
-    # worst-case wall time. 0 means no extra cap.
-    max_branches_when_triggered: int = 4
-    # When evaluating branches for "best", prefer collision-free even if
-    # the cost is slightly higher.
-    prefer_collision_free: bool = True
+    perturbation_scale: float = 2.0
+    trigger_dist_fraction: float = 2.0
+    # Requiring non-convergence makes the trigger too restrictive in
+    # warm-started flows where L-BFGS converges quickly even to
+    # colliding optima. Set False by default; the "no flippable
+    # signatures" guard in multi_branch_optimize prevents wasted work
+    # in converge-style unsolvable scenarios.
+    require_non_convergence: bool = False
+    homotopy_penalty_weight: float = 5.0e2
+    homotopy_epsilon: float = 0.3
+    consistency_bonus: float = 0.15
+    branch_maxiter: int = 10
+    branch_ftol: float = 1.0e-4
+    branch_maxls: int = 10
 
 
 @dataclass
 class MultiBranchResult:
     trajectory: Trajectory
     total_cost: float
-    main_branch_used: bool       # True if the warm-started main solve won
-    n_branches_run: int          # incl. the main solve
+    main_branch_used: bool
+    n_branches_run: int
+    signature: Tuple[int, ...]
     branch_costs: List[float] = field(default_factory=list)
+    branch_signatures: List[Tuple[int, ...]] = field(default_factory=list)
     branch_min_dists: List[float] = field(default_factory=list)
     selected_branch_idx: int = 0
+    trigger_reason: str = ""
 
 
-def _generate_topology_perturbations(
-    initial_waypoints: np.ndarray,
-    perturbation_scale: float,
-    n_branches: int,
-) -> List[np.ndarray]:
-    """Generate up to `n_branches` perturbed copies of initial_waypoints.
+def _sample_traj_on_grid(traj: Trajectory, ts: np.ndarray) -> np.ndarray:
+    T = float(traj.total_time)
+    out = np.zeros((len(ts), 3))
+    for i, t in enumerate(ts):
+        out[i] = traj.evaluate(min(max(0.0, float(t)), T), 0)
+    return out
 
-    Returns a list of (M+1, D) arrays. Each perturbation offsets the
-    interior waypoints (rows 1..M-1) along a different direction in the
-    drone's body frame (built from start→goal as forward axis).
 
-    Order: lateral +, lateral -, vertical +, vertical -, then bias-toward
-    each cardinal direction in order. Cropped to `n_branches`.
-    """
-    if initial_waypoints.shape[0] < 3:
-        # No interior waypoints to perturb.
-        return []
-
-    forward = initial_waypoints[-1] - initial_waypoints[0]
-    fwd_norm = np.linalg.norm(forward)
-    if fwd_norm < 1e-6:
-        return []
-    forward = forward / fwd_norm
-
-    # Lateral (horizontal-perpendicular) direction. If forward is mostly
-    # vertical, fall back to world +x.
-    if abs(forward[2]) > 0.99:
-        lateral = np.array([1.0, 0.0, 0.0])
-    else:
-        lateral = np.array([-forward[1], forward[0], 0.0])
-        lateral /= max(np.linalg.norm(lateral), 1e-9)
-    vertical = np.array([0.0, 0.0, 1.0])
-
-    # Reduced perturbation in z so vertical branches don't fly into the
-    # ceiling/floor of the corridor polytopes.
-    z_scale = 0.5 * perturbation_scale
-
-    directions: List[np.ndarray] = [
-        +perturbation_scale * lateral,
-        -perturbation_scale * lateral,
-        +z_scale * vertical,
-        -z_scale * vertical,
-    ]
-
-    out: List[np.ndarray] = []
-    for d in directions[:n_branches]:
-        perturbed = initial_waypoints.copy()
-        perturbed[1:-1] += d  # offset interior waypoints
-        out.append(perturbed)
+def _neighbours_for_signature(
+    swarm_neighbours: Sequence,
+    horizon: float,
+    n_samples: int = 32,
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    out = []
+    if not swarm_neighbours:
+        return out
+    ts = np.linspace(0.0, horizon, n_samples)
+    for (nb_traj, t_offset) in swarm_neighbours:
+        T_nb = float(nb_traj.total_time)
+        ts_local = np.clip(ts + t_offset, 0.0, T_nb)
+        xyz = np.stack([nb_traj.evaluate(float(t), 0) for t in ts_local], axis=0)
+        out.append((xyz, ts.copy()))
     return out
 
 
@@ -145,18 +119,16 @@ def _min_predicted_swarm_distance(
     swarm_neighbours: Sequence[Tuple[Trajectory, float]],
     n_samples: int = 16,
 ) -> float:
-    """Sample own + neighbour trajectories on a common time grid, return
-    minimum pairwise distance over the sample window."""
     if not swarm_neighbours:
         return float("inf")
     horizon = trajectory.total_time
     ts = np.linspace(0.0, horizon, n_samples)
-    own_xyz = np.stack([trajectory.evaluate(t) for t in ts], axis=0)
+    own_xyz = np.stack([trajectory.evaluate(float(t)) for t in ts], axis=0)
     min_d = float("inf")
     for (nb_traj, t_offset) in swarm_neighbours:
-        nb_horizon = nb_traj.total_time
+        nb_h = nb_traj.total_time
         nb_xyz = np.stack(
-            [nb_traj.evaluate(min(max(t + t_offset, 0.0), nb_horizon))
+            [nb_traj.evaluate(min(max(float(t) + t_offset, 0.0), nb_h))
              for t in ts],
             axis=0,
         )
@@ -173,7 +145,6 @@ def _total_cost_with_swarm(
     swarm_neighbours: Sequence,
     swarm_config: object,
 ) -> float:
-    """Single-drone cost + swarm cost (matches what L-BFGS sees)."""
     cost = _evaluate_cost(trajectory, polytopes, gc_config)
     if swarm_neighbours and swarm_config is not None:
         from src.swarm.swarm_penalty import compute_swarm_cost_and_grad
@@ -184,38 +155,35 @@ def _total_cost_with_swarm(
     return float(cost)
 
 
-def _is_better_branch(
-    cand_dist: float, cand_cost: float,
-    best_dist: float, best_cost: float,
-    clearance: float,
-    distance_tie_band: float = 0.10,
-) -> bool:
-    """Lexicographic comparison for branch selection.
+def _perturb_for_target(
+    initial_waypoints: np.ndarray,
+    ctx: HomotopyPenaltyContext,
+    scale: float,
+) -> np.ndarray:
+    """Generate an initial guess in the target homotopy class.
 
-    Cost values vary by orders of magnitude across homotopy classes —
-    a trajectory that escapes the corridor entirely can have lower
-    swarm cost simply because it never approaches a neighbour. So we
-    rank PRIMARILY by predicted min inter-agent distance (monotonic
-    in safety), and only use cost as a fine tiebreak.
-
-    Rules (return True iff candidate is better than best):
-      1. If one is above clearance and the other is below: above wins.
-      2. Otherwise: larger min_dist wins, with `distance_tie_band` slack.
-      3. If distances are within the tie band: lower cost wins.
+    For each interior waypoint k, sum nudges from each neighbour: if the
+    target sign for neighbour j is +1, push along +lateral_j. The
+    homotopy penalty then prevents L-BFGS from walking the perturbation
+    back to the original minimum.
     """
-    cand_safe = cand_dist >= clearance
-    best_safe = best_dist >= clearance
-    if cand_safe and not best_safe:
-        return True
-    if best_safe and not cand_safe:
-        return False
-    # Same safety class: prefer farther from collision
-    if cand_dist > best_dist + distance_tie_band:
-        return True
-    if cand_dist < best_dist - distance_tie_band:
-        return False
-    # Distances within tie band: use cost
-    return cand_cost < best_cost
+    if initial_waypoints.shape[0] < 3:
+        return initial_waypoints.copy()
+    out = initial_waypoints.copy()
+    n_int = out.shape[0] - 2
+    sig = ctx.target_signature
+    n_nbr = ctx.nbr_laterals_xy.shape[1] if ctx.nbr_laterals_xy.size > 0 else 0
+    for k in range(n_int):
+        nudge = np.zeros(3)
+        for j in range(min(n_nbr, len(sig))):
+            s_j = sig[j]
+            if s_j == 0:
+                continue
+            lat = ctx.nbr_laterals_xy[k, j]
+            nudge[0] += s_j * scale * lat[0]
+            nudge[1] += s_j * scale * lat[1]
+        out[k + 1] += nudge
+    return out
 
 
 def multi_branch_optimize(
@@ -230,41 +198,18 @@ def multi_branch_optimize(
     warm_start: bool = False,
     branch_config: Optional[MultiBranchConfig] = None,
     swarm_clearance_horizontal: float = 1.0,
+    prev_signature: Optional[Tuple[int, ...]] = None,
 ) -> MultiBranchResult:
-    """Run a warm-started main branch, then escalate to topology branches
-    if the main result shows predicted swarm violations.
-
-    Parameters
-    ----------
-    initial_waypoints, initial_durations, bc_start, bc_end, polytopes :
-        Same semantics as gcopter_optimize.
-    config :
-        GCopterConfig.
-    swarm_neighbours, swarm_config :
-        Same semantics as gcopter_optimize.
-    warm_start :
-        Whether the main solve should use the warm-start fast path. The
-        topology branches are always cold (their initial guesses are
-        perturbed copies, not actual previous solutions).
-    branch_config :
-        MultiBranchConfig. Defaults applied if None.
-    swarm_clearance_horizontal :
-        Reference clearance distance used by the trigger heuristic. The
-        trigger fires if main-branch predicted min distance is below
-        `trigger_dist_fraction * swarm_clearance_horizontal`.
-    """
     bc = branch_config if branch_config is not None else MultiBranchConfig()
 
-    # ---- Main warm-started branch ------------------------------------------
-    main_traj, _meta = gcopter_optimize(
+    # Step 1: Main warm-started branch (always runs)
+    main_traj, main_meta = gcopter_optimize(
         initial_waypoints=initial_waypoints,
         initial_durations=initial_durations,
         bc_start=bc_start, bc_end=bc_end,
         polytopes=polytopes, config=config,
-        swarm_neighbours=swarm_neighbours,
-        swarm_config=swarm_config,
-        warm_start=warm_start,
-        return_meta=True,
+        swarm_neighbours=swarm_neighbours, swarm_config=swarm_config,
+        warm_start=warm_start, return_meta=True,
     )
     main_cost = _total_cost_with_swarm(
         main_traj, polytopes, config, swarm_neighbours or [], swarm_config
@@ -273,13 +218,36 @@ def multi_branch_optimize(
         main_traj, swarm_neighbours or []
     )
 
-    # ---- Trigger check: do we need branches? -------------------------------
+    # Step 2: Compute main's signature
+    nbr_samples = _neighbours_for_signature(
+        swarm_neighbours or [], horizon=main_traj.total_time
+    )
+    if nbr_samples:
+        own_ts = nbr_samples[0][1]
+        own_xyz = _sample_traj_on_grid(main_traj, own_ts)
+        main_signature = full_signature(
+            own_xyz, own_ts, nbr_samples,
+            interaction_radius=swarm_clearance_horizontal * 2.0,
+        )
+    else:
+        main_signature = ()
+
+    # Step 3: Adaptive trigger
     threshold = bc.trigger_dist_fraction * swarm_clearance_horizontal
-    needs_branches = (
+    violation_likely = (
         bool(swarm_neighbours)
         and bc.n_branches > 0
         and main_min_dist < threshold
     )
+    main_iters = int(main_meta.get("iters", 0))
+    main_cap = int(main_meta.get("maxiter_used", config.maxiter))
+    non_converged = main_iters >= main_cap
+    if bc.require_non_convergence:
+        needs_branches = violation_likely and non_converged
+        trigger_reason = f"violation={violation_likely} non_conv={non_converged}"
+    else:
+        needs_branches = violation_likely
+        trigger_reason = f"violation={violation_likely}"
 
     if not needs_branches:
         return MultiBranchResult(
@@ -287,66 +255,136 @@ def multi_branch_optimize(
             total_cost=main_cost,
             main_branch_used=True,
             n_branches_run=1,
+            signature=main_signature,
             branch_costs=[main_cost],
+            branch_signatures=[main_signature],
             branch_min_dists=[main_min_dist],
             selected_branch_idx=0,
+            trigger_reason=f"no-trigger ({trigger_reason})",
         )
 
-    # ---- Multi-branch escalation -------------------------------------------
-    n_extra = min(bc.n_branches, bc.max_branches_when_triggered or bc.n_branches)
-    perturbations = _generate_topology_perturbations(
-        initial_waypoints, bc.perturbation_scale, n_extra
+    # Step 4: Generate target signatures
+    targets = generate_target_signatures(main_signature, bc.n_branches)
+    if not targets:
+        return MultiBranchResult(
+            trajectory=main_traj,
+            total_cost=main_cost,
+            main_branch_used=True,
+            n_branches_run=1,
+            signature=main_signature,
+            branch_costs=[main_cost],
+            branch_signatures=[main_signature],
+            branch_min_dists=[main_min_dist],
+            selected_branch_idx=0,
+            trigger_reason="triggered but no flippable signatures",
+        )
+
+    # Step 5: Run constrained branches
+    interior_times = np.cumsum(initial_durations)[:-1]
+
+    branch_gc_config = GCopterConfig(
+        s=config.s,
+        w_time=config.w_time,
+        w_energy=config.w_energy,
+        w_corridor=config.w_corridor,
+        w_velocity=config.w_velocity,
+        v_max=config.v_max,
+        n_quad=config.n_quad,
+        min_duration=config.min_duration,
+        max_duration=config.max_duration,
+        maxiter=bc.branch_maxiter,
+        ftol=bc.branch_ftol,
+        warm_start_skip_ratio=config.warm_start_skip_ratio,
+        warm_start_relax_ratio=config.warm_start_relax_ratio,
+        warm_start_maxiter=bc.branch_maxiter,
+        warm_start_ftol=bc.branch_ftol,
+        warm_start_maxls=bc.branch_maxls,
     )
 
-    # Score: (collision_free_first, cost). Lower is better on both axes.
-    best_traj = main_traj
-    best_cost = main_cost
-    best_min_dist = main_min_dist
-    selected = 0
-    branch_costs = [main_cost]
-    branch_min_dists = [main_min_dist]
+    branch_costs: List[float] = [main_cost]
+    branch_signatures: List[Tuple[int, ...]] = [main_signature]
+    branch_min_dists: List[float] = [main_min_dist]
+    branch_trajs: List[Trajectory] = [main_traj]
 
-    for i, perturbed_wps in enumerate(perturbations, start=1):
+    for target_sig in targets:
         try:
-            cand_traj, _ = gcopter_optimize(
+            ctx = build_penalty_context(
+                interior_waypoint_times=interior_times,
+                neighbours=nbr_samples,
+                target_signature=target_sig,
+                weight=bc.homotopy_penalty_weight,
+                epsilon=bc.homotopy_epsilon,
+            )
+        except Exception:
+            continue
+
+        perturbed_wps = _perturb_for_target(
+            initial_waypoints, ctx, bc.perturbation_scale
+        )
+
+        try:
+            cand_traj, _meta = gcopter_optimize(
                 initial_waypoints=perturbed_wps,
-                initial_durations=initial_durations,
+                initial_durations=initial_durations.copy(),
                 bc_start=bc_start, bc_end=bc_end,
-                polytopes=polytopes, config=config,
+                polytopes=polytopes, config=branch_gc_config,
                 swarm_neighbours=swarm_neighbours,
                 swarm_config=swarm_config,
-                warm_start=False,  # perturbed initial guess: cold
+                warm_start=True,
                 return_meta=True,
+                homotopy_context=ctx,
             )
         except Exception:
             branch_costs.append(float("inf"))
+            branch_signatures.append(target_sig)
             branch_min_dists.append(float("-inf"))
+            branch_trajs.append(main_traj)
             continue
 
-        cand_cost = _total_cost_with_swarm(
-            cand_traj, polytopes, config, swarm_neighbours or [], swarm_config
+        cand_xyz = _sample_traj_on_grid(cand_traj, nbr_samples[0][1])
+        cand_sig = full_signature(
+            cand_xyz, nbr_samples[0][1], nbr_samples,
+            interaction_radius=swarm_clearance_horizontal * 2.0,
         )
-        cand_min_dist = _min_predicted_swarm_distance(
+        cand_cost = _total_cost_with_swarm(
+            cand_traj, polytopes, branch_gc_config,
+            swarm_neighbours or [], swarm_config,
+        )
+        cand_min_d = _min_predicted_swarm_distance(
             cand_traj, swarm_neighbours or []
         )
         branch_costs.append(cand_cost)
-        branch_min_dists.append(cand_min_dist)
+        branch_signatures.append(cand_sig)
+        branch_min_dists.append(cand_min_d)
+        branch_trajs.append(cand_traj)
 
-        # Pick best via lexicographic (safety, distance, cost) rule.
-        if _is_better_branch(
-            cand_min_dist, cand_cost,
-            best_min_dist, best_cost,
-            clearance=swarm_clearance_horizontal,
-        ):
-            best_traj, best_cost, best_min_dist = cand_traj, cand_cost, cand_min_dist
-            selected = i
+    # Step 6: Select with consistency bonus
+    best_idx = 0
+    best_score = float("inf")
+    best_safe = False
+    for i, (cost, sig, md) in enumerate(zip(
+        branch_costs, branch_signatures, branch_min_dists
+    )):
+        if not np.isfinite(cost):
+            continue
+        safe = md >= swarm_clearance_horizontal
+        adj_cost = cost
+        if prev_signature is not None and sig == prev_signature:
+            adj_cost *= (1.0 - bc.consistency_bonus)
+        if safe and not best_safe:
+            best_idx, best_score, best_safe = i, adj_cost, True
+        elif safe == best_safe and adj_cost < best_score:
+            best_idx, best_score, best_safe = i, adj_cost, safe
 
     return MultiBranchResult(
-        trajectory=best_traj,
-        total_cost=best_cost,
-        main_branch_used=(selected == 0),
-        n_branches_run=1 + len(perturbations),
+        trajectory=branch_trajs[best_idx],
+        total_cost=branch_costs[best_idx],
+        main_branch_used=(best_idx == 0),
+        n_branches_run=len(branch_trajs),
+        signature=branch_signatures[best_idx],
         branch_costs=branch_costs,
+        branch_signatures=branch_signatures,
         branch_min_dists=branch_min_dists,
-        selected_branch_idx=selected,
+        selected_branch_idx=best_idx,
+        trigger_reason=f"triggered ({trigger_reason})",
     )

@@ -101,6 +101,7 @@ def gcopter_optimize(
     swarm_config: Optional[object] = None,
     warm_start: bool = False,
     return_meta: bool = False,
+    homotopy_context: Optional[object] = None,
 ) -> "Trajectory | tuple[Trajectory, dict]":
     """Run L-BFGS-B over (q_interior, T) and return the optimised Trajectory.
 
@@ -201,6 +202,17 @@ def gcopter_optimize(
             if M > 1:
                 grad_q = grad_q + sgq
             grad_T = grad_T + sgT
+        # Avenue 3 (rebuild): homotopy-class constraint penalty.
+        # When the caller provides a HomotopyPenaltyContext, the penalty
+        # pushes the interior waypoints to the correct side of each
+        # neighbour's predicted path. Gradient is analytical and zero
+        # for the z-axis and for durations (the penalty depends only on
+        # interior waypoint xy positions, not on T).
+        if homotopy_context is not None and M > 1:
+            from src.swarm.homotopy import homotopy_penalty_and_grad
+            hp_cost, hp_grad = homotopy_penalty_and_grad(q_int, homotopy_context)
+            cost += hp_cost
+            grad_q = grad_q + hp_grad
         grad = np.empty_like(x)
         if M > 1:
             grad[:n_q] = grad_q.ravel()
