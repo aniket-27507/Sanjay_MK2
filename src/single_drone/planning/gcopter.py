@@ -38,7 +38,7 @@ are added here later.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 import numpy as np
 from scipy.optimize import minimize
@@ -99,6 +99,7 @@ def gcopter_optimize(
     config: Optional[GCopterConfig] = None,
     swarm_neighbours: Optional[Sequence[tuple]] = None,
     swarm_config: Optional[object] = None,
+    swarm_freshnesses: Optional[Sequence[float]] = None,
     warm_start: bool = False,
     return_meta: bool = False,
     homotopy_context: Optional[object] = None,
@@ -143,6 +144,7 @@ def gcopter_optimize(
     swarm_compute = None
     sw_neighbours: Sequence[tuple] = ()
     sw_cfg = None
+    sw_freshnesses: Optional[List[float]] = None
     if swarm_neighbours:
         from src.swarm.swarm_penalty import (
             SwarmPenaltyConfig,
@@ -152,6 +154,13 @@ def gcopter_optimize(
         swarm_compute = compute_swarm_cost_and_grad
         sw_neighbours = list(swarm_neighbours)
         sw_cfg = swarm_config if swarm_config is not None else SwarmPenaltyConfig()
+        if swarm_freshnesses is not None:
+            sw_freshnesses = [float(f) for f in swarm_freshnesses]
+            if len(sw_freshnesses) != len(sw_neighbours):
+                raise ValueError(
+                    f"swarm_freshnesses length {len(sw_freshnesses)} must match"
+                    f" swarm_neighbours length {len(sw_neighbours)}"
+                )
 
     waypoints = np.asarray(initial_waypoints, dtype=np.float64).copy()
     durations = np.asarray(initial_durations, dtype=np.float64).ravel().copy()
@@ -197,7 +206,9 @@ def gcopter_optimize(
             return 1.0e12, np.zeros_like(x)
         cost, grad_q, grad_T = _cost_and_grad(traj, polytopes, config)
         if swarm_compute is not None and sw_neighbours:
-            sc, sgq, sgT = swarm_compute(traj, sw_neighbours, sw_cfg)
+            sc, sgq, sgT = swarm_compute(
+                traj, sw_neighbours, sw_cfg, freshnesses=sw_freshnesses
+            )
             cost += sc
             if M > 1:
                 grad_q = grad_q + sgq

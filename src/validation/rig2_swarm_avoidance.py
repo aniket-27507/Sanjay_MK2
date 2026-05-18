@@ -98,6 +98,10 @@ class Rig2Config:
     clearance_horizontal: float = 2.0
     clearance_vertical: float = 1.0
     swarm_weight: float = 1.0e3
+    # Linear staleness window for inter-drone broadcasts. A trajectory
+    # whose t_sent is older than this contributes zero penalty; freshness
+    # within the window decays linearly. Squared in compute_swarm_cost_and_grad.
+    swarm_freshness_max_age_s: float = 0.5
 
     # Avenue 3: topology-guided multi-branch (TRUST-Planner pattern).
     # When enabled, the warm-started main solve is first checked for
@@ -354,9 +358,17 @@ class Drone:
             clearance_vertical=config.clearance_vertical,
             weight=config.swarm_weight,
             n_quad=config.gcopter_n_quad,
+            freshness_max_age_s=config.swarm_freshness_max_age_s,
         )
+        from src.swarm.swarm_penalty import freshness_from_staleness
         neighbours = [
             (snap.trajectory, snap.t_sent - t_now)
+            for snap in snapshots.values()
+        ]
+        freshnesses = [
+            freshness_from_staleness(
+                t_now - snap.t_sent, sw_cfg.freshness_max_age_s
+            )
             for snap in snapshots.values()
         ]
 
@@ -419,6 +431,7 @@ class Drone:
                     bc_start=bc_start, bc_end=bc_end,
                     polytopes=self.polytopes, config=gc_cfg,
                     swarm_neighbours=neighbours, swarm_config=sw_cfg,
+                    swarm_freshnesses=freshnesses,
                     warm_start=self._has_warm_start,
                     branch_config=mb_cfg,
                     swarm_clearance_horizontal=config.clearance_horizontal,
@@ -449,6 +462,7 @@ class Drone:
                     config=gc_cfg,
                     swarm_neighbours=neighbours,
                     swarm_config=sw_cfg,
+                    swarm_freshnesses=freshnesses,
                     warm_start=self._has_warm_start,
                     return_meta=True,
                 )
