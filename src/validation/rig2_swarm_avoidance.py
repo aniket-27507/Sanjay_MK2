@@ -63,6 +63,11 @@ from src.single_drone.planning import (
     Trajectory,
     gcopter_optimize,
 )
+from src.swarm.ghost_obstacles import (
+    GhostManager,
+    GhostManagerConfig,
+    GhostObstacleConfig,
+)
 from src.swarm.roundabout import (
     NeighbourObservation,
     RoundaboutConfig,
@@ -144,6 +149,30 @@ class Rig2Config:
     enable_cbf_filter: bool = False
     cbf_alpha: float = 2.0
     cbf_max_velocity_correction: float = 3.0
+
+    # Gap 2: CBF → MINCO ghost obstacles. Each replan tick the drone
+    # probes its current trajectory + neighbour broadcasts with the
+    # CBF check; for every flagged conflict, plants a soft no-fly
+    # ghost obstacle at the conflicting neighbour's position. Ghosts
+    # decay exponentially each tick. Closes the CBF/MINCO feedback
+    # loop noted at `cbf_safety_filter.py:65-68`. Default off so
+    # existing rigs stay byte-for-byte identical.
+    enable_ghost_obstacles: bool = False
+    # Probe-horizon cap (seconds). 0 (or negative) probes the entire
+    # remaining trajectory — usually what you want for short rigs where
+    # the planned conflict happens minutes ahead. Positive values cap
+    # the look-ahead, useful in long-trajectory mission rigs where the
+    # CBF probe would otherwise dominate per-tick cost.
+    ghost_probe_horizon_s: float = 0.0
+    ghost_probe_n_samples: int = 16
+    ghost_clearance_horizontal_m: float = 2.0
+    ghost_clearance_vertical_m: float = 1.0
+    ghost_initial_weight: float = 1.0e3
+    ghost_decay_per_tick: float = 0.6
+    ghost_weight_threshold: float = 10.0
+    ghost_max_active: int = 16
+    ghost_merge_distance_m: float = 0.5
+    ghost_penalty_n_quad: int = 12
 
     # Avenue 5: roundabout (MGR) deadlock breaker.
     # When enabled, each drone owns a RoundaboutManager that fires on
@@ -478,6 +507,11 @@ class Drone:
     n_mgr_triggers: int = 0
     n_mgr_exits: int = 0
     n_mgr_reentries: int = 0
+    # Gap 2: per-drone ghost-obstacle manager. Lazy-init on first
+    # reoptimise that observes `config.enable_ghost_obstacles`.
+    _ghost_manager: Optional[GhostManager] = None
+    # Cumulative count of CBF-flagged conflicts probed across all ticks.
+    n_ghost_probe_hits: int = 0
 
     def _mgr_evaluate(
         self,
@@ -702,6 +736,106 @@ class Drone:
             return np.zeros(3, dtype=np.float64)
         return np.asarray(self.trajectory.evaluate(t_local, 1), dtype=np.float64)
 
+    def _probe_cbf_and_seed_ghosts(
+        self,
+        t_now: float,
+        snapshots: Dict[int, "object"],
+        config: Rig2Config,
+    ) -> int:
+        """Per-tick Gap 2 step: run CBF along own's current trajectory
+        against current neighbour broadcasts, plant ghosts at flagged
+        conflict positions. Returns the number of probe hits this tick.
+
+        Called BEFORE re-optimising so the upcoming `gcopter_optimize`
+        sees the new ghosts. Decays existing ghosts first so old ones
+        fade out naturally.
+        """
+        from src.swarm.cbf_safety_filter import CBFConfig, probe_cbf_for_conflicts
+
+        if self._ghost_manager is None:
+            self._ghost_manager = GhostManager(
+                config=GhostManagerConfig(
+                    initial_weight=config.ghost_initial_weight,
+                    decay_per_tick=config.ghost_decay_per_tick,
+                    weight_threshold=config.ghost_weight_threshold,
+                    max_active=config.ghost_max_active,
+                    merge_distance_m=config.ghost_merge_distance_m,
+                    clearance_horizontal=config.ghost_clearance_horizontal_m,
+                    clearance_vertical=config.ghost_clearance_vertical_m,
+                )
+            )
+        self._ghost_manager.decay()
+
+        if not snapshots:
+            return 0
+
+        # Probe own's current trajectory in own-local time.
+        T_own = float(self.trajectory.total_time)
+        t_local_now = max(0.0, float(t_now) - float(self._trajectory_t0))
+        remaining = T_own - t_local_now
+        if remaining <= 1e-6:
+            return 0
+        horizon_cap = float(config.ghost_probe_horizon_s)
+        # Non-positive cap → probe to trajectory end.
+        horizon = remaining if horizon_cap <= 0.0 else min(horizon_cap, remaining)
+        n_samples = max(2, int(config.ghost_probe_n_samples))
+        t_local_grid = np.linspace(
+            t_local_now, t_local_now + horizon, n_samples
+        )
+
+        def own_pos_at(t_l: float) -> np.ndarray:
+            return np.asarray(self.trajectory.evaluate(t_l, 0), dtype=np.float64)
+
+        def own_vel_at(t_l: float) -> np.ndarray:
+            return np.asarray(self.trajectory.evaluate(t_l, 1), dtype=np.float64)
+
+        neighbour_fns = []
+        for snap in snapshots.values():
+            T_nb = float(snap.trajectory.total_time)
+            offset_local = float(snap.t_sent) - float(self._trajectory_t0)
+
+            def make_fn(nb_traj=snap.trajectory, T_nb=T_nb, offset=offset_local):
+                def sample(t_l: float):
+                    t_nb = t_l - offset
+                    if t_nb < 0.0 or t_nb > T_nb:
+                        return None
+                    return (
+                        np.asarray(nb_traj.evaluate(t_nb, 0), dtype=np.float64),
+                        np.asarray(nb_traj.evaluate(t_nb, 1), dtype=np.float64),
+                    )
+                return sample
+
+            neighbour_fns.append(make_fn())
+
+        cbf_cfg = CBFConfig(
+            clearance=float(config.clearance_horizontal),
+            alpha=float(config.cbf_alpha),
+            max_velocity_correction=float(config.cbf_max_velocity_correction),
+            apply_to_positions=False,
+            enable_deadlock_breaker=False,
+        )
+        hits = probe_cbf_for_conflicts(
+            own_position_at=own_pos_at,
+            own_velocity_at=own_vel_at,
+            neighbour_sample_fns=neighbour_fns,
+            t_grid_local=t_local_grid,
+            cfg=cbf_cfg,
+        )
+        if hits:
+            # Seed ghosts at the MIDPOINT of own and conflicting neighbour
+            # at the predicted hit. This is the region the CBF would have
+            # to clip both drones around — pushing MINCO away from the
+            # midpoint deflects own's trajectory by the right amount and,
+            # by symmetry, gives the neighbour the same incentive (each
+            # drone independently computes a similar midpoint from its
+            # broadcasts).
+            self._ghost_manager.seed_from_positions(
+                [(h.own_position + h.conflict_position) * 0.5 for h in hits],
+                t_planted=float(t_now),
+            )
+            self.n_ghost_probe_hits += len(hits)
+        return len(hits)
+
     def reoptimise(
         self,
         t_now: float,
@@ -780,6 +914,19 @@ class Drone:
             for snap in snapshots.values()
         ]
 
+        # Gap 2: probe CBF for upcoming conflicts and update ghost list
+        # BEFORE the L-BFGS solve so the gradient surface includes the
+        # new ghosts on this very tick.
+        ghost_obstacles_arg = None
+        ghost_cfg_arg = None
+        if config.enable_ghost_obstacles:
+            self._probe_cbf_and_seed_ghosts(t_now, snapshots, config)
+            if self._ghost_manager is not None and len(self._ghost_manager) > 0:
+                ghost_obstacles_arg = self._ghost_manager.active_ghosts()
+                ghost_cfg_arg = GhostObstacleConfig(
+                    n_quad=int(config.ghost_penalty_n_quad)
+                )
+
         gc_cfg = GCopterConfig(
             s=self.trajectory.s,
             v_max=config.v_max,
@@ -843,6 +990,8 @@ class Drone:
                     polytopes=self.polytopes, config=gc_cfg,
                     swarm_neighbours=neighbours, swarm_config=sw_cfg,
                     swarm_freshnesses=freshnesses,
+                    ghost_obstacles=ghost_obstacles_arg,
+                    ghost_config=ghost_cfg_arg,
                     warm_start=self._has_warm_start,
                     branch_config=mb_cfg,
                     swarm_clearance_horizontal=config.clearance_horizontal,
@@ -874,6 +1023,8 @@ class Drone:
                     swarm_neighbours=neighbours,
                     swarm_config=sw_cfg,
                     swarm_freshnesses=freshnesses,
+                    ghost_obstacles=ghost_obstacles_arg,
+                    ghost_config=ghost_cfg_arg,
                     warm_start=self._has_warm_start,
                     return_meta=True,
                 )
@@ -1156,6 +1307,22 @@ def run_one_trial(
         for dr in drones
         if dr._mgr_orbit is not None and dr._mgr_exit_time is None
     )
+    ghost_probe_hits_total = sum(int(dr.n_ghost_probe_hits) for dr in drones)
+    ghost_seeded_total = sum(
+        int(dr._ghost_manager.n_seeded_total)
+        for dr in drones
+        if dr._ghost_manager is not None
+    )
+    ghost_merged_total = sum(
+        int(dr._ghost_manager.n_merged_total)
+        for dr in drones
+        if dr._ghost_manager is not None
+    )
+    ghost_active_end = sum(
+        len(dr._ghost_manager)
+        for dr in drones
+        if dr._ghost_manager is not None
+    )
     result.update(
         {
             "t_replan_total_ms": sum_t_replan_ms,
@@ -1172,6 +1339,11 @@ def run_one_trial(
             "mgr_reentries": int(n_mgr_reentries_total),
             "mgr_drones_orbiting": int(n_mgr_drones_active),
             "mgr_enabled": bool(config.enable_roundabout),
+            "ghost_enabled": bool(config.enable_ghost_obstacles),
+            "ghost_probe_hits": int(ghost_probe_hits_total),
+            "ghost_seeded": int(ghost_seeded_total),
+            "ghost_merged": int(ghost_merged_total),
+            "ghost_active_end": int(ghost_active_end),
             **dist_metrics,
             **cbf_metrics,
         }

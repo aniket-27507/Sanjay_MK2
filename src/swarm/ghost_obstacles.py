@@ -61,8 +61,8 @@ ghosts need to gate by trajectory time too.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Sequence, Tuple
+from dataclasses import dataclass, field, replace
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -232,3 +232,172 @@ def compute_ghost_cost_and_grad(
                 grad_T[k_seg] += w_g * dw_i_dTseg * (margin * margin)
 
     return cost, grad_q, grad_T
+
+
+# ---------------------------------------------------------------------------
+# Ghost list management — Gap 2 part 2 (per-tick CBF feedback loop)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GhostManagerConfig:
+    """Policy knobs for `GhostManager`.
+
+    Attributes
+    ----------
+    initial_weight : float
+        Weight assigned to a freshly-seeded ghost. Older ghosts decay
+        from here.
+    decay_per_tick : float
+        Multiplicative weight decay applied each call to `decay()`. A
+        value of 0.6 means a ghost loses 40 % of its weight per replan
+        tick — at typical 0.5–1 Hz replan rates this gives an effective
+        half-life of 1–2 s, matching the "recent past" that the CBF
+        actually clipped.
+    weight_threshold : float
+        Ghosts whose weight drops below this are pruned. Set well below
+        `initial_weight`.
+    max_active : int
+        Hard cap on the number of active ghosts per drone. If a new
+        ghost would push us over, we drop the lowest-weight one. Keeps
+        the gcopter quadrature cost bounded.
+    merge_distance_m : float
+        When seeding a new ghost, if an existing ghost's centre is
+        within this distance, we top up its weight rather than adding a
+        duplicate. Suppresses chatter on a persistent conflict region.
+    clearance_horizontal : float
+        Default xy clearance for seeded ghosts. Caller can override per
+        seed call.
+    clearance_vertical : float
+        Default z clearance for seeded ghosts (smaller than xy to match
+        the swarm-penalty downwash convention).
+    """
+
+    initial_weight: float = 1.0e3
+    decay_per_tick: float = 0.6
+    weight_threshold: float = 10.0
+    max_active: int = 16
+    merge_distance_m: float = 0.5
+    clearance_horizontal: float = 2.0
+    clearance_vertical: float = 1.0
+
+
+@dataclass
+class GhostManager:
+    """Owns a per-drone list of `GhostObstacle`s seeded from CBF hits.
+
+    The state machine each replan tick is:
+
+        manager.decay()                # exponentially fade existing
+        manager.seed_from_positions(positions, t_planted=t_now)
+        ghosts = manager.active_ghosts()  # pass to gcopter
+
+    Decay is multiplicative and stateless — old ghosts fade out without
+    requiring the caller to track planting times. The `t_planted` field
+    is kept only for diagnostics / introspection.
+    """
+
+    config: GhostManagerConfig = field(default_factory=GhostManagerConfig)
+    _ghosts: List[GhostObstacle] = field(default_factory=list)
+    _planted_at: List[float] = field(default_factory=list)
+    n_seeded_total: int = 0
+    n_merged_total: int = 0
+    n_pruned_total: int = 0
+
+    def active_ghosts(self) -> List[GhostObstacle]:
+        """Snapshot of currently-active ghosts — pass into gcopter."""
+        return list(self._ghosts)
+
+    def __len__(self) -> int:
+        return len(self._ghosts)
+
+    def decay(self) -> None:
+        """Multiplicative weight decay; prune entries below threshold."""
+        factor = float(self.config.decay_per_tick)
+        threshold = float(self.config.weight_threshold)
+        survivors: List[GhostObstacle] = []
+        survivors_t: List[float] = []
+        for g, t_pl in zip(self._ghosts, self._planted_at):
+            new_w = g.weight * factor
+            if new_w < threshold:
+                self.n_pruned_total += 1
+                continue
+            survivors.append(replace(g, weight=new_w))
+            survivors_t.append(t_pl)
+        self._ghosts = survivors
+        self._planted_at = survivors_t
+
+    def seed_from_positions(
+        self,
+        positions: Sequence[np.ndarray],
+        t_planted: float,
+        clearance_horizontal: Optional[float] = None,
+        clearance_vertical: Optional[float] = None,
+        weight: Optional[float] = None,
+    ) -> None:
+        """Add ghosts at the given 3-D positions.
+
+        Each position becomes one `GhostObstacle` unless an existing
+        ghost is within `merge_distance_m`; then the existing ghost's
+        weight is topped up rather than adding a duplicate.
+
+        After insertion the list is capped at `max_active`; if over,
+        the lowest-weight entries are pruned.
+        """
+        cx = float(
+            clearance_horizontal
+            if clearance_horizontal is not None
+            else self.config.clearance_horizontal
+        )
+        cz = float(
+            clearance_vertical
+            if clearance_vertical is not None
+            else self.config.clearance_vertical
+        )
+        w = float(weight if weight is not None else self.config.initial_weight)
+        merge_d = float(self.config.merge_distance_m)
+        merge_d_sq = merge_d * merge_d
+
+        for p in positions:
+            p_arr = np.asarray(p, dtype=np.float64).reshape(3)
+            merged = False
+            for idx, existing in enumerate(self._ghosts):
+                d_sq = float(np.sum((existing.center - p_arr) ** 2))
+                if d_sq <= merge_d_sq:
+                    # Top up to the higher of (existing post-merge, fresh
+                    # initial weight) so a re-fired ghost recovers full
+                    # strength even after several decays.
+                    topped = max(existing.weight + w, w)
+                    self._ghosts[idx] = replace(existing, weight=topped)
+                    self._planted_at[idx] = float(t_planted)
+                    self.n_merged_total += 1
+                    merged = True
+                    break
+            if merged:
+                continue
+            self._ghosts.append(
+                GhostObstacle(
+                    center=p_arr,
+                    clearance_horizontal=cx,
+                    clearance_vertical=cz,
+                    weight=w,
+                )
+            )
+            self._planted_at.append(float(t_planted))
+            self.n_seeded_total += 1
+
+        # Enforce cap: drop the lowest-weight tail.
+        cap = int(self.config.max_active)
+        if cap > 0 and len(self._ghosts) > cap:
+            order = np.argsort([-g.weight for g in self._ghosts])  # high → low
+            keep = sorted(order[:cap].tolist())
+            self.n_pruned_total += len(self._ghosts) - cap
+            self._ghosts = [self._ghosts[i] for i in keep]
+            self._planted_at = [self._planted_at[i] for i in keep]
+
+    def clear(self) -> None:
+        """Drop everything — useful when the drone enters MGR or RTL and
+        a fresh page is wanted."""
+        self.n_pruned_total += len(self._ghosts)
+        self._ghosts = []
+        self._planted_at = []
