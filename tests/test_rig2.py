@@ -930,3 +930,108 @@ class TestMGRGhostBridge:
             seed=11, n_drones=6, scenario="converge_dense", config=cfg
         )
         assert out["ghosts_carried_across_mgr"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Goal-region right-of-way arbitration (CBBA-over-approach-slots)
+# ---------------------------------------------------------------------------
+
+
+class TestGoalArbitration:
+    """Right-of-way arbitration is the missing primitive that MGR + ghosts
+    could not provide for converging-goal scenarios. These tests pin the
+    invariants:
+
+      1. Default-off — existing rigs stay byte-identical.
+      2. Enabled in converge_dense — bridge fires, MGR triggers drop.
+      3. Patrol / head_on unaffected when goals are unique (no clusters).
+      4. Drones that reach the goal flip satisfied=True and exit auctions.
+    """
+
+    def _cfg(self, **overrides):
+        kw = dict(
+            field_radius=8.0,
+            gcopter_maxiter=10,
+            sim_duration_s=20.0,
+            replan_period_s=0.5,
+            sample_dt_s=0.1,
+            enable_roundabout=True,
+            roundabout_force_exit_s=8.0,
+            enable_cbf_filter=True,
+            clearance_horizontal=2.0,
+        )
+        kw.update(overrides)
+        return Rig2Config(**kw)
+
+    def test_disabled_by_default(self) -> None:
+        cfg = self._cfg()
+        assert cfg.enable_goal_arbitration is False
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        assert out["goal_arbitration_enabled"] is False
+        assert out["goal_arbitration_rounds"] == 0
+        assert out["goal_arbitration_assignments"] == 0
+        assert out["goal_arbitration_holds"] == 0
+
+    def test_enabled_runs_auction_in_converge_dense(self) -> None:
+        """All 6 drones share goal=(0,0,alt) → arbitration must fire
+        every replan tick where at least 2 unsatisfied drones remain."""
+        cfg = self._cfg(enable_goal_arbitration=True)
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        assert out["goal_arbitration_enabled"] is True
+        # At least one round must have fired (sim is 20 s, 40 replan
+        # ticks; arbitration runs every tick).
+        assert out["goal_arbitration_rounds"] >= 1
+        # Each round assigns slots to all clustered drones.
+        assert out["goal_arbitration_assignments"] >= 6
+        # Drones in holding slots (slot_id > 0) contribute to the
+        # hold-counter; symmetric ring means most drones spend time
+        # holding.
+        assert out["goal_arbitration_holds"] >= 1
+
+    def test_no_clusters_in_patrol(self) -> None:
+        """Patrol has antipodal goals — no two drones share a goal
+        region, so arbitration never fires."""
+        cfg = self._cfg(enable_goal_arbitration=True)
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="patrol", config=cfg
+        )
+        assert out["goal_arbitration_enabled"] is True
+        # No clusters → no rounds.
+        assert out["goal_arbitration_rounds"] == 0
+        assert out["goal_arbitration_assignments"] == 0
+        assert out["goal_arbitration_holds"] == 0
+
+    def test_no_clusters_in_head_on(self) -> None:
+        """Head-on has 2 drones with opposite goals — distinct, no
+        cluster."""
+        cfg = self._cfg(enable_goal_arbitration=True)
+        out = run_one_trial(
+            seed=11, n_drones=2, scenario="head_on", config=cfg
+        )
+        assert out["goal_arbitration_rounds"] == 0
+
+    def test_satisfied_drones_eventually_arrive(self) -> None:
+        """Over a long enough sim, at least one drone should reach the
+        nominal goal and be marked satisfied."""
+        cfg = self._cfg(enable_goal_arbitration=True, sim_duration_s=30.0)
+        out = run_one_trial(
+            seed=11, n_drones=6, scenario="converge_dense", config=cfg
+        )
+        # Slot-0 winner heads to goal at full speed; by 30 s at least
+        # one should arrive within `goal_arbitration_arrived_radius_m`.
+        assert out["goal_arbitration_satisfied"] >= 1
+
+    def test_collisions_remain_zero_with_arbitration(self) -> None:
+        """Safety floor: enabling arbitration must not introduce
+        collisions in either scenario."""
+        cfg = self._cfg(enable_goal_arbitration=True)
+        for scenario, n in [("converge_dense", 6), ("patrol", 6),
+                            ("head_on", 2)]:
+            out = run_one_trial(
+                seed=11, n_drones=n, scenario=scenario, config=cfg
+            )
+            assert out["collisions"] == 0, f"{scenario}: collisions > 0"

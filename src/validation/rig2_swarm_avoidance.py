@@ -63,6 +63,12 @@ from src.single_drone.planning import (
     Trajectory,
     gcopter_optimize,
 )
+from src.swarm.goal_arbitration import (
+    DroneBidState,
+    GoalArbitrationConfig,
+    arbitrate as arbitrate_goals,
+    has_arrived as drone_has_arrived,
+)
 from src.swarm.ghost_obstacles import (
     GhostManager,
     GhostManagerConfig,
@@ -243,6 +249,21 @@ class Rig2Config:
     # re-trigger for this many seconds, giving the post-MGR MINCO solve
     # at least one optimisation pass before another orbit is installed.
     roundabout_reentry_cooldown_s: float = 0.0
+
+    # Goal-region right-of-way arbitration (CBBA-over-approach-slots).
+    # When 2+ drones have goals within `goal_arbitration_proximity_m`,
+    # a per-tick auction assigns them slots (slot 0 = the goal, slot
+    # k>0 = holding ring positions); only the slot-0 winner heads to
+    # the goal, others hold. Resolves symmetric-deadlock failure mode
+    # (converge_dense) that MGR + ghosts cannot. Off by default for
+    # back-compat with existing rigs. See `src/swarm/goal_arbitration.py`.
+    enable_goal_arbitration: bool = False
+    goal_arbitration_proximity_m: float = 0.5
+    goal_arbitration_holding_radii_m: Tuple[float, ...] = (12.0, 14.0, 16.0, 18.0, 20.0)
+    goal_arbitration_arrived_radius_m: float = 1.5
+    goal_arbitration_w_mission: float = 100.0
+    goal_arbitration_w_distance: float = 1.0
+    goal_arbitration_w_id_tiebreak: float = 1.0e-3
 
     # comms channel
     comms_latency_ms_mean: float = 50.0
@@ -545,6 +566,21 @@ class Drone:
     _ghost_manager: Optional[GhostManager] = None
     # Cumulative count of CBF-flagged conflicts probed across all ticks.
     n_ghost_probe_hits: int = 0
+    # Goal-region right-of-way arbitration (CBBA-over-approach-slots).
+    # `mission_priority ∈ [0, 1]`: 0.0 = low-stakes patrol, 0.5 default,
+    # 1.0 = active threat / medevac. Used by `goal_arbitration.arbitrate`
+    # to award slot 0 to the highest-priority drone in a goal cluster.
+    mission_priority: float = 0.5
+    # `_nominal_goal` is the drone's *original* mission goal, fixed
+    # at construction. `goal` may be overridden every tick to the
+    # currently-assigned approach slot. Once the drone has reached the
+    # nominal goal, `_goal_satisfied` flips True and the drone is
+    # excluded from future arbitration rounds.
+    _nominal_goal: Optional[np.ndarray] = None
+    _goal_satisfied: bool = False
+    # Diagnostics: how many ticks this drone held a non-goal slot
+    # (slot_id > 0). Useful for visualising who-waited-for-whom.
+    n_arbitration_holds: int = 0
     # Avenue 4 ↔ Avenue 5 bridge: number of ghosts that survived into the
     # post-MGR MINCO solve, summed across all MGR exits this drone went
     # through. Diagnostic for the bridge's contribution to post-exit
@@ -1294,9 +1330,22 @@ def run_one_trial(
             trajectory=traj0,
             polytopes=polys,
             broadcaster=broadcaster,
+            # Snapshot the nominal goal for arbitration; `goal` may be
+            # overridden each tick to a holding slot.
+            _nominal_goal=goal.copy(),
         )
         drone.broadcast(t_now=0.0)
         drones.append(drone)
+
+    # Build the immutable arbitration config once.
+    arb_cfg = GoalArbitrationConfig(
+        proximity_radius_m=config.goal_arbitration_proximity_m,
+        holding_ring_radii_m=config.goal_arbitration_holding_radii_m,
+        goal_arrived_radius_m=config.goal_arbitration_arrived_radius_m,
+        w_mission=config.goal_arbitration_w_mission,
+        w_distance=config.goal_arbitration_w_distance,
+        w_id_tiebreak=config.goal_arbitration_w_id_tiebreak,
+    )
 
     # ---- 3. replan loop
     t = 0.0
@@ -1305,10 +1354,61 @@ def run_one_trial(
     max_t_replan_ms = 0.0
     sum_per_agent_ms = 0.0
 
+    n_arbitration_rounds = 0
+    n_arbitration_assignments = 0
+    n_arbitration_satisfied = 0
     while t < config.sim_duration_s:
         t += config.replan_period_s
         for dr in drones:
             dr.broadcaster.poll(t_now=t)
+
+        # Goal-region right-of-way arbitration. Each tick:
+        #   1. Flip `_goal_satisfied=True` for any drone that has
+        #      reached its nominal goal — they exit future auctions.
+        #   2. Build the bid states from current positions + nominal
+        #      goals + mission priorities.
+        #   3. Run `arbitrate()` → returns the effective goal per
+        #      drone (= assigned slot position for clustered drones,
+        #      nominal goal for satisfied / unclustered drones).
+        #   4. Override each drone's `.goal` so MINCO + MGR plan
+        #      toward the slot, not the original goal.
+        if config.enable_goal_arbitration:
+            for dr in drones:
+                if not dr._goal_satisfied and dr._nominal_goal is not None:
+                    cur_pos = dr.position_at(t)
+                    if drone_has_arrived(
+                        cur_pos,
+                        dr._nominal_goal,
+                        arb_cfg.goal_arrived_radius_m,
+                    ):
+                        dr._goal_satisfied = True
+                        n_arbitration_satisfied += 1
+            bid_states = [
+                DroneBidState(
+                    drone_id=dr.drone_id,
+                    position=dr.position_at(t),
+                    goal=(
+                        dr._nominal_goal
+                        if dr._nominal_goal is not None else dr.goal
+                    ),
+                    mission_priority=float(dr.mission_priority),
+                    satisfied=bool(dr._goal_satisfied),
+                )
+                for dr in drones
+            ]
+            arb_result = arbitrate_goals(bid_states, arb_cfg)
+            if arb_result.clusters:
+                n_arbitration_rounds += 1
+                n_arbitration_assignments += sum(
+                    1 for sid in arb_result.assignments.values()
+                    if sid is not None
+                )
+            for dr in drones:
+                dr.goal = arb_result.effective_goals[dr.drone_id]
+                slot_id = arb_result.assignments[dr.drone_id]
+                if slot_id is not None and slot_id > 0:
+                    dr.n_arbitration_holds += 1
+
         tick_max = 0.0
         tick_sum = 0.0
         for dr in drones:
@@ -1429,6 +1529,13 @@ def run_one_trial(
             "ghost_merged": int(ghost_merged_total),
             "ghost_active_end": int(ghost_active_end),
             "ghosts_carried_across_mgr": int(ghosts_carried_across_mgr_total),
+            "goal_arbitration_enabled": bool(config.enable_goal_arbitration),
+            "goal_arbitration_rounds": int(n_arbitration_rounds),
+            "goal_arbitration_assignments": int(n_arbitration_assignments),
+            "goal_arbitration_satisfied": int(n_arbitration_satisfied),
+            "goal_arbitration_holds": int(
+                sum(int(dr.n_arbitration_holds) for dr in drones)
+            ),
             **dist_metrics,
             **cbf_metrics,
         }
