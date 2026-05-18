@@ -100,6 +100,8 @@ def gcopter_optimize(
     swarm_neighbours: Optional[Sequence[tuple]] = None,
     swarm_config: Optional[object] = None,
     swarm_freshnesses: Optional[Sequence[float]] = None,
+    ghost_obstacles: Optional[Sequence[object]] = None,
+    ghost_config: Optional[object] = None,
     warm_start: bool = False,
     return_meta: bool = False,
     homotopy_context: Optional[object] = None,
@@ -131,6 +133,15 @@ def gcopter_optimize(
     swarm_config : optional SwarmPenaltyConfig
         Forwarded to the swarm penalty. Default config used if None and
         swarm_neighbours is non-empty.
+    ghost_obstacles : optional sequence of GhostObstacle
+        Soft no-fly regions in 3-D space — typically derived from
+        prior-tick CBF interventions (Gap 2). Adds the ellipsoidal ghost
+        penalty from `src.swarm.ghost_obstacles` to the cost and gradient,
+        so MINCO learns to route around regions where the post-MINCO
+        CBF filter previously had to clip the trajectory.
+    ghost_config : optional GhostObstacleConfig
+        Forwarded to the ghost-obstacle penalty. Default config used if
+        None and ghost_obstacles is non-empty.
 
     Returns
     -------
@@ -161,6 +172,20 @@ def gcopter_optimize(
                     f"swarm_freshnesses length {len(sw_freshnesses)} must match"
                     f" swarm_neighbours length {len(sw_neighbours)}"
                 )
+
+    # Resolve ghost-obstacle penalty (Gap 2) lazily for the same reason.
+    ghost_compute = None
+    gh_obstacles: Sequence[object] = ()
+    gh_cfg = None
+    if ghost_obstacles:
+        from src.swarm.ghost_obstacles import (
+            GhostObstacleConfig,
+            compute_ghost_cost_and_grad,
+        )
+
+        ghost_compute = compute_ghost_cost_and_grad
+        gh_obstacles = list(ghost_obstacles)
+        gh_cfg = ghost_config if ghost_config is not None else GhostObstacleConfig()
 
     waypoints = np.asarray(initial_waypoints, dtype=np.float64).copy()
     durations = np.asarray(initial_durations, dtype=np.float64).ravel().copy()
@@ -213,6 +238,12 @@ def gcopter_optimize(
             if M > 1:
                 grad_q = grad_q + sgq
             grad_T = grad_T + sgT
+        if ghost_compute is not None and gh_obstacles:
+            gc, ggq, ggT = ghost_compute(traj, gh_obstacles, gh_cfg)
+            cost += gc
+            if M > 1:
+                grad_q = grad_q + ggq
+            grad_T = grad_T + ggT
         # Avenue 3 (rebuild): homotopy-class constraint penalty.
         # When the caller provides a HomotopyPenaltyContext, the penalty
         # pushes the interior waypoints to the correct side of each
